@@ -22,6 +22,11 @@ export type OrderStatus =
   | 'delivered'
   | 'cancelled';
 
+export interface Coords {
+  lat: number;
+  lng: number;
+}
+
 export interface LaundryBag {
   id: string;
   type: string;
@@ -37,9 +42,9 @@ export interface Order {
   customerName: string;
   customerPhone: string;
   pickupAddress: string;
-  pickupCoords: { x: number; y: number; lat: number; lng: number };
+  pickupCoords: Coords;
   deliveryAddress: string;
-  deliveryCoords: { x: number; y: number; lat: number; lng: number };
+  deliveryCoords: Coords;
   laundryType: string;
   bagCount: number;
   bags: LaundryBag[];
@@ -73,7 +78,7 @@ export interface RiderState {
   gpsAccuracy: number; // in meters
   speed: number; // in km/h
   heading: number; // in degrees
-  coords: { x: number; y: number; lat: number; lng: number };
+  coords: Coords;
   todayDistance: number;
   todayEarnings: number;
   completedCount: number;
@@ -98,11 +103,4 @@ export interface Notification {
   type: 'order' | 'system' | 'message' | 'alert';
   orderId?: string;
   read: boolean;
-}
-
-export interface MapPoint {
-  x: number;
-  y: number;
-  name: string;
-  type: 'pickup' | 'delivery' | 'laundry' | 'rider' | 'decor';
 }

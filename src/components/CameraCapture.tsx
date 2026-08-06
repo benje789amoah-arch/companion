@@ -3,274 +3,277 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
-import { Camera, Image, Check, RotateCcw, Zap, Laptop, ShieldCheck, Heart } from 'lucide-react';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import { Camera, Check, ImageIcon, RotateCcw } from 'lucide-react-native';
+import React, { useRef, useState } from 'react';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { colors, radius } from '../theme';
+import { Button, Divider } from './ui';
 
 interface CameraCaptureProps {
-  onCapture: (photoDataUrl: string) => void;
+  onCapture: (photoUri: string) => void;
   onCancel?: () => void;
   title?: string;
   context?: 'pickup' | 'delivery';
 }
 
+/** Stand-in shots so the flow is demoable without pointing a phone at laundry. */
 const PRESET_PHOTOS = {
   pickup: [
     {
-      id: "p1",
-      label: "Delicate canvas laundry bags on KNUST bench",
-      url: "https://images.unsplash.com/photo-1545173168-9f19472ef7f8?auto=format&fit=crop&q=80&w=300"
+      id: 'p1',
+      label: 'Canvas bags on KNUST bench',
+      url: 'https://images.unsplash.com/photo-1545173168-9f19472ef7f8?auto=format&fit=crop&q=80&w=600',
     },
     {
-      id: "p2",
-      label: "Pre-verified silk bags at reception",
-      url: "https://images.unsplash.com/photo-1528570188406-29a019a2884c?auto=format&fit=crop&q=80&w=300"
-    }
+      id: 'p2',
+      label: 'Silk bags at reception',
+      url: 'https://images.unsplash.com/photo-1528570188406-29a019a2884c?auto=format&fit=crop&q=80&w=600',
+    },
   ],
   delivery: [
     {
-      id: "d1",
-      label: "Freshly pressed linen box at doorman desk",
-      url: "https://images.unsplash.com/photo-1541123437800-1bb1317badc2?auto=format&fit=crop&q=80&w=300"
+      id: 'd1',
+      label: 'Pressed linen at the desk',
+      url: 'https://images.unsplash.com/photo-1541123437800-1bb1317badc2?auto=format&fit=crop&q=80&w=600',
     },
     {
-      id: "d2",
-      label: "Garments elegantly hung on closet valet",
-      url: "https://images.unsplash.com/photo-1512436991641-6745cdb1723f?auto=format&fit=crop&q=80&w=300"
-    }
-  ]
-};
+      id: 'd2',
+      label: 'Garments hung on valet',
+      url: 'https://images.unsplash.com/photo-1512436991641-6745cdb1723f?auto=format&fit=crop&q=80&w=600',
+    },
+  ],
+} as const;
+
+type CaptureMode = 'presets' | 'camera';
 
 export default function CameraCapture({
   onCapture,
   onCancel,
-  title = "Capture Condition Documentation",
-  context = "pickup",
+  title = 'Capture condition documentation',
+  context = 'pickup',
 }: CameraCaptureProps) {
-  const [activeTab, setActiveTab] = useState<'simulated' | 'live'>('simulated');
-  const [capturedImage, setCapturedImage] = useState<string | null>(null);
-  const [isLiveActive, setIsLiveActive] = useState(false);
-  const [flashOn, setFlashOn] = useState(false);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const [mode, setMode] = useState<CaptureMode>('presets');
+  const [captured, setCaptured] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [permission, requestPermission] = useCameraPermissions();
+  const cameraRef = useRef<CameraView | null>(null);
 
-  // Live Camera handlers
-  const startLiveCamera = async () => {
+  const enterCameraMode = async () => {
+    if (!permission?.granted) {
+      const result = await requestPermission();
+      if (!result.granted) return;
+    }
+    setMode('camera');
+  };
+
+  const takePicture = async () => {
+    if (!cameraRef.current || busy) return;
+    setBusy(true);
     try {
-      setIsLiveActive(true);
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' }
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-    } catch (err) {
-      console.warn("Live camera unavailable, switching to simulated documentation photos.", err);
-      setActiveTab('simulated');
-      setIsLiveActive(false);
-    }
-  };
-
-  const stopLiveCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-    setIsLiveActive(false);
-  };
-
-  useEffect(() => {
-    if (activeTab === 'live') {
-      startLiveCamera();
-    } else {
-      stopLiveCamera();
-    }
-    return () => stopLiveCamera();
-  }, [activeTab]);
-
-  const captureLiveFrame = () => {
-    if (!videoRef.current) return;
-    const video = videoRef.current;
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const dataUrl = canvas.toDataURL('image/jpeg');
-      setCapturedImage(dataUrl);
-      stopLiveCamera();
-    }
-  };
-
-  const handleSelectPreset = (url: string) => {
-    setCapturedImage(url);
-  };
-
-  const handleConfirm = () => {
-    if (capturedImage) {
-      onCapture(capturedImage);
-    }
-  };
-
-  const handleReset = () => {
-    setCapturedImage(null);
-    if (activeTab === 'live') {
-      startLiveCamera();
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.6 });
+      if (photo?.uri) setCaptured(photo.uri);
+    } catch {
+      // Falling back to the presets keeps the workflow unblocked on a device
+      // where the camera is unavailable (simulator, hardware in use, etc).
+      setMode('presets');
+    } finally {
+      setBusy(false);
     }
   };
 
   return (
-    <div className="bg-white rounded-2xl border border-border-soft p-5 w-full flex flex-col space-y-4 shadow-md animate-fade-in" id="camera-capture-container">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border-soft pb-3">
-        <div className="flex items-center space-x-2">
-          <Camera className="w-5 h-5 text-brand-sage" />
-          <div>
-            <h3 className="text-sm font-bold text-text-charcoal font-display">{title}</h3>
-            <p className="text-[10px] text-text-slate">Verify garment placement and state of cleanliness</p>
-          </div>
-        </div>
+    <View style={styles.sheet}>
+      <View style={styles.header}>
+        <Camera size={20} color={colors.brandSage} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.title}>{title}</Text>
+          <Text style={styles.subtitle}>
+            Verify garment placement and state of cleanliness
+          </Text>
+        </View>
+      </View>
 
-        {/* Tab Toggle */}
-        {!capturedImage && (
-          <div className="flex space-x-1 bg-bg-linen p-0.5 rounded-lg text-[9px] font-semibold">
-            <button
-              type="button"
-              onClick={() => setActiveTab('simulated')}
-              className={`px-2.5 py-1 rounded-md transition-all ${activeTab === 'simulated' ? 'bg-white text-text-charcoal shadow-xs' : 'text-text-slate hover:text-text-charcoal'}`}
-            >
-              Gallery Presets
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('live')}
-              className={`px-2.5 py-1 rounded-md transition-all ${activeTab === 'live' ? 'bg-white text-text-charcoal shadow-xs' : 'text-text-slate hover:text-text-charcoal'}`}
-            >
-              Hardware Camera
-            </button>
-          </div>
-        )}
-      </div>
+      {!captured && (
+        <View style={styles.modeToggle}>
+          <Pressable
+            onPress={() => setMode('presets')}
+            style={[styles.modeButton, mode === 'presets' && styles.modeButtonActive]}
+          >
+            <Text style={[styles.modeLabel, mode === 'presets' && styles.modeLabelActive]}>
+              Gallery presets
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={enterCameraMode}
+            style={[styles.modeButton, mode === 'camera' && styles.modeButtonActive]}
+          >
+            <Text style={[styles.modeLabel, mode === 'camera' && styles.modeLabelActive]}>
+              Device camera
+            </Text>
+          </Pressable>
+        </View>
+      )}
 
-      {/* CAMERA SCREEN */}
-      <div className="relative aspect-video rounded-xl overflow-hidden bg-[#121212] border border-border-soft flex items-center justify-center">
-        {capturedImage ? (
-          /* Captured photo preview */
-          <img
-            src={capturedImage}
-            alt="Captured Proof"
-            className="absolute inset-0 w-full h-full object-cover animate-scale-up"
-            referrerPolicy="no-referrer"
-          />
-        ) : activeTab === 'live' && isLiveActive ? (
-          /* Live stream view */
+      <View style={styles.viewfinder}>
+        {captured ? (
+          <Image source={{ uri: captured }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+        ) : mode === 'camera' && permission?.granted ? (
           <>
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              className="absolute inset-0 w-full h-full object-cover"
-            />
-            {/* Capture button overlay */}
-            <button
-              onClick={captureLiveFrame}
-              type="button"
-              className="absolute bottom-4 left-1/2 transform -translate-x-1/2 w-12 h-12 rounded-full border-4 border-white bg-transparent flex items-center justify-center hover:scale-105 active:scale-95 transition-all shadow-lg"
+            <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
+            <Pressable
+              onPress={takePicture}
+              accessibilityLabel="Take photo"
+              style={({ pressed }) => [styles.shutter, pressed && { transform: [{ scale: 0.94 }] }]}
             >
-              <div className="w-8 h-8 rounded-full bg-status-error"></div>
-            </button>
-            {/* Guide Grid Overlays */}
-            <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 pointer-events-none opacity-20">
-              <div className="border-r border-b border-white"></div>
-              <div className="border-r border-b border-white"></div>
-              <div className="border-b border-white"></div>
-              <div className="border-r border-b border-white"></div>
-              <div className="border-r border-b border-white"></div>
-              <div className="border-b border-white"></div>
-              <div className="border-r border-white"></div>
-              <div className="border-r border-white"></div>
-              <div></div>
-            </div>
+              <View style={styles.shutterInner} />
+            </Pressable>
           </>
         ) : (
-          /* Digital Preset Select Screen */
-          <div className="absolute inset-0 flex flex-col items-center justify-center p-4">
-            <Image className="w-10 h-10 text-white/40 mb-1 animate-pulse" />
-            <p className="text-white text-xs font-semibold font-display">Select Premium Dispatch Photo</p>
-            <p className="text-text-slate text-[9px] mt-1 mb-3">Simulate capturing state-of-the-art concierge delivery</p>
-            
-            <div className="grid grid-cols-2 gap-2 w-full max-w-[280px]">
+          <View style={styles.presetPane}>
+            <ImageIcon size={34} color="rgba(255,255,255,0.4)" />
+            <Text style={styles.presetTitle}>Select a dispatch photo</Text>
+            <Text style={styles.presetBody}>
+              Simulates capturing the concierge handover
+            </Text>
+
+            <View style={styles.presetGrid}>
               {PRESET_PHOTOS[context].map((item) => (
-                <button
+                <Pressable
                   key={item.id}
-                  onClick={() => handleSelectPreset(item.url)}
-                  type="button"
-                  className="group relative h-16 rounded-lg overflow-hidden border border-white/10 hover:border-brand-gold active:scale-95 transition-all"
+                  onPress={() => setCaptured(item.url)}
+                  style={({ pressed }) => [styles.presetCard, pressed && { opacity: 0.75 }]}
                 >
-                  <img
-                    src={item.url}
-                    alt={item.label}
-                    className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity"
-                    referrerPolicy="no-referrer"
-                  />
-                  <div className="absolute inset-x-0 bottom-0 bg-black/65 p-1 text-[8px] text-white font-sans text-center leading-tight">
+                  <Image source={{ uri: item.url }} style={styles.presetImage} />
+                  <Text style={styles.presetCaption} numberOfLines={2}>
                     {item.label}
-                  </div>
-                </button>
+                  </Text>
+                </Pressable>
               ))}
-            </div>
-          </div>
+            </View>
+          </View>
         )}
 
-        {/* Viewfinder Bounding Corner Markers */}
-        <div className="absolute top-4 left-4 w-4 h-4 border-t-2 border-l-2 border-white/40 rounded-tl-sm"></div>
-        <div className="absolute top-4 right-4 w-4 h-4 border-t-2 border-r-2 border-white/40 rounded-tr-sm"></div>
-        <div className="absolute bottom-4 left-4 w-4 h-4 border-b-2 border-l-2 border-white/40 rounded-bl-sm"></div>
-        <div className="absolute bottom-4 right-4 w-4 h-4 border-b-2 border-r-2 border-white/40 rounded-br-sm"></div>
+        <View style={[styles.corner, styles.cornerTL]} />
+        <View style={[styles.corner, styles.cornerTR]} />
+        <View style={[styles.corner, styles.cornerBL]} />
+        <View style={[styles.corner, styles.cornerBR]} />
+      </View>
 
-        {/* Leveler helper */}
-        {!capturedImage && (
-          <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-black/50 text-white text-[8px] px-2 py-0.5 rounded-full backdrop-blur-xs font-mono">
-            AXIS: 0.0° VERTICAL
-          </div>
-        )}
-      </div>
+      <Divider />
 
-      {/* CONFIRMATION OR CANCEL ACTIONS */}
-      <div className="flex space-x-3 pt-1 border-t border-border-soft">
-        {capturedImage ? (
+      <View style={styles.actions}>
+        {captured ? (
           <>
-            <button
-              onClick={handleReset}
-              type="button"
-              className="flex-1 py-2.5 rounded-xl border border-border-soft text-text-charcoal hover:bg-bg-linen text-xs font-semibold tracking-tight transition-all active:scale-98 flex items-center justify-center space-x-1.5"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>Retake Photo</span>
-            </button>
-
-            <button
-              onClick={handleConfirm}
-              type="button"
-              className="flex-1 py-2.5 rounded-xl bg-brand-sage text-white hover:bg-brand-sage/95 text-xs font-semibold tracking-tight transition-all active:scale-98 shadow-xs flex items-center justify-center space-x-1.5"
-            >
-              <Check className="w-3.5 h-3.5" />
-              <span>Submit Proof</span>
-            </button>
+            <Button
+              label="Retake"
+              variant="ghost"
+              onPress={() => setCaptured(null)}
+              icon={<RotateCcw size={14} color={colors.textCharcoal} />}
+              style={{ flex: 1 }}
+            />
+            <Button
+              label="Submit proof"
+              onPress={() => onCapture(captured)}
+              icon={<Check size={15} color="#FFFFFF" />}
+              style={{ flex: 1 }}
+            />
           </>
         ) : (
-          <>
-            <button
-              onClick={onCancel}
-              type="button"
-              className="flex-1 py-2.5 rounded-xl border border-border-soft text-text-charcoal hover:bg-bg-linen text-xs font-semibold tracking-tight transition-all active:scale-98"
-            >
-              Cancel Documentation
-            </button>
-          </>
+          <Button label="Cancel" variant="ghost" onPress={onCancel} style={{ flex: 1 }} />
         )}
-      </div>
-    </div>
+      </View>
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  sheet: {
+    backgroundColor: colors.cardPure,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    padding: 20,
+    gap: 12,
+  },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  title: { fontSize: 14, fontWeight: '800', color: colors.textCharcoal },
+  subtitle: { fontSize: 10, color: colors.textSlate, marginTop: 2 },
+
+  modeToggle: {
+    flexDirection: 'row',
+    backgroundColor: colors.bgLinen,
+    borderRadius: radius.md,
+    padding: 3,
+    gap: 3,
+  },
+  modeButton: { flex: 1, paddingVertical: 7, borderRadius: radius.sm, alignItems: 'center' },
+  modeButtonActive: { backgroundColor: colors.cardPure },
+  modeLabel: { fontSize: 10.5, fontWeight: '600', color: colors.textSlate },
+  modeLabelActive: { color: colors.textCharcoal },
+
+  viewfinder: {
+    aspectRatio: 4 / 3,
+    borderRadius: radius.xl,
+    overflow: 'hidden',
+    backgroundColor: '#121212',
+    borderWidth: 1,
+    borderColor: colors.borderSoft,
+  },
+  shutter: {
+    position: 'absolute',
+    bottom: 16,
+    alignSelf: 'center',
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    borderWidth: 4,
+    borderColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shutterInner: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: colors.statusError,
+  },
+
+  presetPane: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+    gap: 3,
+  },
+  presetTitle: { color: '#FFFFFF', fontSize: 12, fontWeight: '700', marginTop: 4 },
+  presetBody: { color: colors.textSlate, fontSize: 9.5, marginBottom: 8 },
+  presetGrid: { flexDirection: 'row', gap: 10 },
+  presetCard: {
+    width: 120,
+    borderRadius: radius.md,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
+  },
+  presetImage: { width: '100%', height: 64 },
+  presetCaption: {
+    fontSize: 8,
+    color: '#FFFFFF',
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    paddingHorizontal: 4,
+    paddingVertical: 3,
+    textAlign: 'center',
+  },
+
+  corner: { position: 'absolute', width: 16, height: 16, borderColor: 'rgba(255,255,255,0.45)' },
+  cornerTL: { top: 14, left: 14, borderTopWidth: 2, borderLeftWidth: 2 },
+  cornerTR: { top: 14, right: 14, borderTopWidth: 2, borderRightWidth: 2 },
+  cornerBL: { bottom: 14, left: 14, borderBottomWidth: 2, borderLeftWidth: 2 },
+  cornerBR: { bottom: 14, right: 14, borderBottomWidth: 2, borderRightWidth: 2 },
+
+  actions: { flexDirection: 'row', gap: 10 },
+});

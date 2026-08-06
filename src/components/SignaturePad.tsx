@@ -3,8 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useRef, useState, useEffect } from 'react';
-import { Pencil, RotateCcw, Check, ShieldCheck } from 'lucide-react';
+import { Check, Pencil, RotateCcw, ShieldCheck } from 'lucide-react-native';
+import React, { useMemo, useRef, useState } from 'react';
+import { PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
+import Svg, { Path } from 'react-native-svg';
+import { colors, radius, tints } from '../theme';
+import { Button, Divider } from './ui';
 
 interface SignaturePadProps {
   onSave: (signatureDataUrl: string) => void;
@@ -13,199 +17,226 @@ interface SignaturePadProps {
   customerName?: string;
 }
 
+const PAD_HEIGHT = 170;
+
 export default function SignaturePad({
   onSave,
   onCancel,
-  title = "Recipient's Signature Required",
-  customerName = "Alistair Thorne",
+  title = "Recipient's signature required",
+  customerName = 'the recipient',
 }: SignaturePadProps) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [hasSigned, setHasSigned] = useState(false);
+  /** Completed strokes, plus the one currently under the finger. */
+  const [strokes, setStrokes] = useState<string[]>([]);
+  const [currentStroke, setCurrentStroke] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+  const svgRef = useRef<Svg | null>(null);
+  const strokeRef = useRef('');
 
-    // Adjust canvas resolution for high-density screens (retina)
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
 
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
+        onPanResponderGrant: (event) => {
+          const { locationX, locationY } = event.nativeEvent;
+          strokeRef.current = `M${locationX.toFixed(1)},${locationY.toFixed(1)}`;
+          setCurrentStroke(strokeRef.current);
+        },
 
-    // Ink pen configurations
-    ctx.strokeStyle = '#1F1F1F'; // Rich charcoal
-    ctx.lineWidth = 2.5;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-  }, []);
+        onPanResponderMove: (event) => {
+          const { locationX, locationY } = event.nativeEvent;
+          strokeRef.current += ` L${locationX.toFixed(1)},${locationY.toFixed(1)}`;
+          setCurrentStroke(strokeRef.current);
+        },
 
-  // Drawing event handlers (Mouse)
-  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+        onPanResponderRelease: () => {
+          const finished = strokeRef.current;
+          strokeRef.current = '';
+          setCurrentStroke('');
+          // A tap with no drag leaves a single moveto — not worth keeping.
+          if (finished.includes('L')) setStrokes((prev) => [...prev, finished]);
+        },
+      }),
+    []
+  );
 
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+  const hasSigned = strokes.length > 0 || currentStroke.includes('L');
 
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    setIsDrawing(true);
-    setHasSigned(true);
+  const clear = () => {
+    strokeRef.current = '';
+    setCurrentStroke('');
+    setStrokes([]);
   };
 
-  const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+  const confirm = () => {
+    if (!hasSigned || saving) return;
+    setSaving(true);
 
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const finish = (value: string) => {
+      setSaving(false);
+      onSave(value);
+    };
 
-    ctx.lineTo(x, y);
-    ctx.stroke();
-  };
+    // react-native-svg can rasterise the pad straight to a PNG.
+    const ref = svgRef.current as (Svg & { toDataURL?: (cb: (b64: string) => void) => void }) | null;
 
-  const stopDrawing = () => {
-    setIsDrawing(false);
-  };
+    if (ref?.toDataURL) {
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          finish(`freshfold-signature:${strokes.join(' ')}`);
+        }
+      }, 2500);
 
-  // Drawing event handlers (Touch)
-  const startDrawingTouch = (e: React.TouchEvent<HTMLCanvasElement>) => {
-    if (e.touches.length === 0) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const touch = e.touches[0];
-    const x = touch.clientX - rect.left;
-    const y = touch.clientY - rect.top;
-
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-    setIsDrawing(true);
-    setHasSigned(true);
-  };
-
-  const drawTouch = (e: React.TouchEvent<HTMLCanvasElement>) => {
-    if (!isDrawing || e.touches.length === 0) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const touch = e.touches[0];
-    const x = touch.clientX - rect.left;
-    const y = touch.clientY - rect.top;
-
-    ctx.lineTo(x, y);
-    ctx.stroke();
-  };
-
-  // Reset Canvas
-  const clearCanvas = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    setHasSigned(false);
-  };
-
-  // Save Signature as Data URL
-  const handleConfirm = () => {
-    const canvas = canvasRef.current;
-    if (!canvas || !hasSigned) return;
-
-    // Save
-    const dataUrl = canvas.toDataURL('image/png');
-    onSave(dataUrl);
+      ref.toDataURL((base64) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        finish(`data:image/png;base64,${base64}`);
+      });
+    } else {
+      // Fallback: keep the vector itself so the receipt still has a record.
+      finish(`freshfold-signature:${strokes.join(' ')}`);
+    }
   };
 
   return (
-    <div className="bg-white rounded-2xl border border-border-soft p-5 w-full flex flex-col space-y-4 shadow-sm" id="signature-pad-container">
-      {/* Title */}
-      <div className="flex items-center space-x-2 border-b border-border-soft pb-3">
-        <Pencil className="w-4 h-4 text-brand-sage" />
-        <div>
-          <h3 className="text-sm font-bold text-text-charcoal font-display">{title}</h3>
-          <p className="text-[10px] text-text-slate">Please have <span className="font-semibold text-brand-sage">{customerName}</span> sign below</p>
-        </div>
-      </div>
+    <View style={styles.sheet}>
+      <View style={styles.header}>
+        <Pencil size={18} color={colors.brandSage} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.title}>{title}</Text>
+          <Text style={styles.subtitle}>
+            Please have <Text style={styles.customer}>{customerName}</Text> sign below
+          </Text>
+        </View>
+      </View>
 
-      {/* Signature Canvas Box */}
-      <div className="relative border border-dashed border-brand-stone/80 rounded-xl bg-bg-ivory/50 h-36 overflow-hidden">
-        {/* Subtle Sign Line */}
-        <div className="absolute bottom-8 left-6 right-6 border-b border-brand-stone/40 pointer-events-none flex justify-between">
-          <span className="text-[9px] font-mono text-brand-stone uppercase tracking-wider">X Sign here</span>
-          <span className="text-[8px] font-mono text-brand-stone">Security encrypted signature</span>
-        </div>
+      <View style={styles.pad} {...panResponder.panHandlers}>
+        <View style={styles.signLine} pointerEvents="none">
+          <Text style={styles.signHint}>X SIGN HERE</Text>
+          <Text style={styles.signHintRight}>Encrypted signature</Text>
+        </View>
 
-        <canvas
-          ref={canvasRef}
-          className="absolute inset-0 w-full h-full cursor-crosshair touch-none"
-          onMouseDown={startDrawing}
-          onMouseMove={draw}
-          onMouseUp={stopDrawing}
-          onMouseLeave={stopDrawing}
-          onTouchStart={startDrawingTouch}
-          onTouchMove={drawTouch}
-          onTouchEnd={stopDrawing}
+        <Svg ref={svgRef} style={StyleSheet.absoluteFill} pointerEvents="none">
+          {strokes.map((d, i) => (
+            <Path
+              key={i}
+              d={d}
+              stroke={colors.textCharcoal}
+              strokeWidth={2.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              fill="none"
+            />
+          ))}
+          {currentStroke !== '' && (
+            <Path
+              d={currentStroke}
+              stroke={colors.textCharcoal}
+              strokeWidth={2.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              fill="none"
+            />
+          )}
+        </Svg>
+      </View>
+
+      <View style={styles.notice}>
+        <ShieldCheck size={14} color={colors.brandSage} />
+        <Text style={styles.noticeText}>
+          By signing, the recipient verifies the garment count matches and accepts the
+          conditions of care.
+        </Text>
+      </View>
+
+      <Divider />
+
+      <View style={styles.actions}>
+        <Button
+          label="Clear pad"
+          variant="ghost"
+          onPress={clear}
+          disabled={!hasSigned}
+          icon={<RotateCcw size={14} color={colors.textCharcoal} />}
+          style={{ flex: 1 }}
         />
-      </div>
-
-      {/* Security note */}
-      <div className="flex items-center space-x-1.5 text-[9px] text-text-slate bg-bg-linen/50 px-2 py-1.5 rounded-lg">
-        <ShieldCheck className="w-3.5 h-3.5 text-brand-sage shrink-0" />
-        <span>By signing, recipient verifies garment count matches precisely and accepts conditions of care.</span>
-      </div>
-
-      {/* Actions */}
-      <div className="flex space-x-3 pt-1">
-        <button
-          onClick={clearCanvas}
-          type="button"
+        <Button
+          label="Confirm slip"
+          onPress={confirm}
           disabled={!hasSigned}
-          className="flex-1 flex items-center justify-center space-x-1.5 py-2.5 rounded-xl border border-border-soft text-text-charcoal hover:bg-bg-linen disabled:opacity-40 disabled:hover:bg-transparent text-xs font-semibold tracking-tight transition-all active:scale-98"
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-          <span>Clear Pad</span>
-        </button>
-
-        <button
-          onClick={handleConfirm}
-          type="button"
-          disabled={!hasSigned}
-          className="flex-1 flex items-center justify-center space-x-1.5 py-2.5 rounded-xl bg-brand-sage text-white disabled:opacity-40 disabled:hover:opacity-40 hover:bg-brand-sage/95 text-xs font-semibold tracking-tight transition-all active:scale-98 shadow-xs"
-        >
-          <Check className="w-3.5 h-3.5" />
-          <span>Confirm Slip</span>
-        </button>
-      </div>
+          loading={saving}
+          icon={<Check size={15} color="#FFFFFF" />}
+          style={{ flex: 1 }}
+        />
+      </View>
 
       {onCancel && (
-        <button
-          onClick={onCancel}
-          type="button"
-          className="text-center text-[10px] text-text-slate hover:text-text-charcoal transition-colors py-0.5"
-        >
-          Cancel Signature Entry
-        </button>
+        <Pressable onPress={onCancel} hitSlop={8} style={styles.cancel}>
+          <Text style={styles.cancelLabel}>Cancel signature entry</Text>
+        </Pressable>
       )}
-    </div>
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  sheet: {
+    backgroundColor: colors.cardPure,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    padding: 20,
+    gap: 12,
+  },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  title: { fontSize: 14, fontWeight: '800', color: colors.textCharcoal },
+  subtitle: { fontSize: 10, color: colors.textSlate, marginTop: 2 },
+  customer: { color: colors.brandSage, fontWeight: '700' },
+
+  pad: {
+    height: PAD_HEIGHT,
+    borderRadius: radius.xl,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: colors.brandStone,
+    backgroundColor: colors.bgIvory,
+    overflow: 'hidden',
+  },
+  signLine: {
+    position: 'absolute',
+    left: 24,
+    right: 24,
+    bottom: 34,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    borderBottomWidth: 1,
+    borderBottomColor: colors.brandStone,
+    paddingBottom: 3,
+  },
+  signHint: {
+    fontSize: 9,
+    letterSpacing: 1,
+    color: colors.brandStone,
+    fontWeight: '700',
+  },
+  signHintRight: { fontSize: 8, color: colors.brandStone },
+
+  notice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: tints.stone30,
+    borderRadius: radius.md,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  noticeText: { flex: 1, fontSize: 9.5, color: colors.textSlate, lineHeight: 13 },
+
+  actions: { flexDirection: 'row', gap: 10 },
+  cancel: { alignItems: 'center', paddingVertical: 2 },
+  cancelLabel: { fontSize: 10.5, color: colors.textSlate },
+});

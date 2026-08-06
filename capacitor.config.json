@@ -1,6 +1,0 @@
-{
-  "appId": "com.freshfold.dispatch",
-  "appName": "FreshFold Mobile",
-  "webDir": "dist",
-  "bundledWebRuntime": false
-}

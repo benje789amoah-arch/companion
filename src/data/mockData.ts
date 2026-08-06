@@ -6,7 +6,7 @@
 import { Order, RiderState, Message, Notification } from '../types';
 
 // The FreshFold Central Laundry Hub coordinates (KNUST Commercial Area / Great Hall)
-export const LAUNDRY_HUB_COORDS = { x: 50, y: 50, lat: 6.6720, lng: -1.5680 };
+export const LAUNDRY_HUB_COORDS = { lat: 6.6720, lng: -1.5680 };
 
 export const INITIAL_RIDER: RiderState = {
   id: "FF-R-204",
@@ -21,7 +21,7 @@ export const INITIAL_RIDER: RiderState = {
   gpsAccuracy: 1.5,
   speed: 0,
   heading: 180,
-  coords: { x: 45, y: 45, lat: 6.6730, lng: -1.5700 }, // Near KNUST Main Gate / Commercial Area
+  coords: { lat: 6.6730, lng: -1.5700 }, // Near KNUST Main Gate / Commercial Area
   todayDistance: 0.0,
   todayEarnings: 0.0,
   completedCount: 0,
@@ -37,7 +37,7 @@ export const INITIAL_ORDERS: Order[] = [
     customerName: "Ama Serwaah",
     customerPhone: "+233 550 192 831",
     pickupAddress: "Unity Hall (Conti), Block C, Room 102",
-    pickupCoords: { x: 28, y: 32, lat: 6.6765, lng: -1.5695 },
+    pickupCoords: { lat: 6.6765, lng: -1.5695 },
     deliveryAddress: "FreshFold Laundry Hub (KNUST Commercial Area)",
     deliveryCoords: LAUNDRY_HUB_COORDS,
     laundryType: "Traditional Kente Cloth & Silk Stole",
@@ -60,7 +60,7 @@ export const INITIAL_ORDERS: Order[] = [
     customerName: "Kofi Mensah",
     customerPhone: "+233 240 419 844",
     pickupAddress: "Ayeduase Gate, Millennium Hostel",
-    pickupCoords: { x: 38, y: 40, lat: 6.6685, lng: -1.5580 },
+    pickupCoords: { lat: 6.6685, lng: -1.5580 },
     deliveryAddress: "FreshFold Laundry Hub (KNUST Commercial Area)",
     deliveryCoords: LAUNDRY_HUB_COORDS,
     laundryType: "Linen Shirts & Designer Khakis",
@@ -82,7 +82,7 @@ export const INITIAL_ORDERS: Order[] = [
     customerName: "Adwoa Osei",
     customerPhone: "+233 500 887 261",
     pickupAddress: "Bomso, Jubilee Apartment Complex, Penthouse 4B",
-    pickupCoords: { x: 65, y: 24, lat: 6.6835, lng: -1.5790 },
+    pickupCoords: { lat: 6.6835, lng: -1.5790 },
     deliveryAddress: "FreshFold Laundry Hub (KNUST Commercial Area)",
     deliveryCoords: LAUNDRY_HUB_COORDS,
     laundryType: "Premium Comforter Shell & Egyptian Sheets",
@@ -106,7 +106,7 @@ export const INITIAL_ORDERS: Order[] = [
     customerName: "Prof. Acheampong Office",
     customerPhone: "+233 200 991 111",
     pickupAddress: "KNUST Vice Chancellor Lodge, Lodge Hill Road",
-    pickupCoords: { x: 55, y: 72, lat: 6.6775, lng: -1.5735 },
+    pickupCoords: { lat: 6.6775, lng: -1.5735 },
     deliveryAddress: "FreshFold Laundry Hub (KNUST Commercial Area)",
     deliveryCoords: LAUNDRY_HUB_COORDS,
     laundryType: "Academic Gowns & Velvet Hood Sets",
@@ -173,38 +173,4 @@ export const INITIAL_MESSAGES: Message[] = [
     timestamp: "19:03",
     orderId: "order-1"
   }
-];
-
-// Map decoration points for drawing buildings, streets, and parks
-export const MAP_BUILDINGS = [
-  { id: "b1", x: 10, y: 15, w: 15, h: 20, label: "Unity Hall" },
-  { id: "b2", x: 30, y: 10, w: 20, h: 15, label: "University Hall" },
-  { id: "b3", x: 60, y: 12, w: 18, h: 22, label: "Republic Hall" },
-  { id: "b4", x: 80, y: 15, w: 15, h: 30, label: "Independence Hall" },
-  { id: "b5", x: 15, y: 45, w: 20, h: 25, label: "Great Hall" },
-  { id: "b6", x: 75, y: 55, w: 20, h: 25, label: "Commercial Area" },
-  { id: "b7", x: 10, y: 75, w: 25, h: 18, label: "Ayeduase Millennium" },
-  { id: "b8", x: 65, y: 78, w: 18, h: 18, label: "Jubilee Apartments" }
-];
-
-export const MAP_PARKS = [
-  { id: "p1", x: 5, y: 5, w: 18, h: 18, name: "KNUST Botanical Gardens" },
-  { id: "p2", x: 45, y: 78, w: 15, h: 18, name: "Republic Garden" },
-  { id: "p3", x: 85, y: 5, w: 12, h: 15, name: "Lakeside Park" }
-];
-
-export const MAP_STREETS = [
-  // Horizontal Streets
-  { id: "s1", y: 10, x1: 0, x2: 100, name: "Juffrey Hill Road" },
-  { id: "s2", y: 30, x1: 0, x2: 100, name: "Lodge Hill Road" },
-  { id: "s3", y: 50, x1: 0, x2: 100, name: "Commercial Road" },
-  { id: "s4", y: 70, x1: 0, x2: 100, name: "Ayeduase Road" },
-  { id: "s5", y: 90, x1: 0, x2: 100, name: "Kotei Road" },
-  
-  // Vertical Streets
-  { id: "s6", x: 15, y1: 0, y2: 100, name: "West Gate Ave" },
-  { id: "s7", x: 35, y1: 0, y2: 100, name: "Great Hall Boulevard" },
-  { id: "s8", x: 55, y1: 0, y2: 100, name: "Club Road" },
-  { id: "s9", x: 75, y1: 0, y2: 100, name: "East Gate Link" },
-  { id: "s10", x: 92, y1: 0, y2: 100, name: "Mango Road" }
 ];

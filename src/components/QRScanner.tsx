@@ -3,9 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
-import { QrCode, Camera, ShieldCheck, Zap, Laptop, Layers, ClipboardCheck, ArrowRight } from 'lucide-react';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Haptics from 'expo-haptics';
+import { ArrowRight, ClipboardCheck, Layers, QrCode, ShieldCheck } from 'lucide-react-native';
+import React, { useCallback, useRef, useState } from 'react';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { colors, radius, tints } from '../theme';
 import { LaundryBag, Order } from '../types';
+import { Button, Divider } from './ui';
 
 interface QRScannerProps {
   order: Order;
@@ -13,241 +18,360 @@ interface QRScannerProps {
   onCancel?: () => void;
 }
 
-export default function QRScanner({
-  order,
-  onScanComplete,
-  onCancel,
-}: QRScannerProps) {
-  const [bags, setBags] = useState<LaundryBag[]>(
-    order.bags.map(bag => ({ ...bag }))
-  );
-  const [activeTab, setActiveTab] = useState<'simulated' | 'webcam'>('simulated');
-  const [isScanningWebcam, setIsScanningWebcam] = useState(false);
-  const [flashOn, setFlashOn] = useState(false);
-  const [scanningStatus, setScanningStatus] = useState<string>('Align barcode or QR code inside the bounding frame');
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+type ScannerMode = 'simulated' | 'camera';
 
-  // Auto-simulate scanning after a short delay for simulated tab
-  const handleSimulateScanBag = (bagId: string) => {
-    setBags(prev =>
-      prev.map(b => (b.id === bagId ? { ...b, scanned: true } : b))
-    );
-    setScanningStatus(`Successfully scanned bag ${bagId} | Code registered.`);
+export default function QRScanner({ order, onScanComplete, onCancel }: QRScannerProps) {
+  const [bags, setBags] = useState<LaundryBag[]>(() => order.bags.map((bag) => ({ ...bag })));
+  const [mode, setMode] = useState<ScannerMode>('simulated');
+  const [status, setStatus] = useState('Align barcode or QR code inside the bounding frame');
+  const [permission, requestPermission] = useCameraPermissions();
+
+  // The camera fires continuously; ignore repeats of a code we just handled.
+  const lastCodeRef = useRef<{ value: string; at: number } | null>(null);
+
+  const allScanned = bags.every((b) => b.scanned);
+
+  const markScanned = useCallback((bagId: string) => {
+    setBags((prev) => prev.map((b) => (b.id === bagId ? { ...b, scanned: true } : b)));
+  }, []);
+
+  const handleSimulateScan = (bag: LaundryBag) => {
+    markScanned(bag.id);
+    setStatus(`Scanned ${bag.qrCode} — code registered.`);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
   };
 
-  const handleSimulateScanAll = () => {
-    setBags(prev => prev.map(b => ({ ...b, scanned: true })));
-    setScanningStatus("All bags scanned and verified successfully.");
+  const handleScanAll = () => {
+    setBags((prev) => prev.map((b) => ({ ...b, scanned: true })));
+    setStatus('All bags scanned and verified successfully.');
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
   };
 
-  // Check if all bags are scanned
-  const allBagsScanned = bags.every(b => b.scanned);
+  const handleBarcodeScanned = useCallback(
+    ({ data }: { data: string }) => {
+      const now = Date.now();
+      if (lastCodeRef.current?.value === data && now - lastCodeRef.current.at < 2000) return;
+      lastCodeRef.current = { value: data, at: now };
 
-  const handleConfirmScans = () => {
-    if (allBagsScanned) {
-      onScanComplete(bags);
-    }
-  };
+      const match = bags.find(
+        (b) => b.qrCode.toLowerCase() === data.trim().toLowerCase() && !b.scanned
+      );
 
-  // Webcam setup
-  const startWebcam = async () => {
-    try {
-      setIsScanningWebcam(true);
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' }
-      });
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
+      if (match) {
+        markScanned(match.id);
+        setStatus(`Verified ${match.qrCode} — ${match.type}.`);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      } else {
+        setStatus(`Unrecognised label "${data}". Not part of ${order.orderNumber}.`);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
       }
-      setScanningStatus("Webcam initialized. Align bag barcode within frame...");
-    } catch (err) {
-      console.warn("Webcam access declined or unavailable, defaulting to simulated high-fidelity scanner.", err);
-      setActiveTab('simulated');
-      setIsScanningWebcam(false);
-      setScanningStatus("Webcam unavailable. Simulated high-fidelity scanner active.");
+    },
+    [bags, markScanned, order.orderNumber]
+  );
+
+  const enterCameraMode = async () => {
+    if (!permission?.granted) {
+      const result = await requestPermission();
+      if (!result.granted) {
+        setStatus('Camera access declined. Digital scanner remains available.');
+        return;
+      }
     }
+    setMode('camera');
+    setStatus('Camera live. Align a FreshFold bag label within the frame.');
   };
 
-  const stopWebcam = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-    setIsScanningWebcam(false);
-  };
-
-  useEffect(() => {
-    if (activeTab === 'webcam') {
-      startWebcam();
-    } else {
-      stopWebcam();
-    }
-    return () => stopWebcam();
-  }, [activeTab]);
+  const scannedCount = bags.filter((b) => b.scanned).length;
 
   return (
-    <div className="bg-white rounded-2xl border border-border-soft p-5 w-full flex flex-col space-y-4 shadow-md" id="qr-bag-scanner-container">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border-soft pb-3">
-        <div className="flex items-center space-x-2">
-          <QrCode className="w-5 h-5 text-brand-sage" />
-          <div>
-            <h3 className="text-sm font-bold text-text-charcoal font-display">FreshFold QR Bag Verification</h3>
-            <p className="text-[10px] text-text-slate">Order ID: <span className="font-mono font-bold text-brand-gold">{order.orderNumber}</span></p>
-          </div>
-        </div>
-        
-        {/* Tab Toggle */}
-        <div className="flex space-x-1 bg-bg-linen p-0.5 rounded-lg text-[9px] font-semibold">
-          <button
-            type="button"
-            onClick={() => setActiveTab('simulated')}
-            className={`px-2 py-1 rounded-md transition-all ${activeTab === 'simulated' ? 'bg-white text-text-charcoal shadow-xs' : 'text-text-slate hover:text-text-charcoal'}`}
-          >
-            Digital Scanner
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('webcam')}
-            className={`px-2 py-1 rounded-md transition-all ${activeTab === 'webcam' ? 'bg-white text-text-charcoal shadow-xs' : 'text-text-slate hover:text-text-charcoal'}`}
-          >
-            Live Camera
-          </button>
-        </div>
-      </div>
+    <View style={styles.sheet}>
+      <View style={styles.header}>
+        <QrCode size={20} color={colors.brandSage} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.title}>FreshFold QR bag verification</Text>
+          <Text style={styles.subtitle}>Order {order.orderNumber}</Text>
+        </View>
+      </View>
 
-      {/* VIEWFINDER SCREEN */}
-      <div className="relative aspect-video rounded-xl overflow-hidden bg-[#121212] border border-border-soft flex flex-col items-center justify-center">
-        {activeTab === 'webcam' && isScanningWebcam ? (
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            className="absolute inset-0 w-full h-full object-cover"
+      <View style={styles.modeToggle}>
+        <Pressable
+          onPress={() => setMode('simulated')}
+          style={[styles.modeButton, mode === 'simulated' && styles.modeButtonActive]}
+        >
+          <Text style={[styles.modeLabel, mode === 'simulated' && styles.modeLabelActive]}>
+            Digital scanner
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={enterCameraMode}
+          style={[styles.modeButton, mode === 'camera' && styles.modeButtonActive]}
+        >
+          <Text style={[styles.modeLabel, mode === 'camera' && styles.modeLabelActive]}>
+            Live camera
+          </Text>
+        </Pressable>
+      </View>
+
+      {/* Viewfinder */}
+      <View style={styles.viewfinder}>
+        {mode === 'camera' && permission?.granted ? (
+          <CameraView
+            style={StyleSheet.absoluteFill}
+            facing="back"
+            barcodeScannerSettings={{ barcodeTypes: ['qr', 'code128', 'ean13', 'pdf417'] }}
+            onBarcodeScanned={handleBarcodeScanned}
           />
         ) : (
-          /* Premium Simulated Scanner Graphic */
-          <div className="absolute inset-0 flex flex-col items-center justify-center p-4 text-center">
-            {/* Spinning background rings */}
-            <div className="absolute w-32 h-32 border border-brand-sage/20 rounded-full animate-spin [animation-duration:8s]"></div>
-            <div className="absolute w-24 h-24 border border-brand-gold/10 rounded-full animate-spin [animation-duration:4s] reverse"></div>
-            
-            <QrCode className="w-12 h-12 text-brand-sage/80 relative z-10 animate-pulse mb-2" />
-            <p className="text-white text-xs font-semibold tracking-wide relative z-10 font-display">Virtual Laser Alignment Active</p>
-            <p className="text-text-slate text-[9px] max-w-[180px] relative z-10 mt-1">Automatic recognition of FreshFold luxury canvas bag QR labels</p>
-          </div>
+          <View style={styles.viewfinderPlaceholder}>
+            <QrCode size={44} color={tints.sage30} />
+            <Text style={styles.viewfinderTitle}>Virtual laser alignment active</Text>
+            <Text style={styles.viewfinderBody}>
+              Automatic recognition of FreshFold luxury canvas bag QR labels
+            </Text>
+          </View>
         )}
 
-        {/* Viewfinder Bounding Corner Markers */}
-        <div className="absolute top-6 left-6 w-5 h-5 border-t-2 border-l-2 border-brand-gold rounded-tl-md"></div>
-        <div className="absolute top-6 right-6 w-5 h-5 border-t-2 border-r-2 border-brand-gold rounded-tr-md"></div>
-        <div className="absolute bottom-6 left-6 w-5 h-5 border-b-2 border-l-2 border-brand-gold rounded-bl-md"></div>
-        <div className="absolute bottom-6 right-6 w-5 h-5 border-b-2 border-r-2 border-brand-gold rounded-br-md"></div>
+        {/* Framing corners */}
+        <View style={[styles.corner, styles.cornerTL]} />
+        <View style={[styles.corner, styles.cornerTR]} />
+        <View style={[styles.corner, styles.cornerBL]} />
+        <View style={[styles.corner, styles.cornerBR]} />
 
-        {/* Red Laser Scanning Line (Moving) */}
-        <div className="absolute left-6 right-6 h-[1.5px] bg-status-error opacity-75 shadow-[0_0_8px_rgba(184,92,92,0.8)] animate-bounce [animation-duration:2.5s] top-1/2"></div>
+        <View style={styles.statusPill}>
+          <Text style={styles.statusText} numberOfLines={2}>
+            {status}
+          </Text>
+        </View>
+      </View>
 
-        {/* Flashlight button toggle */}
-        <button
-          type="button"
-          onClick={() => setFlashOn(!flashOn)}
-          className={`absolute bottom-3 right-3 p-1.5 rounded-full ${flashOn ? 'bg-brand-gold text-text-charcoal shadow-sm' : 'bg-black/45 text-white/80'} backdrop-blur-xs transition-colors`}
-        >
-          <Zap className="w-3.5 h-3.5" />
-        </button>
+      {/* Bag checklist */}
+      <View style={styles.checklistHeader}>
+        <Text style={styles.checklistTitle}>
+          Required bag checks ({scannedCount}/{bags.length})
+        </Text>
+        {!allScanned && mode === 'simulated' && (
+          <Pressable onPress={handleScanAll} style={styles.scanAll} hitSlop={6}>
+            <Text style={styles.scanAllLabel}>Auto-scan all bags</Text>
+            <ArrowRight size={12} color={colors.brandSage} />
+          </Pressable>
+        )}
+      </View>
 
-        {/* Floating status banner */}
-        <div className="absolute bottom-3 left-3 bg-black/60 text-white text-[8.5px] px-2.5 py-1 rounded-md font-sans tracking-tight max-w-[180px] truncate backdrop-blur-xs border border-white/10">
-          {scanningStatus}
-        </div>
-      </div>
+      <ScrollView style={styles.bagList} contentContainerStyle={{ gap: 8 }}>
+        {bags.map((bag) => (
+          <View key={bag.id} style={[styles.bagRow, bag.scanned && styles.bagRowScanned]}>
+            <View style={[styles.bagIcon, bag.scanned && styles.bagIconScanned]}>
+              <Layers
+                size={14}
+                color={bag.scanned ? colors.statusSuccess : colors.textSlate}
+              />
+            </View>
 
-      {/* RECONCILED BAGS QUEUE */}
-      <div className="space-y-2">
-        <div className="flex justify-between items-center text-[10px] uppercase font-bold tracking-widest text-text-slate">
-          <span>Required Bag Checks ({bags.filter(b => b.scanned).length}/{bags.length})</span>
-          {activeTab === 'simulated' && !allBagsScanned && (
-            <button
-              onClick={handleSimulateScanAll}
-              type="button"
-              className="text-brand-sage hover:text-brand-gold font-bold tracking-tight lowercase font-sans text-xs flex items-center space-x-1"
-            >
-              <span>Auto-scan all bags</span>
-              <ArrowRight className="w-3 h-3" />
-            </button>
-          )}
-        </div>
+            <View style={{ flex: 1 }}>
+              <View style={styles.bagTitleRow}>
+                <Text style={styles.bagType} numberOfLines={1}>
+                  {bag.type}
+                </Text>
+                <Text style={styles.bagWeight}>{bag.weight}</Text>
+              </View>
+              <Text style={styles.bagCode} numberOfLines={1}>
+                {bag.qrCode} • {bag.itemCount} items
+              </Text>
+            </View>
 
-        <div className="grid grid-cols-1 gap-2 max-h-36 overflow-y-auto pr-1">
-          {bags.map((bag) => (
-            <div
-              key={bag.id}
-              className={`flex items-center justify-between p-2.5 rounded-xl border transition-all ${
-                bag.scanned
-                  ? 'border-status-success/30 bg-status-success/5'
-                  : 'border-border-soft bg-bg-ivory'
-              }`}
-            >
-              <div className="flex items-center space-x-2.5">
-                <div className={`w-7 h-7 rounded-lg flex items-center justify-center border ${
-                  bag.scanned ? 'bg-status-success/15 border-status-success/25 text-status-success' : 'bg-brand-stone/15 border-brand-stone/35 text-text-slate'
-                }`}>
-                  <Layers className="w-3.5 h-3.5" />
-                </div>
-                <div>
-                  <div className="flex items-center space-x-1.5">
-                    <span className="text-[11px] font-bold text-text-charcoal">{bag.type}</span>
-                    <span className="text-[9px] px-1 bg-border-soft text-text-slate rounded-sm font-mono font-medium">{bag.weight}</span>
-                  </div>
-                  <div className="flex items-center space-x-1 text-[9.5px] text-text-slate font-mono">
-                    <span className="text-brand-gold font-semibold">{bag.qrCode}</span>
-                    <span>•</span>
-                    <span>{bag.itemCount} items</span>
-                  </div>
-                </div>
-              </div>
+            {bag.scanned ? (
+              <View style={styles.verified}>
+                <ClipboardCheck size={13} color={colors.statusSuccess} />
+                <Text style={styles.verifiedLabel}>Verified</Text>
+              </View>
+            ) : (
+              <Pressable
+                onPress={() => handleSimulateScan(bag)}
+                style={({ pressed }) => [styles.scanChip, pressed && { opacity: 0.8 }]}
+              >
+                <Text style={styles.scanChipLabel}>Scan QR</Text>
+              </Pressable>
+            )}
+          </View>
+        ))}
+      </ScrollView>
 
-              {bag.scanned ? (
-                <span className="text-[9.5px] font-bold text-status-success flex items-center space-x-1">
-                  <ClipboardCheck className="w-3.5 h-3.5 shrink-0" />
-                  <span>Verified</span>
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => handleSimulateScanBag(bag.id)}
-                  className="px-2.5 py-1 bg-brand-sage text-white text-[9.5px] font-bold rounded-lg hover:bg-brand-sage/90 transition-all active:scale-95"
-                >
-                  Scan QR
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
+      <Divider style={{ marginTop: 4 }} />
 
-      {/* VERIFICATION ACTIONS */}
-      <div className="flex space-x-3 pt-1 border-t border-border-soft">
-        <button
-          onClick={onCancel}
-          type="button"
-          className="flex-1 py-2.5 rounded-xl border border-border-soft text-text-charcoal hover:bg-bg-linen text-xs font-semibold tracking-tight transition-all active:scale-98"
-        >
-          Close Scanner
-        </button>
-
-        <button
-          onClick={handleConfirmScans}
-          type="button"
-          disabled={!allBagsScanned}
-          className="flex-1 py-2.5 rounded-xl bg-brand-sage text-white disabled:opacity-40 hover:bg-brand-sage/95 text-xs font-semibold tracking-tight transition-all active:scale-98 shadow-xs flex items-center justify-center space-x-1.5"
-        >
-          <ShieldCheck className="w-4 h-4" />
-          <span>Confirm {bags.length} Bags Loaded</span>
-        </button>
-      </div>
-    </div>
+      <View style={styles.actions}>
+        <Button label="Close" variant="ghost" onPress={onCancel} style={{ flex: 1 }} />
+        <Button
+          label={`Confirm ${bags.length} bags`}
+          onPress={() => onScanComplete(bags)}
+          disabled={!allScanned}
+          icon={<ShieldCheck size={15} color="#FFFFFF" />}
+          style={{ flex: 1.4 }}
+        />
+      </View>
+    </View>
   );
 }
+
+const styles = StyleSheet.create({
+  sheet: {
+    backgroundColor: colors.cardPure,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    padding: 20,
+    gap: 12,
+  },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  title: { fontSize: 14, fontWeight: '800', color: colors.textCharcoal },
+  subtitle: { fontSize: 10, color: colors.textSlate, marginTop: 2 },
+
+  modeToggle: {
+    flexDirection: 'row',
+    backgroundColor: colors.bgLinen,
+    borderRadius: radius.md,
+    padding: 3,
+    gap: 3,
+  },
+  modeButton: {
+    flex: 1,
+    paddingVertical: 7,
+    borderRadius: radius.sm,
+    alignItems: 'center',
+  },
+  modeButtonActive: { backgroundColor: colors.cardPure },
+  modeLabel: { fontSize: 10.5, fontWeight: '600', color: colors.textSlate },
+  modeLabelActive: { color: colors.textCharcoal },
+
+  viewfinder: {
+    aspectRatio: 16 / 10,
+    borderRadius: radius.xl,
+    overflow: 'hidden',
+    backgroundColor: '#121212',
+    borderWidth: 1,
+    borderColor: colors.borderSoft,
+  },
+  viewfinderPlaceholder: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+    gap: 4,
+  },
+  viewfinderTitle: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 6,
+  },
+  viewfinderBody: {
+    color: colors.textSlate,
+    fontSize: 9.5,
+    textAlign: 'center',
+    maxWidth: 200,
+  },
+  corner: {
+    position: 'absolute',
+    width: 20,
+    height: 20,
+    borderColor: colors.brandGold,
+  },
+  cornerTL: { top: 20, left: 20, borderTopWidth: 2, borderLeftWidth: 2, borderTopLeftRadius: 6 },
+  cornerTR: { top: 20, right: 20, borderTopWidth: 2, borderRightWidth: 2, borderTopRightRadius: 6 },
+  cornerBL: {
+    bottom: 20,
+    left: 20,
+    borderBottomWidth: 2,
+    borderLeftWidth: 2,
+    borderBottomLeftRadius: 6,
+  },
+  cornerBR: {
+    bottom: 20,
+    right: 20,
+    borderBottomWidth: 2,
+    borderRightWidth: 2,
+    borderBottomRightRadius: 6,
+  },
+  statusPill: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    bottom: 10,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    borderRadius: radius.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  statusText: { color: '#FFFFFF', fontSize: 9 },
+
+  checklistHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  checklistTitle: {
+    fontSize: 9.5,
+    fontWeight: '700',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: colors.textSlate,
+  },
+  scanAll: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  scanAllLabel: { fontSize: 11, fontWeight: '700', color: colors.brandSage },
+
+  bagList: { maxHeight: 150 },
+  bagRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 10,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.borderSoft,
+    backgroundColor: colors.bgIvory,
+  },
+  bagRowScanned: {
+    borderColor: tints.success30,
+    backgroundColor: tints.success10,
+  },
+  bagIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: tints.stone30,
+  },
+  bagIconScanned: { backgroundColor: tints.success10 },
+  bagTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  bagType: { fontSize: 11.5, fontWeight: '700', color: colors.textCharcoal, flexShrink: 1 },
+  bagWeight: {
+    fontSize: 9,
+    color: colors.textSlate,
+    backgroundColor: colors.borderSoft,
+    borderRadius: 3,
+    paddingHorizontal: 4,
+    overflow: 'hidden',
+  },
+  bagCode: {
+    fontSize: 9.5,
+    color: colors.textSlate,
+    marginTop: 2,
+    ...Platform.select({ ios: { fontFamily: 'Menlo' }, android: { fontFamily: 'monospace' } }),
+  },
+  verified: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  verifiedLabel: { fontSize: 9.5, fontWeight: '700', color: colors.statusSuccess },
+  scanChip: {
+    backgroundColor: colors.brandSage,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radius.md,
+  },
+  scanChipLabel: { fontSize: 9.5, fontWeight: '700', color: '#FFFFFF' },
+
+  actions: { flexDirection: 'row', gap: 10 },
+});
