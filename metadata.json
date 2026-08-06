@@ -1,0 +1,10 @@
+{
+  "name": "Remix FreshFold Dispatch",
+  "description": "Premium dispatch rider and operations application for FreshFold Laundry Co. featuring real-time tracking, optimized routing, and elegant pickup/delivery workflows.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
