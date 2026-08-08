@@ -158,11 +158,11 @@ export const shadow: Record<'xs' | 'md' | 'lg', Shadow> = {
 export const DEFAULT_AVATAR =
   'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200';
 
-/** `navigating_to_pickup` -> `Navigating to pickup` */
-export function humanizeStatus(status: string): string {
-  const spaced = status.replace(/_/g, ' ');
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
-}
+/**
+ * `navigating_to_pickup` -> `Navigating to pickup`. Re-exported from the shared
+ * package so the rider console and the client portal label a status the same.
+ */
+export { humanizeStatus } from '@freshfold/core';
 
 export function formatCedis(amount: number): string {
   return `GH₵ ${amount.toFixed(2)}`;

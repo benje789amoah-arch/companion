@@ -3,10 +3,20 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { LAUNDRY_HUB } from '@freshfold/core';
 import { Order, RiderState, Message, Notification } from '../types';
 
-// The FreshFold Central Laundry Hub coordinates (KNUST Commercial Area / Great Hall)
-export const LAUNDRY_HUB_COORDS = { lat: 6.6720, lng: -1.5680 };
+/**
+ * Offline seed data.
+ *
+ * The dispatch server is the real source of these records — this is what the
+ * app falls back to when it cannot reach the server, so a rider with no signal
+ * still opens to a working console instead of an empty one. Everything here is
+ * replaced on the first successful poll.
+ */
+
+/** The hub, from the one geography both apps share. */
+export const LAUNDRY_HUB_COORDS = { lat: LAUNDRY_HUB.lat, lng: LAUNDRY_HUB.lng };
 
 export const INITIAL_RIDER: RiderState = {
   id: "FF-R-204",

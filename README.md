@@ -1,11 +1,33 @@
-# FreshFold Dispatch — Rider Companion
+# FreshFold
 
-A React Native / Expo app for FreshFold's laundry riders: accept dispatch offers, navigate to
-pickups on a live map, scan bag QR codes, capture proof photos and signatures, and hand off to
-the customer with an OTP.
+Two products and one backend, in one repository.
 
-Converted from the original Vite + React web prototype — the domain model, workflow and brand
-palette carry over unchanged; every UI surface is now native.
+- **The website** (`apps/web`) — the marketing site, the client portal customers
+  book and track through, and the admin dashboard.
+- **The rider app** (`apps/mobile`) — the Expo companion app couriers carry:
+  accept jobs, navigate, scan bags, capture proof, hand off.
+- **The dispatch server** (`apps/server`) — the single source of truth both of
+  them read and write.
+
+A pickup booked on the website appears on a rider's board. The rider's progress
+appears on the customer's tracking page. There is no second copy of the data and
+no manual re-keying between the two.
+
+## Layout
+
+```
+freshfold/
+├── apps/
+│   ├── web/        Vite + React + Tailwind — customer site, portal, admin
+│   ├── mobile/     Expo + React Native + expo-router — rider console
+│   └── server/     Express — REST API, Gemini chatbot, Paystack
+└── packages/
+    └── core/       Domain model, status mapping, geography, API client
+```
+
+npm workspaces. `packages/core` is consumed as TypeScript source by all three,
+so there is no build step between editing shared domain code and seeing it
+everywhere.
 
 ## Running it
 
@@ -13,68 +35,138 @@ palette carry over unchanged; every UI surface is now native.
 npm install
 ```
 
+Start the server and the website together:
+
 ```bash
-npx expo start
+npm run dev
 ```
 
-Then scan the QR code with **Expo Go** (Android/iOS), or press `a` / `i` to open an emulator.
-No API keys are needed to run the app.
+- website → http://localhost:3000
+- dispatch API → http://localhost:4000
 
-`npx expo start --web` also works for a quick browser look at the flows, with a coordinate
-readout standing in for the map — `react-native-maps` is iOS/Android only.
+Then, in a second terminal, the rider app:
 
-> **Expo Go version matters.** This project targets **Expo SDK 54**, and a given Expo Go build
-> supports exactly one SDK. If your Expo Go is built for a different SDK, the project will fail
-> to launch. Check the SDK your Expo Go supports on its home screen, and either match it here or
-> install the matching Expo Go.
+```bash
+npm run mobile
+```
 
-## Demo walkthrough
+Scan the QR code with **Expo Go**, or press `a` / `i` for an emulator. The app
+finds the dispatch server automatically by reusing the host of the Expo dev
+server — no IP address to configure, as long as both are on the same machine.
 
-1. **Splash → Auth.** Tap *Request access OTP* with any phone number, then enter `7801`.
-   Or use the Face ID button — real biometrics if the device has them enrolled, a simulated
-   scan if not.
-2. **Profile.** A rider with no saved profile lands here first. Fill in name and employee ID.
-3. **Home.** Toggle *Go online*. The floating **SIM** handle on the right edge opens the
-   simulation hub, which stands in for the dispatcher: generate mock orders, dispatch them,
-   fire alerts, or reset all state.
-4. **Accept a job**, then step through the workflow in the bottom sheet: start navigation
-   (the GPS position animates along the route), confirm arrival, scan the bag QR codes, take a
-   condition photo, and capture a signature.
-5. **Drop off at the hub**, wait for processing, then deliver. The delivery OTP is `7809`
-   (`4019` and `1234` also pass).
+> **Expo Go version matters.** This targets **Expo SDK 54**, and a given Expo Go
+> build supports exactly one SDK.
 
-## Architecture
+### Seeing the link work
 
-| Path | Purpose |
+1. Open the website, click **Schedule Pickup**, and book something.
+2. Open the rider app. The booking is in the backlog, already carrying a pickup
+   pin, a bag manifest with QR codes, a priority and a distance — all derived
+   server-side from the address and order value.
+3. Accept it and work through the steps. The bottom sheet drives the workflow.
+4. Back on the website, open the client portal for that booking. The stage
+   advances as the rider moves, and the dispatch map shows the courier's real
+   position reported from the phone.
+
+Everything also works with the server down — both apps fall back to local
+storage and behave exactly as they did before there was a backend.
+
+## How the two products share one record
+
+The website has always called a job a `Booking`; the rider app has always called
+it an `Order`. Both names are kept. They are projections of one server-side
+`Job`:
+
+```
+Booking (customer)  ←── jobToBooking ──  Job  ── jobToOrder ──→  Order (rider)
+   6 friendly stages                   15 dispatch states        15 dispatch states
+   payment, schedule                   canonical record          bags, coords, proof
+```
+
+`Job.status` is the finer of the two vocabularies, so the customer's stage is
+always derivable from it:
+
+| Rider sees | Customer sees |
 | --- | --- |
-| `app/` | expo-router routes — splash, auth, chat modal, and the five-tab console |
-| `src/store/AppStore.tsx` | Domain state (rider, orders, messages, alerts) + AsyncStorage persistence + the GPS simulation loop |
-| `src/store/SessionStore.tsx` | Auth/lock state for the console |
-| `src/components/` | `LiveMap` (`.web.tsx` fallback for browsers), `QRScanner`, `CameraCapture`, `SignaturePad`, plus shared UI primitives |
-| `src/theme.ts` | Brand tokens ported from the web build's Tailwind theme |
-| `src/data/mockData.ts` | Seed rider, orders, messages and alerts (KNUST campus, Kumasi) |
+| `unassigned`, `assigned` | Scheduled |
+| `navigating_to_pickup` … `arrived_at_laundry` | Collecting |
+| `dropped_off` | In Care |
+| `processing` | Ironing & Folding |
+| `ready_for_delivery`, `navigating_to_delivery`, `arrived_at_delivery` | Quality Check |
+| `delivered` | Delivered |
 
-State lives in one provider so the simulation ticks exactly once regardless of how many
-screens are showing a map, and so an order keeps ripening while the rider browses other tabs.
+Going the other way — an operator nudging a stage in the admin dashboard — is
+lossy, so `fromBookingStatus` picks the *earliest* dispatch state in the target
+stage rather than claiming work that has not happened.
 
-## Native capabilities
+The `id` is shared: `FFC-882049` is the customer's booking reference *and* the
+rider's job id, so one number means one thing in a support conversation.
 
-| Feature | Module | Notes |
+All of this lives in [`packages/core/src/job.ts`](packages/core/src/job.ts) and
+[`packages/core/src/status.ts`](packages/core/src/status.ts).
+
+## API
+
+Everything is under `/api`. The website reaches it through Vite's dev proxy; the
+rider app over the LAN.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /health` | Reachability probe both apps use to decide online/offline |
+| `GET/POST /bookings`, `GET/PATCH/DELETE /bookings/:id` | Customer view |
+| `GET/POST /orders` | Dispatch view |
+| `POST /orders/:id/accept`, `/decline` | Claiming a job (409 if already taken) |
+| `PATCH /orders/:id/status` | Workflow transitions, proof photos, signatures |
+| `GET /riders`, `GET/PATCH /riders/:id` | Presence and live telemetry |
+| `GET/POST /messages` | One conversation per job, all three surfaces |
+| `GET/POST /notifications`, `POST /notifications/:id/read` | Rider alerts |
+| `GET/PUT /accounts` | Customer accounts |
+| `GET/POST /transactions` | Payment ledger |
+| `GET /jobs` | Canonical records, for debugging |
+| `POST /reset` | Wipe back to seed data |
+| `POST /chat` | Gemini-backed "Foldie" concierge chatbot |
+| `POST /paystack/initialize`, `GET /paystack/verify/:ref` | Payments |
+
+Data is stored as JSON at `apps/server/data/db.json`, seeded on first run.
+Swapping in a real database means reimplementing `read`/`mutate` in
+[`apps/server/src/store.ts`](apps/server/src/store.ts) and nothing else — no
+route touches the filesystem directly.
+
+## Configuration
+
+Each app has a committed `.env.example`. Copy it to `.env` and fill in what you
+need; nothing is required to run the demo locally.
+
+| Variable | App | Needed for |
 | --- | --- | --- |
-| Live map, markers, route | `react-native-maps` | Google Maps on Android, Apple Maps on iOS. Wrapped in an error boundary — if the native map fails to load, the screen degrades to a coordinate panel instead of taking the app down |
-| Bag QR scanning | `expo-camera` | Real barcode scanning, with a tap-to-scan fallback |
-| Proof photos | `expo-camera` | Falls back to preset stock shots if the camera is unavailable |
-| Signature capture | `react-native-svg` + `PanResponder` | Rasterised to a PNG data URL |
-| Biometric unlock | `expo-local-authentication` | Simulated when no biometrics are enrolled |
-| Persistence | `@react-native-async-storage/async-storage` | Replaces the web build's `localStorage` |
+| `GEMINI_API_KEY` | server | The concierge chatbot |
+| `PAYSTACK_SECRET_KEY` | server | Real MoMo / card payments |
+| `APP_URL` | server | Paystack callback URLs |
+| `VITE_GOOGLE_MAPS_PLATFORM_KEY` | web | The live dispatch map |
+| `EXPO_PUBLIC_API_URL` | mobile | Only if the server isn't on the dev machine |
+| `EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY` | mobile | Standalone Android builds only |
 
-## Building a standalone app
-
-Expo Go covers the whole demo. For a standalone Android build, Google Maps needs your own key:
+## Building for production
 
 ```bash
-cp .env.example .env
+npm run build
+npm start
 ```
 
-Set `EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY`, then `npx expo prebuild` and build with EAS.
-iOS needs no key — it uses Apple Maps.
+`build` compiles the website to `apps/web/dist` and bundles the server to
+`apps/server/dist/server.cjs`. `start` runs the server, which serves the website
+itself — one process, one port.
+
+## Known limitations
+
+- **No authentication.** Account passwords are stored and compared as plain
+  strings, carried over from the original localStorage implementation. The API
+  is unauthenticated and CORS is fully open. This is fine on a laptop and on a
+  private network; it is not fine on the public internet. Hashing and real
+  sessions are the next piece of work.
+- **The rider's GPS is simulated.** Position is interpolated toward the
+  navigation target rather than read from the device, which is what makes the
+  demo work indoors. It is published to the server the same way a real fix would
+  be, so replacing the simulation is a change in one file.
+- **Sync is polling**, every 4–5 seconds. Fine at this scale; websockets or SSE
+  would be the upgrade.

@@ -14,13 +14,18 @@ import React, {
   useState,
 } from 'react';
 import {
-  Coords,
-  Message,
-  Notification,
-  Order,
-  OrderStatus,
-  RiderState,
-} from '../types';
+  LAUNDRY_HUB,
+  bearingBetween,
+  degreeGap,
+  distanceKm,
+  isOutsideServiceArea,
+  type Coords,
+  type Message,
+  type Notification,
+  type Order,
+  type OrderStatus,
+  type RiderState,
+} from '@freshfold/core';
 import {
   INITIAL_MESSAGES,
   INITIAL_NOTIFICATIONS,
@@ -28,7 +33,21 @@ import {
   INITIAL_RIDER,
   LAUNDRY_HUB_COORDS,
 } from '../data/mockData';
+import { RIDER_ID, api } from '../services/api';
 import { nowLabel } from '../theme';
+
+/**
+ * Rider-side domain state.
+ *
+ * The dispatch server owns the job board; this provider is the phone's view of
+ * it. Reads come from a poll, writes go out immediately and are applied
+ * locally first so the UI never waits on the network — a rider halfway up a
+ * stairwell should still be able to mark a pickup complete.
+ *
+ * When the server is unreachable everything keeps working against local state
+ * and AsyncStorage, exactly as it did before there was a server. `connected`
+ * says which mode we are in so the UI can be honest about it.
+ */
 
 const KEYS = {
   rider: 'freshfold_rider',
@@ -47,6 +66,8 @@ export interface NavigationTarget {
 
 interface AppState {
   hydrated: boolean;
+  /** True while the dispatch server is answering. */
+  connected: boolean;
   rider: RiderState;
   orders: Order[];
   messages: Message[];
@@ -79,46 +100,12 @@ interface AppState {
 
 const AppContext = createContext<AppState | null>(null);
 
-/** KNUST campus bounding box — anything outside it is stale persisted data. */
-function isOutsideCampus(coords?: Coords): boolean {
-  if (!coords) return false;
-  return coords.lat > 10 || coords.lat < 5 || coords.lng > 0 || coords.lng < -3;
-}
-
-/** Compass bearing from one point to another, in degrees. */
-function bearingBetween(from: Coords, to: Coords): number {
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const dLng = toRad(to.lng - from.lng);
-  const lat1 = toRad(from.lat);
-  const lat2 = toRad(to.lat);
-
-  const y = Math.sin(dLng) * Math.cos(lat2);
-  const x =
-    Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
-
-  return (((Math.atan2(y, x) * 180) / Math.PI) + 360) % 360;
-}
-
-/** Rough great-circle distance in km — good enough for an ETA readout. */
-function distanceKm(from: Coords, to: Coords): number {
-  const R = 6371;
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const dLat = toRad(to.lat - from.lat);
-  const dLng = toRad(to.lng - from.lng);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(from.lat)) * Math.cos(toRad(to.lat)) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
-}
-
-/** How far apart two points are in raw degrees — the sim's arrival test. */
-function degreeGap(from: Coords, to: Coords): number {
-  return Math.hypot(to.lat - from.lat, to.lng - from.lng);
-}
-
 const ARRIVAL_THRESHOLD_DEGREES = 0.0003;
 const SIM_TICK_MS = 950;
 const SIM_STEP_FRACTION = 0.22;
+const POLL_INTERVAL_MS = 4000;
+/** Don't spam the server with every simulated GPS tick. */
+const TELEMETRY_INTERVAL_MS = 3000;
 
 async function loadPersisted<T>(key: string, fallback: T): Promise<T> {
   try {
@@ -131,6 +118,7 @@ async function loadPersisted<T>(key: string, fallback: T): Promise<T> {
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
+  const [connected, setConnected] = useState(false);
   const [rider, setRider] = useState<RiderState>({ ...INITIAL_RIDER });
   const [orders, setOrders] = useState<Order[]>([...INITIAL_ORDERS]);
   const [messages, setMessages] = useState<Message[]>([...INITIAL_MESSAGES]);
@@ -139,6 +127,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   ]);
 
   const replyTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  /**
+   * Non-zero while a write is on the wire. A poll that lands mid-write carries
+   * a snapshot from before the change, and applying it would visibly rewind
+   * the workflow the rider just advanced.
+   */
+  const inFlight = useRef(0);
 
   useEffect(
     () => () => {
@@ -148,7 +142,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     []
   );
 
-  // Hydrate from device storage once on launch.
+  /** Fires a write at the server, tolerating failure so the app works offline. */
+  const push = useCallback(async <T,>(operation: () => Promise<T>): Promise<T | null> => {
+    inFlight.current += 1;
+    try {
+      const result = await operation();
+      setConnected(true);
+      return result;
+    } catch {
+      setConnected(false);
+      return null;
+    } finally {
+      inFlight.current -= 1;
+    }
+  }, []);
+
+  // Hydrate from device storage once on launch, so the first frame has data
+  // even before the server answers.
   useEffect(() => {
     let cancelled = false;
 
@@ -164,8 +174,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       // Guard against coordinates persisted by an older build of the app.
       const stale =
-        isOutsideCampus(savedRider?.coords) ||
-        (savedOrders ?? []).some((o) => isOutsideCampus(o?.pickupCoords));
+        isOutsideServiceArea(savedRider?.coords) ||
+        (savedOrders ?? []).some((o) => isOutsideServiceArea(o?.pickupCoords));
 
       if (stale) {
         await AsyncStorage.multiRemove(Object.values(KEYS));
@@ -207,6 +217,55 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [notifications, hydrated]);
 
+  /**
+   * Pull the board from the server.
+   *
+   * The rider's own telemetry (position, speed, heading) is deliberately *not*
+   * overwritten: this device is the authority on where it is, and the server's
+   * copy is always a few seconds behind what we just sent it.
+   */
+  const pull = useCallback(async () => {
+    if (inFlight.current > 0) return;
+
+    try {
+      const [serverOrders, serverMessages, serverNotifications, serverRider] =
+        await Promise.all([
+          api.listOrders({ riderId: RIDER_ID }),
+          api.listMessages(),
+          api.listNotifications(),
+          api.getRider(RIDER_ID),
+        ]);
+
+      if (inFlight.current > 0) return;
+
+      setOrders(serverOrders);
+      setMessages(serverMessages);
+      setNotifications(serverNotifications);
+      setRider((prev) => ({
+        ...prev,
+        rating: serverRider.rating,
+        todayDistance: serverRider.todayDistance,
+        todayEarnings: serverRider.todayEarnings,
+        completedCount: serverRider.completedCount,
+        onTimeRate: serverRider.onTimeRate,
+        acceptanceRate: serverRider.acceptanceRate,
+        completionRate: serverRider.completionRate,
+      }));
+      setConnected(true);
+    } catch {
+      setConnected(false);
+    }
+  }, []);
+
+  // Poll for anything the customer, the admin dashboard or the hub changed.
+  useEffect(() => {
+    if (!hydrated) return;
+
+    void pull();
+    const timer = setInterval(() => void pull(), POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [hydrated, pull]);
+
   const activeOrder = useMemo(
     () =>
       orders.find(
@@ -241,7 +300,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       case 'navigating_to_laundry':
         return {
           coords: LAUNDRY_HUB_COORDS,
-          label: 'FreshFold Central Laundry Hub',
+          label: LAUNDRY_HUB.name,
           arrivalStatus: 'arrived_at_laundry',
         };
       case 'navigating_to_delivery':
@@ -257,12 +316,47 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const isNavigating = navigationTarget !== null;
 
-  const pushNotification = useCallback((notif: Omit<Notification, 'timestamp'>) => {
-    setNotifications((prev) => [{ ...notif, timestamp: nowLabel() }, ...prev]);
-  }, []);
+  const pushNotification = useCallback(
+    (notif: Omit<Notification, 'timestamp'>) => {
+      setNotifications((prev) => [{ ...notif, timestamp: nowLabel() }, ...prev]);
+      void push(() => api.postNotification({ ...notif, timestamp: nowLabel() }));
+    },
+    [push]
+  );
 
-  const updateRider = useCallback((updates: Partial<RiderState>) => {
-    setRider((prev) => ({ ...prev, ...updates }));
+  const updateRider = useCallback(
+    (updates: Partial<RiderState>) => {
+      setRider((prev) => ({ ...prev, ...updates }));
+
+      // Profile and presence changes matter to the customer's live map, so
+      // they go up straight away rather than waiting for the telemetry tick.
+      const { name, employeeId, vehicle, vehiclePlate, isOnline, batteryLevel } = updates;
+      if (
+        name !== undefined ||
+        employeeId !== undefined ||
+        vehicle !== undefined ||
+        vehiclePlate !== undefined ||
+        isOnline !== undefined ||
+        batteryLevel !== undefined
+      ) {
+        void push(() =>
+          api.updateRider(RIDER_ID, {
+            name,
+            employeeId,
+            vehicle,
+            vehiclePlate,
+            isOnline,
+            batteryLevel,
+          })
+        );
+      }
+    },
+    [push]
+  );
+
+  /** Optimistic local patch for one order. */
+  const patchOrder = useCallback((orderId: string, updates: Partial<Order>) => {
+    setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, ...updates } : o)));
   }, []);
 
   const dispatchOrder = useCallback(
@@ -270,9 +364,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const target = orders.find((o) => o.id === orderId);
       if (!target) return;
 
-      setOrders((prev) =>
-        prev.map((o) => (o.id === orderId ? { ...o, status: 'unassigned' } : o))
-      );
+      patchOrder(orderId, { status: 'unassigned' });
+      void push(() => api.updateOrderStatus(orderId, { status: 'unassigned' }));
 
       pushNotification({
         id: `notif-${Date.now()}`,
@@ -283,36 +376,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         read: false,
       });
     },
-    [orders, pushNotification]
+    [orders, patchOrder, push, pushNotification]
   );
 
   const acceptOrder = useCallback(
     (orderId: string) => {
-      setOrders((prev) =>
-        prev.map((o) => (o.id === orderId ? { ...o, status: 'assigned' } : o))
-      );
+      patchOrder(orderId, { status: 'assigned' });
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `msg-${Date.now()}`,
-          sender: 'dispatcher',
-          text: `${rider.name || 'Rider'} on ${rider.vehicle || 'Scooter'} (${
-            rider.vehiclePlate || 'N/A'
-          }) has accepted your contract and is preparing transit.`,
-          timestamp: nowLabel(),
-          orderId,
-        },
-      ]);
+      void (async () => {
+        const accepted = await push(() => api.acceptOrder(orderId, RIDER_ID));
+        // Another rider got there first — put it back on the board rather than
+        // letting this phone believe it owns the job.
+        if (accepted === null && connected) {
+          patchOrder(orderId, { status: 'unassigned' });
+        }
+      })();
     },
-    [rider.name, rider.vehicle, rider.vehiclePlate]
+    [connected, patchOrder, push]
   );
 
   const declineOrder = useCallback(
     (orderId: string) => {
-      setOrders((prev) =>
-        prev.map((o) => (o.id === orderId ? { ...o, status: 'unassigned' } : o))
-      );
+      patchOrder(orderId, { status: 'unassigned' });
+      void push(() => api.declineOrder(orderId, RIDER_ID));
 
       pushNotification({
         id: `notif-${Date.now()}`,
@@ -322,25 +408,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         read: false,
       });
     },
-    [rider.name, pushNotification]
+    [patchOrder, push, pushNotification, rider.name]
   );
 
   const updateOrderStatus = useCallback(
     (orderId: string, status: OrderStatus, photo?: string, signature?: string) => {
-      let target: Order | undefined;
+      const isPickupLeg =
+        status === 'navigating_to_pickup' ||
+        status === 'arrived_at_pickup' ||
+        status === 'pickup_scanned' ||
+        status === 'picked_up';
 
       setOrders((prev) =>
         prev.map((o) => {
           if (o.id !== orderId) return o;
-          target = o;
 
           const updated: Order = { ...o, status };
           if (photo) {
-            if (status === 'pickup_scanned') updated.pickupPhoto = photo;
+            if (isPickupLeg) updated.pickupPhoto = photo;
             else updated.deliveryPhoto = photo;
           }
           if (signature) {
-            if (status === 'picked_up') updated.pickupSignature = signature;
+            if (isPickupLeg) updated.pickupSignature = signature;
             else updated.deliverySignature = signature;
           }
           if (status === 'picked_up') updated.pickedUpAt = new Date().toISOString();
@@ -349,37 +438,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         })
       );
 
-      if (!target) return;
+      // Offline, nothing else is going to credit the completion, so do it here.
+      // Online the server owns these totals and the next poll brings them back.
+      if (status === 'delivered' && !connected) {
+        const completed = orders.find((o) => o.id === orderId);
+        setRider((prev) => ({
+          ...prev,
+          completedCount: prev.completedCount + 1,
+          todayEarnings: Number((prev.todayEarnings + (completed?.price ?? 0)).toFixed(2)),
+          todayDistance: Number((prev.todayDistance + (completed?.distance ?? 0)).toFixed(2)),
+        }));
+      }
 
-      // Keep the dispatcher feed alive alongside the workflow.
-      const name = rider.name || 'Rider';
-      const script: Partial<Record<OrderStatus, string>> = {
-        navigating_to_pickup: `${name} is navigating to KNUST Area Pickup Address: ${target.pickupAddress}.`,
-        arrived_at_pickup: `${name} has arrived outside. Preparing deluxe canvas bag validation scans.`,
-        picked_up: `Pristine pickup documented and confirmed. ${name} is securing garments on the scooter for transit to the Central Hub.`,
-        navigating_to_laundry: 'Rider is traveling towards FreshFold Central Hub.',
-        dropped_off:
-          'Garments checked in successfully at sterilization hub. Beginning meticulous organic cleaning process.',
-        navigating_to_delivery: `Scent-infused clean garments are packaged and transit is active. ${name} is navigating to delivery point.`,
-        delivered:
-          'Concierge delivery complete. Garments handed off beautifully. Thank you for choosing FreshFold.',
-      };
-
-      const text = script[status];
-      if (!text) return;
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `msg-${Date.now()}`,
-          sender: 'dispatcher',
-          text,
-          timestamp: nowLabel(),
-          orderId,
-        },
-      ]);
+      // The customer-facing narration for each step is written by the server,
+      // so both the rider's chat and the client portal show the same thread.
+      void push(() =>
+        api.updateOrderStatus(orderId, { status, riderId: RIDER_ID, photo, signature })
+      );
     },
-    [rider.name]
+    [connected, orders, push]
   );
 
   const arriveAtDestination = useCallback(() => {
@@ -420,6 +497,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [navigationTarget, rider.coords, arriveAtDestination]);
 
   /**
+   * Publish position to the server on a slow tick. This is what puts a moving
+   * courier on the customer's dispatch map, so it runs whenever the rider is
+   * online — not only while navigating.
+   */
+  const telemetryRef = useRef(rider);
+  telemetryRef.current = rider;
+
+  useEffect(() => {
+    if (!hydrated || !rider.isOnline) return;
+
+    const timer = setInterval(() => {
+      const current = telemetryRef.current;
+      void push(() =>
+        api.updateRider(RIDER_ID, {
+          coords: current.coords,
+          speed: current.speed,
+          heading: current.heading,
+          batteryLevel: current.batteryLevel,
+          gpsAccuracy: current.gpsAccuracy,
+          isOnline: current.isOnline,
+        })
+      );
+    }, TELEMETRY_INTERVAL_MS);
+
+    return () => clearInterval(timer);
+  }, [hydrated, rider.isOnline, push]);
+
+  /**
    * The hub "processes" a drop-off on its own. Driving it from the store rather
    * than the scanner callback means the order still ripens if the rider
    * navigates away mid-cycle.
@@ -442,22 +547,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [navigationTarget]);
 
+  const postMessage = useCallback(
+    (message: Message) => {
+      setMessages((prev) => [...prev, message]);
+      void push(() => api.postMessage(message));
+    },
+    [push]
+  );
+
   const sendRiderMessage = useCallback(
     (text: string) => {
       const orderId = activeOrder?.id;
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `msg-rider-${Date.now()}`,
-          sender: 'rider',
-          text,
-          timestamp: nowLabel(),
-          orderId,
-        },
-      ]);
+      postMessage({
+        id: `msg-rider-${Date.now()}`,
+        sender: 'rider',
+        text,
+        timestamp: nowLabel(),
+        orderId,
+      });
 
       // Dispatch "replies" a few seconds later so the console feels staffed.
+      // The reply is posted to the server too, so the customer sees the same
+      // exchange in their portal.
       const timer = setTimeout(() => {
         const lowered = text.toLowerCase();
         let replyText = 'Copy that. Operational details synchronized with the Admin Dashboard.';
@@ -472,16 +584,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           replyText = 'Digital receipt ledger is open. Signature received successfully.';
         }
 
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `msg-dispatcher-${Date.now()}`,
-            sender: 'dispatcher',
-            text: replyText,
-            timestamp: nowLabel(),
-            orderId,
-          },
-        ]);
+        postMessage({
+          id: `msg-dispatcher-${Date.now()}`,
+          sender: 'dispatcher',
+          text: replyText,
+          timestamp: nowLabel(),
+          orderId,
+        });
 
         pushNotification({
           id: `notif-chat-${Date.now()}`,
@@ -496,21 +605,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       replyTimers.current.push(timer);
     },
-    [activeOrder?.id, pushNotification]
+    [activeOrder?.id, postMessage, pushNotification]
   );
 
   const sendAdminMessage = useCallback(
     (sender: 'dispatcher' | 'customer', text: string) => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `msg-admin-${Date.now()}`,
-          sender,
-          text,
-          timestamp: nowLabel(),
-          orderId: activeOrder?.id,
-        },
-      ]);
+      postMessage({
+        id: `msg-admin-${Date.now()}`,
+        sender,
+        text,
+        timestamp: nowLabel(),
+        orderId: activeOrder?.id,
+      });
 
       pushNotification({
         id: `notif-admin-${Date.now()}`,
@@ -520,7 +626,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         read: false,
       });
     },
-    [activeOrder?.id, pushNotification]
+    [activeOrder?.id, postMessage, pushNotification]
   );
 
   const generateRandomOrder = useCallback(() => {
@@ -560,7 +666,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const orderNum = Math.floor(Math.random() * 9000) + 1000;
 
     const newOrder: Order = {
-      id: `order-${Date.now()}`,
+      // Same `FFC-` identity scheme the website issues, so a simulated job is
+      // indistinguishable from a real booking once it reaches the server.
+      id: `FFC-${Math.floor(100000 + Math.random() * 900000)}`,
       orderNumber: `FF-${orderNum}-PREMIUM`,
       customerName: pick(names),
       customerPhone: `+233 ${Math.floor(200 + Math.random() * 800)} ${Math.floor(
@@ -571,8 +679,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         lat: 6.6745 + (Math.random() * 0.02 - 0.01),
         lng: -1.5716 + (Math.random() * 0.02 - 0.01),
       },
-      deliveryAddress: 'FreshFold Laundry Hub (Commercial Area)',
-      deliveryCoords: { lat: 6.6745, lng: -1.5716 },
+      deliveryAddress: LAUNDRY_HUB.name,
+      deliveryCoords: LAUNDRY_HUB_COORDS,
       laundryType: pick(garments),
       bagCount,
       bags: Array.from({ length: bagCount }).map((_, i) => ({
@@ -597,6 +705,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
 
     setOrders((prev) => [newOrder, ...prev]);
+    void push(() => api.createOrder(newOrder));
 
     pushNotification({
       id: `notif-inject-${Date.now()}`,
@@ -605,13 +714,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       type: 'system',
       read: false,
     });
-  }, [pushNotification]);
+  }, [push, pushNotification]);
 
-  const markNotificationRead = useCallback((notifId: string) => {
-    setNotifications((prev) =>
-      prev.map((n) => (n.id === notifId ? { ...n, read: true } : n))
-    );
-  }, []);
+  const markNotificationRead = useCallback(
+    (notifId: string) => {
+      setNotifications((prev) =>
+        prev.map((n) => (n.id === notifId ? { ...n, read: true } : n))
+      );
+      void push(() => api.markNotificationRead(notifId));
+    },
+    [push]
+  );
 
   const resetSimulation = useCallback(async () => {
     replyTimers.current.forEach(clearTimeout);
@@ -622,11 +735,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setOrders([...INITIAL_ORDERS]);
     setMessages([...INITIAL_MESSAGES]);
     setNotifications([...INITIAL_NOTIFICATIONS]);
-  }, []);
+
+    // Reset the shared board too, otherwise the next poll would immediately
+    // restore everything this just cleared.
+    await push(() => fetch(`${api.baseUrl}/api/reset`, { method: 'POST' }));
+    await pull();
+  }, [pull, push]);
 
   const value = useMemo<AppState>(
     () => ({
       hydrated,
+      connected,
       rider,
       orders,
       messages,
@@ -650,6 +769,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }),
     [
       hydrated,
+      connected,
       rider,
       orders,
       messages,
