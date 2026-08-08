@@ -4,9 +4,10 @@
  */
 
 import {
+  ApiError,
   createClient,
+  type AuthSession,
   type Booking,
-  type PaymentTransaction,
   type UserAccount,
 } from '@freshfold/core';
 
@@ -36,6 +37,7 @@ const KEYS = {
   accounts: 'freshfold_accounts',
   auditLogs: 'freshfold_audit_logs',
   currentUser: 'freshfold_current_user',
+  authToken: 'freshfold_auth_token',
   queue: 'freshfold_pending_writes',
 } as const;
 
@@ -113,8 +115,7 @@ type PendingWrite =
   | { kind: 'booking:create'; booking: Booking }
   | { kind: 'booking:patch'; id: string; patch: Partial<Booking> }
   | { kind: 'booking:delete'; id: string }
-  | { kind: 'account:upsert'; account: UserAccount }
-  | { kind: 'transaction'; transaction: PaymentTransaction };
+  | { kind: 'account:upsert'; account: UserAccount };
 
 let queue: PendingWrite[] = readLocal<PendingWrite[]>(KEYS.queue, []);
 /** Non-zero while a write is in flight, so a poll can't clobber a fresh edit. */
@@ -139,9 +140,6 @@ async function send(write: PendingWrite): Promise<void> {
       return;
     case 'account:upsert':
       await api.upsertAccount(write.account);
-      return;
-    case 'transaction':
-      await api.recordTransaction(write.transaction);
       return;
   }
 }
@@ -326,10 +324,20 @@ function walletKey(email: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Session & audit log — deliberately local
+// Authentication
 // ---------------------------------------------------------------------------
 
-/** Who is signed in on *this* browser. Never leaves the device. */
+/**
+ * Passwords are never held here.
+ *
+ * The portal used to pull the whole account table into the browser and compare
+ * the password locally, which meant the server had to hand every visitor every
+ * credential. Now the password goes to `/api/auth/*` and comes back as a bearer
+ * token; the only things this module keeps are that token and the signed-in
+ * profile, both scoped to this browser.
+ */
+
+/** Who is signed in on *this* browser. */
 export function readCurrentUser(): UserAccount | null {
   return readLocal<UserAccount | null>(KEYS.currentUser, null);
 }
@@ -338,9 +346,85 @@ export function writeCurrentUser(account: UserAccount): void {
   writeLocal(KEYS.currentUser, account);
 }
 
+export function readAuthToken(): string | null {
+  return localStorage.getItem(KEYS.authToken);
+}
+
+function writeSession(session: AuthSession): UserAccount {
+  try {
+    localStorage.setItem(KEYS.authToken, session.token);
+  } catch {
+    /* see writeLocal */
+  }
+  writeCurrentUser(session.account);
+  return session.account;
+}
+
+export async function register(payload: {
+  email: string;
+  phone: string;
+  name: string;
+  password: string;
+}): Promise<UserAccount> {
+  return writeSession(await api.register(payload));
+}
+
+export async function login(identifier: string, password: string): Promise<UserAccount> {
+  return writeSession(await api.login({ identifier, password }));
+}
+
+/** Whether a contact already has a login, so the UI can offer the right path. */
+export async function authStatus(
+  identifier: string
+): Promise<{ exists: boolean; hasPassword: boolean }> {
+  return api.authStatus(identifier);
+}
+
+export async function logout(): Promise<void> {
+  const token = readAuthToken();
+  clearCurrentUser();
+  if (token) {
+    try {
+      await api.logout(token);
+    } catch {
+      // Already signed out locally; a failed revoke just leaves a token to
+      // expire on its own.
+    }
+  }
+}
+
+/**
+ * Re-validates the stored token on load. A token the server no longer honours
+ * means the cached profile is stale, so the session is dropped rather than
+ * leaving the portal showing someone who is not really signed in.
+ */
+export async function restoreSession(): Promise<UserAccount | null> {
+  const token = readAuthToken();
+  if (!token) return null;
+
+  try {
+    const account = await api.me(token);
+    writeCurrentUser(account);
+    return account;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) {
+      clearCurrentUser();
+      return null;
+    }
+    // Server unreachable — keep the cached profile rather than signing the
+    // customer out every time their connection drops.
+    return readCurrentUser();
+  }
+}
+
 export function clearCurrentUser(): void {
   localStorage.removeItem(KEYS.currentUser);
+  localStorage.removeItem(KEYS.authToken);
 }
+
+// ---------------------------------------------------------------------------
+// Audit log — deliberately local
+// ---------------------------------------------------------------------------
 
 export function readAuditLogs(): AuditLog[] {
   return mirror.auditLogs;
@@ -349,14 +433,6 @@ export function readAuditLogs(): AuditLog[] {
 export function writeAuditLogs(next: AuditLog[]): void {
   mirror.auditLogs = next;
   writeLocal(KEYS.auditLogs, next);
-}
-
-// ---------------------------------------------------------------------------
-// Transactions
-// ---------------------------------------------------------------------------
-
-export function recordTransaction(transaction: PaymentTransaction): void {
-  enqueue({ kind: 'transaction', transaction });
 }
 
 // ---------------------------------------------------------------------------

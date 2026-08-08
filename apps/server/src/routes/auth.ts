@@ -4,16 +4,8 @@
  */
 
 import { Router } from 'express';
-import {
-  accountForToken,
-  bearerToken,
-  createSession,
-  hashPassword,
-  requireAuth,
-  revokeSession,
-  sanitize,
-  verifyPassword,
-} from '../auth';
+import { bearerToken, createSession, requireAuth, revokeSession } from '../auth';
+import { hashPassword, sanitize, verifyPassword } from '../passwords';
 import { store, type StoredAccount } from '../store';
 
 /**
@@ -152,5 +144,3 @@ authRouter.post('/status', (req, res) => {
 
   res.json({ exists: Boolean(account), hasPassword: Boolean(account?.passwordHash) });
 });
-
-export { accountForToken };

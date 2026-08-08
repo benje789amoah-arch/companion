@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Booking, UserAccount } from '../types';
 import * as store from '../services/store';
+import { BOOKING_STAGE_SEQUENCE, bookingProgressPercent } from '@freshfold/core';
 import { 
   X, Shield, Lock, Smartphone, Mail, Sparkles, User, LogOut,
   MapPin, Calendar, Clock, ChevronRight, CheckCircle2, History,
@@ -205,8 +206,14 @@ export default function ClientPortal({
   const [savedSettingsMsg, setSavedSettingsMsg] = useState('');
   const [redeemedRewardMsg, setRedeemedRewardMsg] = useState('');
 
-  // Preset Profile Quick Switcher helper
-  const loginPresetUser = (preset: 'sena' | 'akwasi') => {
+  /**
+   * Preset Profile Quick Switcher helper.
+   *
+   * Signs in for real rather than fabricating a session: the demo patron is
+   * registered on the server the first time and signed in from then on, so the
+   * portal holds a genuine token and survives a reload like any other patron.
+   */
+  const loginPresetUser = async (preset: 'sena' | 'akwasi') => {
     const email = preset === 'sena' ? 'sena.kwami@knust.edu.gh' : 'akwasi.addai@gmail.com';
     const phone = preset === 'sena' ? '0244123456' : '0208112233';
     const name = preset === 'sena' ? 'Sena Kwami' : 'Akwasi Addai';
@@ -216,7 +223,6 @@ export default function ClientPortal({
     const presetUser: UserAccount = {
       email,
       phone,
-      passwordHash: 'password',
       name,
       createdAt: new Date().toISOString(),
       points
@@ -291,9 +297,25 @@ export default function ClientPortal({
 
     store.writeWallet(email, wallet);
     setWalletBalance(wallet);
-    store.writeCurrentUser(presetUser);
-    setCurrentUser(presetUser);
-    setLoginError('');
+
+    const DEMO_PASSWORD = 'password';
+    try {
+      setCurrentUser(await store.login(email, DEMO_PASSWORD));
+      setLoginError('');
+    } catch {
+      try {
+        setCurrentUser(await store.register({ email, phone, name, password: DEMO_PASSWORD }));
+        setLoginError('');
+      } catch (e) {
+        // No server to sign in against. Fall back to a local-only profile so
+        // the demo still opens; it just won't survive a reload.
+        store.writeCurrentUser(presetUser);
+        setCurrentUser(presetUser);
+        setLoginError(
+          e instanceof Error ? `Signed in locally — ${e.message}` : 'Signed in locally.'
+        );
+      }
+    }
   };
 
   // Load wallet balance whenever currentUser changes. The balance lives on the
@@ -369,10 +391,19 @@ export default function ClientPortal({
 
   // Check for active logged in session on mount
   useEffect(() => {
-    const savedSession = store.readCurrentUser();
-    if (savedSession) {
-      setCurrentUser(savedSession);
-    }
+    // Show the cached profile immediately, then check the token is still good.
+    // An expired or revoked session resolves to null and signs the patron out
+    // rather than leaving the portal looking authenticated when it isn't.
+    setCurrentUser(store.readCurrentUser());
+
+    let cancelled = false;
+    store.restoreSession().then((account) => {
+      if (!cancelled) setCurrentUser(account);
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Update userBookings when currentUser changes or activeBookings is updated
@@ -421,7 +452,7 @@ export default function ClientPortal({
   }, [bookingIdParam, setupModeParam]);
 
   // Handle setting/creating a new secure password
-  const handleSetupPasswordSubmit = (e: React.FormEvent) => {
+  const handleSetupPasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSetupError('');
     setSuccessMsg('');
@@ -442,44 +473,41 @@ export default function ClientPortal({
     }
 
     try {
-      const savedAccounts: UserAccount[] = store.readAccounts();
-      
-      // Check if account already exists
-      const emailExists = savedAccounts.some(a => a.email.toLowerCase() === setupBooking.email.toLowerCase());
-      const phoneExists = savedAccounts.some(a => a.phone === setupBooking.phone);
+      // Whether this contact already has a login is the server's call, not
+      // ours: a profile created by a booking exists but has no password yet,
+      // and claiming it is exactly what this form is for. The server returns a
+      // 409 only when a password is genuinely already set.
 
-      if (emailExists || phoneExists) {
-        setSetupError('An account is already configured for this user. Please proceed to the login panels instead.');
-        return;
-      }
-
-      const newAccount: UserAccount = {
+      // The password goes to the server and is hashed there. It is never held
+      // in this browser and never written into the account ledger.
+      const account = await store.register({
         email: setupBooking.email,
         phone: setupBooking.phone,
-        passwordHash: setupPassword, // Simply saved as text for simulation
         name: setupBooking.name,
-        createdAt: new Date().toISOString()
-      };
+        password: setupPassword
+      });
 
-      savedAccounts.push(newAccount);
-      store.writeAccounts(savedAccounts);
-      store.writeCurrentUser(newAccount);
-      
-      setCurrentUser(newAccount);
+      setCurrentUser(account);
       setSuccessMsg('Patron account certified successfully! Redirecting to tracking terminal...');
-      
+
       // Remove query hash parameters
       setTimeout(() => {
         window.location.hash = '#portal';
       }, 1500);
 
     } catch (e) {
-      setSetupError('Could not persist credentials ledger. Ensure local session is enabled.');
+      setSetupError(e instanceof Error ? e.message : 'Could not create your credentials. Please try again.');
     }
   };
 
-  // Perform email/phone + password authentication
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  /**
+   * Sign in.
+   *
+   * The password is posted to the server and compared there. This component
+   * never sees a stored credential — which is the point: the account list it
+   * can read carries no password material at all.
+   */
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
     setSuccessMsg('');
@@ -490,46 +518,30 @@ export default function ClientPortal({
     }
 
     try {
-      const savedAccounts: UserAccount[] = store.readAccounts();
-      
-      // Look up account matching email or phone
-      const matched = savedAccounts.find(account => {
-        const cleanInputIdx = inputIdentifier.toLowerCase().trim();
-        const cleanAccountEmail = account.email.toLowerCase().trim();
-        
-        const cleanInputPhone = inputIdentifier.replace(/[\s-+]/g, '');
-        const cleanAccountPhone = account.phone.replace(/[\s-+]/g, '');
-
-        return (cleanInputIdx === cleanAccountEmail || cleanInputPhone === cleanAccountPhone) && 
-               account.passwordHash === inputPassword;
+      const account = await store.login(inputIdentifier, inputPassword);
+      setCurrentUser(account);
+      setInputPassword('');
+      setSuccessMsg('Welcome back, Patron.');
+    } catch (e) {
+      // A rejected sign-in may just mean this patron has a booking but has
+      // never chosen a password, so point them at setup rather than leaving
+      // them stuck on "wrong credentials".
+      const bookingMatch = store.readBookings().find(b => {
+        const cleanInp = inputIdentifier.toLowerCase().trim();
+        return b.email.toLowerCase() === cleanInp || b.phone.replace(/[\s-+]/g, '') === cleanInp.replace(/[\s-+]/g, '');
       });
 
-      if (matched) {
-        store.writeCurrentUser(matched);
-        setCurrentUser(matched);
-        setSuccessMsg('Welcome back, Patron.');
+      if (bookingMatch) {
+        setLoginError(`We found your booking ${bookingMatch.id} under this contact! However, you haven't chosen a secure login password yet. Please check your WhatsApp/SMS tracking link or click below to initialize your password.`);
       } else {
-        // Offer helper to initialize since they might have a booking but no password
-        const allBookings: Booking[] = store.readBookings();
-        const bookingMatch = allBookings.find(b => {
-          const cleanInp = inputIdentifier.toLowerCase().trim();
-          return b.email.toLowerCase() === cleanInp || b.phone.replace(/[\s-+]/g, '') === cleanInp.replace(/[\s-+]/g, '');
-        });
-
-        if (bookingMatch) {
-          setLoginError(`We found your booking ${bookingMatch.id} under this contact! However, you haven't chosen a secure login password yet. Please check your WhatsApp/SMS tracking link or click below to initialize your password.`);
-        } else {
-          setLoginError('No matching patron credentials found. Please double-check formatting or schedule a pickup to sign up.');
-        }
+        setLoginError(e instanceof Error ? e.message : 'No matching patron credentials found. Please double-check formatting or schedule a pickup to sign up.');
       }
-    } catch (e) {
-      setLoginError('Security storage error.');
     }
   };
 
-  // Log currently active session out
+  // Log currently active session out, revoking the token server-side too.
   const handleSignOut = () => {
-    store.clearCurrentUser();
+    void store.logout();
     setCurrentUser(null);
     setInputPassword('');
     setInputIdentifier('');
@@ -541,9 +553,7 @@ export default function ClientPortal({
   const stepBookingProgress = (targetId: string) => {
     try {
       const allBookings: Booking[] = store.readBookings();
-      const statusCycle: Booking['status'][] = [
-        'Scheduled', 'Collecting', 'In Care', 'Ironing & Folding', 'Quality Check', 'Delivered'
-      ];
+      const statusCycle = BOOKING_STAGE_SEQUENCE;
       
       const updated = allBookings.map(b => {
         if (b.id === targetId) {
@@ -692,18 +702,9 @@ export default function ClientPortal({
     setSuccessMsg(`Wallet successfully topped up with ₵${amt}.00 GHS! New balance: ₵${newBal}.00 GHS`);
   };
 
-  // Helper to translate status string to numerical percentage
-  const getStatusPercent = (status: Booking['status']) => {
-    switch (status) {
-      case 'Scheduled': return 10;
-      case 'Collecting': return 30;
-      case 'In Care': return 55;
-      case 'Ironing & Folding': return 75;
-      case 'Quality Check': return 90;
-      case 'Delivered': return 100;
-      default: return 10;
-    }
-  };
+  // Progress percentage, from the shared stage model so the bar and the
+  // rider's dispatch status can never disagree about how far along a job is.
+  const getStatusPercent = bookingProgressPercent;
 
   // Helper to get status descriptions matching the luxurious FreshFold theme
   const getStatusDetail = (status: Booking['status']) => {
@@ -718,36 +719,34 @@ export default function ClientPortal({
     }
   };
 
-  // Auto-fill system helper for fast review
-  const tryDemoLogin = () => {
-    try {
-      const savedAccounts: UserAccount[] = store.readAccounts();
-      if (savedAccounts.length > 0) {
-        setInputIdentifier(savedAccounts[0].email);
-        setInputPassword(savedAccounts[0].passwordHash);
-      } else {
-        // Look up registered bookings, pick the first one and pre-setup
-        const allBookings: Booking[] = store.readBookings();
-        if (allBookings.length > 0) {
-          const first = allBookings[0];
-          const demoUser: UserAccount = {
-            email: first.email,
-            phone: first.phone,
-            passwordHash: 'password',
-            name: first.name,
-            createdAt: new Date().toISOString()
-          };
-          savedAccounts.push(demoUser);
-          store.writeAccounts(savedAccounts);
-          setInputIdentifier(first.email);
-          setInputPassword('password');
-          setLoginError('No logins compiled earlier. Automatically registered: ' + first.name + ' (Password: password) for instant trial!');
-        } else {
-          setLoginError('No active bookings recorded yet. Go back, schedule a pickup first to generate a tracking profile!');
-        }
-      }
-    } catch (e) {
-      setLoginError('Demo helper failed.');
+  /**
+   * Auto-fill helper for fast review.
+   *
+   * It can only fill the form now — it cannot read anybody's password, because
+   * no password is readable. Seeded demo accounts all use `password`; anyone
+   * else has to have set one through the setup link.
+   */
+  const tryDemoLogin = async () => {
+    const DEMO_PASSWORD = 'password';
+
+    const firstAccount = store.readAccounts()[0];
+    const candidate = firstAccount?.email ?? store.readBookings()[0]?.email;
+
+    if (!candidate) {
+      setLoginError('No active bookings recorded yet. Go back, schedule a pickup first to generate a tracking profile!');
+      return;
+    }
+
+    setInputIdentifier(candidate);
+    setInputPassword(DEMO_PASSWORD);
+
+    const status = await store.authStatus(candidate).catch(() => null);
+    if (status && !status.hasPassword) {
+      setLoginError(
+        `${candidate} has a booking but no login yet. Use the tracking link to choose a password first.`
+      );
+    } else {
+      setLoginError('');
     }
   };
 

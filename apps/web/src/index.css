@@ -11,7 +11,10 @@
   --color-brand-card: #161616;
   --color-brand-card-light: #242424;
   
-  /* Earthy olive and stone tones from theme */
+  /* Earthy olive and stone tones from theme.
+     Tuned for this dark surface. The rider app carries lighter variants of the
+     same roles in apps/mobile/src/theme.ts because it sits on ivory — they are
+     intentionally different values, not drift. */
   --color-brand-sage: #5A5A40;
   --color-brand-sage-dark: #3D3D2D;
   --color-brand-sage-light: #8C8C6A;

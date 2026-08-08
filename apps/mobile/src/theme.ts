@@ -5,7 +5,15 @@
 
 import { Platform, TextStyle } from 'react-native';
 
-/** Brand palette — ported 1:1 from the original Tailwind `@theme` block. */
+/**
+ * Brand palette for the rider console.
+ *
+ * These accents are deliberately *not* the same hex values as the website's
+ * (`apps/web/src/index.css`): sage is `#6F7A63` here against ivory, `#5A5A40`
+ * there against near-black. Same brand role, tuned for opposite backgrounds —
+ * lifting one set into the shared package would break contrast on whichever
+ * surface lost. The colours to keep in step are the *roles*, not the values.
+ */
 export const colors = {
   bgIvory: '#FAF9F6',
   bgLinen: '#F3F1EC',

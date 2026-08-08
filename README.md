@@ -113,6 +113,9 @@ rider app over the LAN.
 | Route | Purpose |
 | --- | --- |
 | `GET /health` | Reachability probe both apps use to decide online/offline |
+| `POST /auth/register`, `/auth/login` | Sign-up and sign-in; returns a bearer token |
+| `POST /auth/logout`, `GET /auth/me` | Revoke a token, validate one |
+| `POST /auth/status` | Whether a contact has a login yet — booleans only |
 | `GET/POST /bookings`, `GET/PATCH/DELETE /bookings/:id` | Customer view |
 | `GET/POST /orders` | Dispatch view |
 | `POST /orders/:id/accept`, `/decline` | Claiming a job (409 if already taken) |
@@ -140,8 +143,10 @@ need; nothing is required to run the demo locally.
 | Variable | App | Needed for |
 | --- | --- | --- |
 | `GEMINI_API_KEY` | server | The concierge chatbot |
+| `GEMINI_MODEL` | server | Overriding the chatbot model (default `gemini-3.5-flash`) |
 | `PAYSTACK_SECRET_KEY` | server | Real MoMo / card payments |
 | `APP_URL` | server | Paystack callback URLs |
+| `CORS_ORIGINS` | server | Locking the API to known origins in production |
 | `VITE_GOOGLE_MAPS_PLATFORM_KEY` | web | The live dispatch map |
 | `EXPO_PUBLIC_API_URL` | mobile | Only if the server isn't on the dev machine |
 | `EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY` | mobile | Standalone Android builds only |
@@ -157,13 +162,31 @@ npm start
 `apps/server/dist/server.cjs`. `start` runs the server, which serves the website
 itself — one process, one port.
 
+## Credentials
+
+Passwords are hashed with scrypt and never leave the server. A sign-in posts
+the attempt to `/api/auth/login`, which compares it server-side and returns a
+bearer token; the browser stores the token and a profile, never a credential.
+`GET /api/accounts` returns profile fields only, and `PUT /api/accounts` writes
+through an allow-list, so a password cannot be set by including one in the body.
+
+Demo accounts all use the password `password`.
+
 ## Known limitations
 
-- **No authentication.** Account passwords are stored and compared as plain
-  strings, carried over from the original localStorage implementation. The API
-  is unauthenticated and CORS is fully open. This is fine on a laptop and on a
-  private network; it is not fine on the public internet. Hashing and real
-  sessions are the next piece of work.
+- **Only customers authenticate.** The admin dashboard is reachable by anyone
+  who knows the `#admin` URL fragment, and the rider app's `7801` access PIN is
+  a demo prop, not a login. Booking endpoints are open by design — the
+  marketing site takes bookings from visitors who are not signed in. Before this
+  goes anywhere public, the admin surface needs a real login and the write
+  routes need authorization, not just authentication.
+- **Sessions are bearer tokens in `localStorage`**, which is XSS-readable. A
+  same-site HTTP-only cookie would be the stronger choice.
+- **No rate limiting** on `/api/auth/login`, so nothing slows down an
+  online password-guessing attempt.
+- **CORS defaults to permissive in development** so a phone on the LAN can
+  reach the API. Set `CORS_ORIGINS` in production; leaving it unset there blocks
+  cross-origin requests and logs a warning.
 - **The rider's GPS is simulated.** Position is interpolated toward the
   navigation target rather than read from the device, which is what makes the
   demo work indoors. It is published to the server the same way a real fix would

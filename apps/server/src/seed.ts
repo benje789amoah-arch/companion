@@ -12,7 +12,7 @@ import {
   type Notification,
   type RiderState,
 } from '@freshfold/core';
-import { hashPassword } from './auth';
+import { hashPassword } from './passwords';
 import type { StoredAccount } from './store';
 
 /**

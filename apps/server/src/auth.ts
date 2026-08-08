@@ -3,57 +3,19 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
-import type { UserAccount } from '@freshfold/core';
-import { store, type StoredAccount } from './store';
+import { store, type StoredAccount, type StoredSession } from './store';
 
 /**
- * Password handling and bearer sessions.
+ * Bearer sessions.
  *
- * The rule this file exists to enforce: a password is written once, hashed,
- * and never read back. Nothing outside this module sees `passwordHash` or
- * `passwordSalt`, and no response body ever carries them — `sanitize` is the
- * only way an account becomes something a client can be handed.
+ * Hashing lives in `./passwords`, which has no store dependency; this module
+ * layers sessions on top of it and is the only thing that turns a token back
+ * into an account.
  */
 
-const SCRYPT_KEYLEN = 64;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-export interface StoredSession {
-  token: string;
-  email: string;
-  createdAt: string;
-  expiresAt: string;
-}
-
-export function hashPassword(password: string): { salt: string; hash: string } {
-  const salt = randomBytes(16).toString('hex');
-  const hash = scryptSync(password, salt, SCRYPT_KEYLEN).toString('hex');
-  return { salt, hash };
-}
-
-export function verifyPassword(password: string, account: StoredAccount): boolean {
-  if (!account.passwordSalt || !account.passwordHash) return false;
-
-  const attempt = scryptSync(password, account.passwordSalt, SCRYPT_KEYLEN);
-  const stored = Buffer.from(account.passwordHash, 'hex');
-
-  // Lengths must match before timingSafeEqual, and it throws if they don't.
-  if (attempt.length !== stored.length) return false;
-  return timingSafeEqual(attempt, stored);
-}
-
-/**
- * Strips credentials off an account so it can be sent to a client.
- *
- * Every route that returns account data goes through this. Returning a
- * `StoredAccount` directly is the bug this function exists to prevent.
- */
-export function sanitize(account: StoredAccount): UserAccount {
-  const { passwordHash, passwordSalt, ...safe } = account;
-  return { ...safe, hasPassword: Boolean(passwordHash) };
-}
 
 export function createSession(email: string): StoredSession {
   const now = Date.now();
@@ -65,8 +27,8 @@ export function createSession(email: string): StoredSession {
   };
 
   store.mutate((db) => {
-    // Drop anything already expired while we're here; this is the only place
-    // sessions accumulate, so it is the natural place to prune them.
+    // Prune expired tokens while we're here — this is the only place sessions
+    // accumulate, so it is the natural place to clear them out.
     db.sessions = db.sessions.filter((s) => Date.parse(s.expiresAt) > now);
     db.sessions.push(session);
   });

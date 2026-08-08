@@ -125,8 +125,6 @@ export function createClient(options: ClientOptions) {
     listBookings: (params?: { email?: string }) =>
       request<Booking[]>('/bookings', { query: { email: params?.email } }),
 
-    getBooking: (id: string) => request<Booking>(`/bookings/${encodeURIComponent(id)}`),
-
     createBooking: (booking: Booking) => request<Booking>('/bookings', json('POST', booking)),
 
     updateBooking: (id: string, patch: Partial<Booking>) =>
@@ -173,6 +171,10 @@ export function createClient(options: ClientOptions) {
     /** `identifier` is an email address or a phone number. */
     login: (payload: { identifier: string; password: string }) =>
       request<AuthSession>('/auth/login', json('POST', payload)),
+
+    /** Does this contact already have a login? Returns booleans only. */
+    authStatus: (identifier: string) =>
+      request<{ exists: boolean; hasPassword: boolean }>('/auth/status', json('POST', { identifier })),
 
     logout: (token: string) =>
       request<{ ok: true }>('/auth/logout', {

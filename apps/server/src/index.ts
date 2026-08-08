@@ -9,6 +9,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
 import { store } from './store';
+import { authRouter } from './routes/auth';
 import { bookingsRouter } from './routes/bookings';
 import { ordersRouter } from './routes/orders';
 import { ridersRouter } from './routes/riders';
@@ -35,10 +36,37 @@ const app = express();
 // past Express's 100kb default.
 app.use(express.json({ limit: '12mb' }));
 
-// The rider app runs on a phone against this machine's LAN address, so it is
-// always cross-origin. Nothing here is authenticated yet (see routes/accounts),
-// so this is deliberately permissive and deliberately local-network only.
-app.use(cors());
+/**
+ * CORS.
+ *
+ * The rider app runs on a phone against this machine's LAN address, so it is
+ * always cross-origin and development needs to be permissive. Production does
+ * not: set `CORS_ORIGINS` to a comma-separated allow-list. Leaving it unset in
+ * production is a misconfiguration worth shouting about rather than silently
+ * serving every origin on the internet.
+ */
+const allowedOrigins = (process.env.CORS_ORIGINS ?? '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+if (process.env.NODE_ENV === 'production' && allowedOrigins.length === 0) {
+  console.warn(
+    '[cors] CORS_ORIGINS is not set. Refusing cross-origin requests. ' +
+      'Set it to the origins your apps are served from, e.g. https://freshfold.example,http://192.168.1.42:8081'
+  );
+}
+
+app.use(
+  cors({
+    origin:
+      allowedOrigins.length > 0
+        ? allowedOrigins
+        : process.env.NODE_ENV === 'production'
+          ? false
+          : true,
+  })
+);
 
 app.get('/api/health', (_req, res) => {
   const db = store.read();
@@ -50,6 +78,7 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
+app.use('/api/auth', authRouter);
 app.use('/api/bookings', bookingsRouter);
 app.use('/api/orders', ordersRouter);
 app.use('/api/riders', ridersRouter);

@@ -5,24 +5,6 @@
 
 import type { BookingStatus, JobStatus } from './types';
 
-/** Dispatch lifecycle in order, for progress bars and validation. */
-export const JOB_STATUS_SEQUENCE: JobStatus[] = [
-  'unassigned',
-  'assigned',
-  'navigating_to_pickup',
-  'arrived_at_pickup',
-  'pickup_scanned',
-  'picked_up',
-  'navigating_to_laundry',
-  'arrived_at_laundry',
-  'dropped_off',
-  'processing',
-  'ready_for_delivery',
-  'navigating_to_delivery',
-  'arrived_at_delivery',
-  'delivered',
-];
-
 /** The six forward stages a customer sees, in order. */
 export const BOOKING_STAGE_SEQUENCE: BookingStatus[] = [
   'Scheduled',
@@ -121,20 +103,6 @@ export function bookingProgressPercent(stage: BookingStatus): number {
 /** True once the job is off the board — delivered or cancelled. */
 export function isTerminal(status: JobStatus): boolean {
   return status === 'delivered' || status === 'cancelled';
-}
-
-/** True while the job belongs to a rider and is still moving. */
-export function isActive(status: JobStatus): boolean {
-  return status !== 'unassigned' && !isTerminal(status);
-}
-
-/** True while the rider should be travelling. */
-export function isNavigating(status: JobStatus): boolean {
-  return (
-    status === 'navigating_to_pickup' ||
-    status === 'navigating_to_laundry' ||
-    status === 'navigating_to_delivery'
-  );
 }
 
 /** `navigating_to_pickup` -> `Navigating to pickup` */

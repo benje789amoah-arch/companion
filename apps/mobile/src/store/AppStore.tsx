@@ -14,6 +14,7 @@ import React, {
   useState,
 } from 'react';
 import {
+  ApiError,
   LAUNDRY_HUB,
   bearingBetween,
   degreeGap,
@@ -142,20 +143,37 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     []
   );
 
-  /** Fires a write at the server, tolerating failure so the app works offline. */
-  const push = useCallback(async <T,>(operation: () => Promise<T>): Promise<T | null> => {
+  /**
+   * Runs a write against the server, holding the poll off while it is in
+   * flight. Rethrows — callers that need to tell a rejection apart from a
+   * dropped connection use this directly.
+   */
+  const track = useCallback(async <T,>(operation: () => Promise<T>): Promise<T> => {
     inFlight.current += 1;
     try {
       const result = await operation();
       setConnected(true);
       return result;
-    } catch {
-      setConnected(false);
-      return null;
     } finally {
       inFlight.current -= 1;
     }
   }, []);
+
+  /**
+   * Fire-and-forget write. Any failure just means the app is offline for now;
+   * the local state stands and the next poll reconciles.
+   */
+  const push = useCallback(
+    async <T,>(operation: () => Promise<T>): Promise<T | null> => {
+      try {
+        return await track(operation);
+      } catch {
+        setConnected(false);
+        return null;
+      }
+    },
+    [track]
+  );
 
   // Hydrate from device storage once on launch, so the first frame has data
   // even before the server answers.
@@ -384,15 +402,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       patchOrder(orderId, { status: 'assigned' });
 
       void (async () => {
-        const accepted = await push(() => api.acceptOrder(orderId, RIDER_ID));
-        // Another rider got there first — put it back on the board rather than
-        // letting this phone believe it owns the job.
-        if (accepted === null && connected) {
-          patchOrder(orderId, { status: 'unassigned' });
+        try {
+          await track(() => api.acceptOrder(orderId, RIDER_ID));
+        } catch (error) {
+          // Two very different failures land here and they need opposite
+          // handling: a 409 means another rider has the job and this phone must
+          // let go of it, while a transport failure means we're offline and the
+          // optimistic accept should stand until the rider reconnects.
+          if (error instanceof ApiError) {
+            setConnected(true);
+            patchOrder(orderId, { status: 'unassigned' });
+            pushNotification({
+              id: `notif-conflict-${Date.now()}`,
+              title: 'Job No Longer Available',
+              body: error.message,
+              type: 'alert',
+              orderId,
+              read: false,
+            });
+          } else {
+            setConnected(false);
+          }
         }
       })();
     },
-    [connected, patchOrder, push]
+    [patchOrder, pushNotification, track]
   );
 
   const declineOrder = useCallback(

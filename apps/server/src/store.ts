@@ -14,7 +14,6 @@ import type {
   RiderState,
   UserAccount,
 } from '@freshfold/core';
-import type { StoredSession } from './auth';
 import {
   seedAccounts,
   seedJobs,
@@ -42,6 +41,14 @@ export type StoredAccount = UserAccount & {
   passwordSalt?: string;
   passwordHash?: string;
 };
+
+/** A bearer session issued by `/api/auth`. */
+export interface StoredSession {
+  token: string;
+  email: string;
+  createdAt: string;
+  expiresAt: string;
+}
 
 export interface Database {
   jobs: Job[];

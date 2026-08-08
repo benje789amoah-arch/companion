@@ -7,7 +7,15 @@ import {
   useMapsLibrary
 } from '@vis.gl/react-google-maps';
 import { Compass, Navigation, Info, MapPin, RefreshCw, Layers, Map as MapIcon, Shield, Sun, Moon, Key } from 'lucide-react';
-import type { BookingRiderView, Coords } from '@freshfold/core';
+import {
+  LANDMARKS,
+  LAUNDRY_HUB,
+  SUBURB_COORDS,
+  coordsForAddress,
+  type BookingRiderView,
+  type Coords,
+  type Landmark
+} from '@freshfold/core';
 
 interface LiveDispatchMapProps {
   clientSuburb: string;
@@ -29,34 +37,6 @@ interface LiveDispatchMapProps {
   rider?: BookingRiderView;
 }
 
-interface Landmark {
-  name: string;
-  lat: number;
-  lng: number;
-  suburb: string;
-  type: 'hostel' | 'landmark' | 'hub';
-  description: string;
-}
-
-// Landmarks list covering requested sectors & prominent student hostels
-const landmarks: Landmark[] = [
-  { name: 'FreshFold Laundry Hub', lat: 6.6852, lng: -1.5815, suburb: 'Bomso', type: 'hub', description: 'FreshFold Premium Apparel Processing & Steam-Press Sanctuary' },
-  { name: 'Evandy Hostel', lat: 6.6685, lng: -1.5524, suburb: 'Ayeduase', type: 'hostel', description: 'Popular private student residency with luxury care dropoff lockers' },
-  { name: 'Frontline Hostel', lat: 6.6695, lng: -1.5511, suburb: 'Ayeduase', type: 'hostel', description: 'Major student hostel equipped with standard FreshFold pickup service' },
-  { name: 'Wundua Hostel', lat: 6.6692, lng: -1.5539, suburb: 'Ayeduase', type: 'hostel', description: 'High-density student accommodation off the Ayeduase high street' },
-  { name: 'Brunei Complex', lat: 6.6661, lng: -1.5658, suburb: 'KNUST Campus', type: 'hostel', description: 'Postgraduate hostel block' },
-  { name: 'Unity Hall (Conti)', lat: 6.6749, lng: -1.5721, suburb: 'KNUST Campus', type: 'hostel', description: 'Premier on-campus male hall' },
-  { name: 'University Hall (Katanga)', lat: 6.6791, lng: -1.5699, suburb: 'KNUST Campus', type: 'hostel', description: 'Legendary student hall with on-demand laundry dispatch services' },
-  { name: 'Queens Hall', lat: 6.6752, lng: -1.5684, suburb: 'KNUST Campus', type: 'hostel', description: 'All-inclusive student hall with active FreshFold pickup lockers' },
-  { name: 'Republic Hall', lat: 6.6738, lng: -1.5602, suburb: 'KNUST Campus', type: 'hostel', description: 'Central on-campus mixed hall with designated laundry points' },
-  { name: 'Independence Hall', lat: 6.6715, lng: -1.5582, suburb: 'KNUST Campus', type: 'hostel', description: 'Designated on-campus hall with direct courier access' },
-  { name: 'SRC Hostel', lat: 6.6645, lng: -1.5495, suburb: 'KNUST Campus', type: 'hostel', description: 'Large student residence complex off the main campus drive' },
-  { name: 'De-Grace Hostel', lat: 6.6582, lng: -1.5492, suburb: 'Kotei', type: 'hostel', description: 'Premium private off-campus hostel block' },
-  { name: 'Kotei Town Square', lat: 6.6565, lng: -1.5515, suburb: 'Kotei', type: 'landmark', description: 'Central hub of the Kotei community' },
-  { name: 'Deduako Court', lat: 6.6515, lng: -1.5621, suburb: 'Deduako', type: 'landmark', description: 'Developing student residential suites' },
-  { name: 'Boadi Junction Hub', lat: 6.6815, lng: -1.5412, suburb: 'Boadi', type: 'landmark', description: 'Access gateway to pristine Boadi residential estates' }
-];
-
 const API_KEY =
   process.env.GOOGLE_MAPS_PLATFORM_KEY ||
   (import.meta as any).env?.VITE_GOOGLE_MAPS_PLATFORM_KEY ||
@@ -64,34 +44,12 @@ const API_KEY =
   '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
 
-// Suburb mapping to target coordinate anchors
-const suburbCoords: Record<string, { lat: number; lng: number }> = {
-  'Bomso': { lat: 6.6845, lng: -1.5802 },
-  'Ayeduase': { lat: 6.6685, lng: -1.5524 },
-  'Kotei': { lat: 6.6565, lng: -1.5515 },
-  'Deduako': { lat: 6.6515, lng: -1.5621 },
-  'Boadi': { lat: 6.6815, lng: -1.5412 },
-  'KNUST Campus': { lat: 6.6725, lng: -1.5645 }
-};
-
-// Deterministic string hash offset helper so any unique address pins accurately
-function getAddressOffsetCoordinate(address: string, baseCoords: { lat: number; lng: number }) {
-  if (!address || address.length === 0) return baseCoords;
-  let hash = 0;
-  for (let i = 0; i < address.length; i++) {
-    hash = (hash << 5) - hash + address.charCodeAt(i);
-    hash |= 0;
-  }
-  const latOffset = ((Math.abs(hash) % 80) - 40) * 0.0001;
-  const lngOffset = ((Math.abs(hash >> 3) % 80) - 40) * 0.0001;
-  return {
-    lat: baseCoords.lat + latOffset,
-    lng: baseCoords.lng + lngOffset
-  };
-}
-
-// FreshFold HQ (Bomso Junction)
-const laundryHub = { lat: 6.6852, lng: -1.5815, name: 'FreshFold Care Headquarters' };
+// The landmark table, suburb anchors and hub all come from @freshfold/core, so
+// the pin the customer watches and the pin the rider navigates to are the same
+// point derived the same way.
+const landmarks = LANDMARKS;
+const suburbCoords = SUBURB_COORDS;
+const laundryHub = LAUNDRY_HUB;
 
 // Define road route path coordinates from Bomso HQ to each suburb
 const getRoadRoutePath = (suburbName: string): { lat: number; lng: number }[] => {
@@ -229,8 +187,7 @@ export default function LiveDispatchMap({
       key.toLowerCase().includes(clientSuburb.toLowerCase())
     );
 
-    const baseCoords = matchedKey ? suburbCoords[matchedKey] : { lat: 6.6685, lng: -1.5524 };
-    return getAddressOffsetCoordinate(clientAddress, baseCoords);
+    return coordsForAddress(clientAddress, matchedKey ?? 'Ayeduase');
   };
 
   const clientPos = getClientPosition();

@@ -5,7 +5,7 @@
 
 import { Router } from 'express';
 import type { PaymentTransaction, UserAccount } from '@freshfold/core';
-import { sanitize } from '../auth';
+import { sanitize } from '../passwords';
 import { store, type StoredAccount } from '../store';
 
 /**

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Booking, UserAccount } from '../types';
 import * as store from '../services/store';
+import { BOOKING_STAGE_SEQUENCE } from '@freshfold/core';
 import type { AuditLog } from '../services/store';
 import { 
   X, Shield, Lock, Users, Briefcase, RefreshCw, ChevronDown, Check,
@@ -63,10 +64,9 @@ export default function AdminDashboard({
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [successNotif, setSuccessNotif] = useState<string>('');
 
-  // Master stage cycle
-  const statusCycle: Booking['status'][] = [
-    'Scheduled', 'Collecting', 'In Care', 'Ironing & Folding', 'Quality Check', 'Delivered'
-  ];
+  // Master stage cycle — shared with the client portal and with the mapping
+  // that turns a rider's dispatch status into one of these stages.
+  const statusCycle = BOOKING_STAGE_SEQUENCE;
 
   // Helper to append audit log
   const logAuditAction = (action: string, details: string, type: AuditLog['type']) => {
@@ -119,7 +119,6 @@ export default function AdminDashboard({
           return {
             email: matchingBooking.email,
             phone: matchingBooking.phone,
-            passwordHash: 'password',
             name: matchingBooking.name,
             points: 750,
             createdAt: new Date().toISOString()
@@ -360,7 +359,6 @@ export default function AdminDashboard({
         allAccounts.push({
           email: cleanedEmail,
           phone: newMockBooking.phone,
-          passwordHash: 'password',
           name: newMockBooking.name,
           points: 850,
           createdAt: new Date().toISOString()

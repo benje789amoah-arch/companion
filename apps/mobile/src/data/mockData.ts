@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { LAUNDRY_HUB } from '@freshfold/core';
+import { LAUNDRY_HUB, LAUNDRY_HUB_ADDRESS } from '@freshfold/core';
 import { Order, RiderState, Message, Notification } from '../types';
 
 /**
@@ -48,7 +48,7 @@ export const INITIAL_ORDERS: Order[] = [
     customerPhone: "+233 550 192 831",
     pickupAddress: "Unity Hall (Conti), Block C, Room 102",
     pickupCoords: { lat: 6.6765, lng: -1.5695 },
-    deliveryAddress: "FreshFold Laundry Hub (KNUST Commercial Area)",
+    deliveryAddress: LAUNDRY_HUB_ADDRESS,
     deliveryCoords: LAUNDRY_HUB_COORDS,
     laundryType: "Traditional Kente Cloth & Silk Stole",
     bagCount: 2,
@@ -71,7 +71,7 @@ export const INITIAL_ORDERS: Order[] = [
     customerPhone: "+233 240 419 844",
     pickupAddress: "Ayeduase Gate, Millennium Hostel",
     pickupCoords: { lat: 6.6685, lng: -1.5580 },
-    deliveryAddress: "FreshFold Laundry Hub (KNUST Commercial Area)",
+    deliveryAddress: LAUNDRY_HUB_ADDRESS,
     deliveryCoords: LAUNDRY_HUB_COORDS,
     laundryType: "Linen Shirts & Designer Khakis",
     bagCount: 1,
@@ -93,7 +93,7 @@ export const INITIAL_ORDERS: Order[] = [
     customerPhone: "+233 500 887 261",
     pickupAddress: "Bomso, Jubilee Apartment Complex, Penthouse 4B",
     pickupCoords: { lat: 6.6835, lng: -1.5790 },
-    deliveryAddress: "FreshFold Laundry Hub (KNUST Commercial Area)",
+    deliveryAddress: LAUNDRY_HUB_ADDRESS,
     deliveryCoords: LAUNDRY_HUB_COORDS,
     laundryType: "Premium Comforter Shell & Egyptian Sheets",
     bagCount: 3,
@@ -117,7 +117,7 @@ export const INITIAL_ORDERS: Order[] = [
     customerPhone: "+233 200 991 111",
     pickupAddress: "KNUST Vice Chancellor Lodge, Lodge Hill Road",
     pickupCoords: { lat: 6.6775, lng: -1.5735 },
-    deliveryAddress: "FreshFold Laundry Hub (KNUST Commercial Area)",
+    deliveryAddress: LAUNDRY_HUB_ADDRESS,
     deliveryCoords: LAUNDRY_HUB_COORDS,
     laundryType: "Academic Gowns & Velvet Hood Sets",
     bagCount: 2,
