@@ -3,16 +3,23 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { ActivePlan } from './membership';
+import type { RouteLeg } from './route';
 import type {
+  AdminSession,
   AuthSession,
   Booking,
+  Coords,
   JobStatus,
   LaundryBag,
   Message,
   Notification,
   Order,
+  PaymentTransaction,
+  RiderSession,
   RiderState,
   RiderTelemetry,
+  SupervisorProfile,
   UserAccount,
 } from './types';
 
@@ -115,6 +122,8 @@ export function createClient(options: ClientOptions) {
     body: payload === undefined ? undefined : JSON.stringify(payload),
   });
 
+  const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
+
   return {
     baseUrl: root,
 
@@ -122,10 +131,29 @@ export function createClient(options: ClientOptions) {
     health: () => request<{ ok: true; jobs: number; version: string }>('/health'),
 
     // -- Bookings: the customer's view ------------------------------------
+    //
+    // The list is a summary: it carries everything a board or a history screen
+    // draws, but not the proof-of-service photographs, which are megabytes that
+    // no list renders. `getBooking` is the full record, and is what a surface
+    // calls when it is about to show the proof for one order.
     listBookings: (params?: { email?: string }) =>
       request<Booking[]>('/bookings', { query: { email: params?.email } }),
 
-    createBooking: (booking: Booking) => request<Booking>('/bookings', json('POST', booking)),
+    getBooking: (id: string) => request<Booking>(`/bookings/${encodeURIComponent(id)}`),
+
+    /**
+     * Books a job.
+     *
+     * The token is optional because a visitor can book — but a signed-in
+     * customer should send it, because that is how the server knows whether
+     * this booking is under a membership. `planId` in the body is ignored:
+     * dispatch priority is decided from the account, not from the request.
+     */
+    createBooking: (booking: Booking, token?: string | null) =>
+      request<Booking>('/bookings', {
+        ...json('POST', booking),
+        headers: token ? bearer(token) : undefined,
+      }),
 
     updateBooking: (id: string, patch: Partial<Booking>) =>
       request<Booking>(`/bookings/${encodeURIComponent(id)}`, json('PATCH', patch)),
@@ -136,6 +164,9 @@ export function createClient(options: ClientOptions) {
     // -- Orders: the rider's view -----------------------------------------
     listOrders: (params?: { riderId?: string }) =>
       request<Order[]>('/orders', { query: { riderId: params?.riderId } }),
+
+    /** One order with its proof photographs, which the list leaves behind. */
+    getOrder: (id: string) => request<Order>(`/orders/${encodeURIComponent(id)}`),
 
     createOrder: (order: Order) => request<Order>('/orders', json('POST', order)),
 
@@ -153,6 +184,23 @@ export function createClient(options: ClientOptions) {
         photo?: string;
         signature?: string;
         bags?: LaundryBag[];
+        /**
+         * The four digits the customer read out at the door. Required to
+         * complete a delivery — the server checks it, and rejects the
+         * transition without either this or `overrideReason`.
+         */
+        deliveryCode?: string;
+        /**
+         * The four digits on the hub desk's screen. Required to check a load
+         * in — the server checks it, and rejects `dropped_off` without either
+         * this or `overrideReason`.
+         */
+        dropoffCode?: string;
+        /**
+         * Why a hand-off completed without the other party's code. Applies to
+         * whichever leg the `status` names.
+         */
+        overrideReason?: string;
       }
     ) => request<Order>(`/orders/${encodeURIComponent(id)}/status`, json('PATCH', patch)),
 
@@ -172,6 +220,43 @@ export function createClient(options: ClientOptions) {
     login: (payload: { identifier: string; password: string }) =>
       request<AuthSession>('/auth/login', json('POST', payload)),
 
+    /**
+     * Sends another email-confirmation link to the signed-in account.
+     *
+     * Throws a 429 with a human message when pressed twice in quick succession,
+     * and a 409 once the address is already confirmed — both worth showing the
+     * customer verbatim rather than mapping to a generic failure.
+     */
+    resendVerification: (token: string) =>
+      request<{ ok: true }>('/auth/resend-verification', {
+        method: 'POST',
+        headers: bearer(token),
+      }),
+
+    /**
+     * Asks for a password-reset link.
+     *
+     * `identifier` is an email address or a phone number — whichever the
+     * customer remembers. Always resolves `{ ok: true }` when the request was
+     * well-formed, whether or not an account exists and whether or not the mail
+     * went out: the server will not confirm who banks here, so there is nothing
+     * for a caller to branch on. The UI says "if that address has an account,
+     * a link is on its way" and means it.
+     */
+    requestPasswordReset: (identifier: string) =>
+      request<{ ok: true }>('/auth/forgot', json('POST', { identifier })),
+
+    /**
+     * Spends a reset link and sets the new password.
+     *
+     * The emailed page calls this itself, so the apps do not have to — it is
+     * here for a surface that wants to collect the password in-app instead.
+     * Every existing session for the account is revoked on success, including
+     * the caller's own.
+     */
+    resetPassword: (payload: { token: string; password: string }) =>
+      request<{ ok: true }>('/auth/reset', json('POST', payload)),
+
     /** Does this contact already have a login? Returns booleans only. */
     authStatus: (identifier: string) =>
       request<{ exists: boolean; hasPassword: boolean }>('/auth/status', json('POST', { identifier })),
@@ -188,13 +273,109 @@ export function createClient(options: ClientOptions) {
         headers: { Authorization: `Bearer ${token}` },
       }),
 
+    // -- Supervisor desk ---------------------------------------------------
+    //
+    // Supervisors are provisioned, so there is no register call. This session
+    // is what the roster-management endpoints require.
+
+    adminLogin: (payload: { email: string; password: string }) =>
+      request<AdminSession>('/admin/login', json('POST', payload)),
+
+    adminMe: (token: string) =>
+      request<SupervisorProfile>('/admin/me', { headers: bearer(token) }),
+
+    adminLogout: (token: string) =>
+      request<{ ok: true }>('/admin/logout', { method: 'POST', headers: bearer(token) }),
+
     // -- Riders ------------------------------------------------------------
-    listRiders: () => request<RiderState[]>('/riders'),
+    //
+    // Couriers are provisioned, never self-registered, so there is no register
+    // call here. Everything below the login needs the token it returns: the
+    // roster is staff data, and a position update is a claim about where a
+    // named person is.
 
-    getRider: (id: string) => request<RiderState>(`/riders/${encodeURIComponent(id)}`),
+    /** `identifier` is an employee ID or the courier's phone number. */
+    riderLogin: (payload: { identifier: string; pin: string }) =>
+      request<RiderSession>('/riders/login', json('POST', payload)),
 
-    updateRider: (id: string, telemetry: RiderTelemetry) =>
-      request<RiderState>(`/riders/${encodeURIComponent(id)}`, json('PATCH', telemetry)),
+    /** Re-validates a stored token on launch; throws 401 once it has expired. */
+    riderMe: (token: string) =>
+      request<RiderState>('/riders/me', { headers: bearer(token) }),
+
+    riderLogout: (token: string) =>
+      request<{ ok: true }>('/riders/logout', { method: 'POST', headers: bearer(token) }),
+
+    /**
+     * Puts a courier on the roster. Supervisor only.
+     *
+     * The employee ID is assigned by the server and read off the returned
+     * rider. The temporary PIN comes back exactly once, in this response — it
+     * is hashed on the way in and cannot be read again. Losing it means issuing
+     * another.
+     */
+    createRider: (
+      payload: { name?: string; phone: string; vehicle: string; vehiclePlate: string },
+      token: string
+    ) =>
+      request<{ rider: RiderState; temporaryPin: string; pinExpiresAt: string }>(
+        '/riders',
+        { ...json('POST', payload), headers: bearer(token) }
+      ),
+
+    /**
+     * Reassigns the vehicle a courier rides. Supervisor only.
+     *
+     * Vehicles move between couriers — a scooter goes in for repair and its
+     * rider takes another — so this exists as well as the field on creation.
+     * The courier's own app cannot write either value.
+     */
+    setRiderVehicle: (
+      id: string,
+      payload: { vehicle: string; vehiclePlate: string },
+      token: string
+    ) =>
+      request<RiderState>(`/riders/${encodeURIComponent(id)}/vehicle`, {
+        ...json('PATCH', payload),
+        headers: bearer(token),
+      }),
+
+    /** Takes a courier off the roster, or puts them back. Supervisor only. */
+    setRiderActive: (id: string, active: boolean, token: string) =>
+      request<RiderState>(`/riders/${encodeURIComponent(id)}/active`, {
+        ...json('PATCH', { active }),
+        headers: bearer(token),
+      }),
+
+    /** Replaces a temporary PIN with one only the courier knows. */
+    changeRiderPin: (payload: { currentPin: string; newPin: string }, token: string) =>
+      request<{ ok: true }>('/riders/change-pin', {
+        ...json('POST', payload),
+        headers: bearer(token),
+      }),
+
+    /**
+     * The road route between two points, as the courier would ride it.
+     *
+     * Computed by the dispatch server so the routing key stays out of every
+     * client bundle and one answer is shared by all three apps. Falls back to
+     * a straight line — flagged as such in `source` — when routing is
+     * unavailable, so callers never have to handle an error to draw a map.
+     */
+    getDirections: (from: Coords, to: Coords) =>
+      request<RouteLeg>(
+        `/directions?fromLat=${from.lat}&fromLng=${from.lng}&toLat=${to.lat}&toLng=${to.lng}`
+      ),
+
+    listRiders: (token: string) => request<RiderState[]>('/riders', { headers: bearer(token) }),
+
+    getRider: (id: string, token: string) =>
+      request<RiderState>(`/riders/${encodeURIComponent(id)}`, { headers: bearer(token) }),
+
+    updateRider: (id: string, telemetry: RiderTelemetry, token: string) =>
+      request<RiderState>(`/riders/${encodeURIComponent(id)}`, {
+        ...json('PATCH', telemetry),
+        headers: bearer(token),
+      }),
 
     // -- Messaging ---------------------------------------------------------
     listMessages: (params?: { orderId?: string }) =>
@@ -221,6 +402,62 @@ export function createClient(options: ClientOptions) {
 
     upsertAccount: (account: UserAccount) =>
       request<UserAccount>('/accounts', json('PUT', account)),
+
+    // -- Membership --------------------------------------------------------
+    //
+    // A plan is a paid entitlement, so every call here carries the customer's
+    // token and the server decides what the plan costs and when it ends. The
+    // app cannot write a membership any other way — `upsertAccount` above will
+    // not accept one.
+
+    /** The membership as the server has it, with any due renewal settled. */
+    getPlan: (token: string) =>
+      request<{ plan: ActivePlan | null; account: UserAccount | null }>('/accounts/plan', {
+        headers: bearer(token),
+      }),
+
+    /**
+     * Starts a plan, or switches to one.
+     *
+     * The wallet is debited by the server for the prorated amount, and the
+     * ledger entry is written in the same transaction — which is why there is
+     * no separate `chargeWallet` call on this path. A switch returns the
+     * `credit` applied from the plan being replaced.
+     *
+     * Throws `ApiError` 409 with `{ reason: 'insufficient-funds', shortfall }`
+     * when the wallet cannot cover it.
+     */
+    subscribeToPlan: (planId: string, token: string) =>
+      request<{ account: UserAccount; plan: ActivePlan; charged: number; credit: number }>(
+        '/accounts/plan',
+        { ...json('POST', { planId }), headers: bearer(token) }
+      ),
+
+    /** Ends the plan when the paid period runs out — never mid-period. */
+    cancelPlan: (token: string) =>
+      request<{ account: UserAccount; plan: ActivePlan | null; activeUntil: string }>(
+        '/accounts/plan',
+        { method: 'DELETE', headers: bearer(token) }
+      ),
+
+    /** Undoes a pending cancellation while the period is still running. */
+    resumePlan: (token: string) =>
+      request<{ account: UserAccount; plan: ActivePlan | null; activeUntil: string }>(
+        '/accounts/plan',
+        { method: 'DELETE', headers: bearer(token), query: { resume: 'true' } }
+      ),
+
+    // -- Payment ledger ----------------------------------------------------
+    //
+    // Scoped by email so a customer app can ask for one person's statement
+    // rather than pulling the whole ledger down to filter it on the device.
+
+    listTransactions: (params?: { email?: string }) =>
+      request<PaymentTransaction[]>('/transactions', { query: { email: params?.email } }),
+
+    /** Upserts by `reference`, so replaying a queued write is safe. */
+    recordTransaction: (transaction: PaymentTransaction) =>
+      request<PaymentTransaction>('/transactions', json('POST', transaction)),
 
     // -- Integrations ------------------------------------------------------
     chat: (history: ChatMessage[]) =>

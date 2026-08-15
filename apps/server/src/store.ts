@@ -3,157 +3,860 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import type {
-  Job,
-  Message,
-  Notification,
-  PaymentTransaction,
-  RiderState,
-  UserAccount,
-} from '@freshfold/core';
 import {
-  seedAccounts,
-  seedJobs,
-  seedMessages,
-  seedNotifications,
-  seedRiders,
-} from './seed';
+  phoneKey,
+  type ActivePlan,
+  type Job,
+  type Message,
+  type Notification,
+  type PaymentTransaction,
+} from '@freshfold/core';
+import { sql, type Executor } from './db';
+import {
+  toAccount,
+  toJob,
+  toMessage,
+  toNotification,
+  toRider,
+  toSession,
+  toSupervisor,
+  toTransaction,
+  type AccountRow,
+  type JobRow,
+  type MessageRow,
+  type NotificationRow,
+  type RiderRow,
+  type SessionKind,
+  type SessionRow,
+  type StoredAccount,
+  type StoredRider,
+  type StoredSession,
+  type StoredSupervisor,
+  type SupervisorRow,
+  type TransactionRow,
+} from './rows';
 
 /**
- * A JSON file standing in for a database.
+ * The data layer.
  *
- * Small enough to hold in memory, written back on a short debounce so a burst
- * of rider status updates costs one write instead of ten. Swapping this for
- * Postgres or SQLite later means reimplementing `read`/`mutate` and nothing
- * else — no route touches the filesystem directly.
+ * Every function here takes the executor it runs on, so one body serves both a
+ * standalone call and a step inside `store.tx()`. That matters because several
+ * operations are not one write: completing a delivery updates the job, appends
+ * a customer message, files a notification and moves the courier's running
+ * totals. On the JSON file those four happened to be atomic because they were
+ * four lines in one synchronous function. Here they have to be asked for, and
+ * `store.tx()` is how.
+ *
+ * Reads use `select *` deliberately. The mappers in `./rows` build their
+ * results field by field, so the generated columns (`rider_id`, `phone_key`)
+ * come back and are discarded rather than needing to be excluded query by
+ * query — and, more importantly, they can never reach a client by accident.
  */
 
+// Re-exported so callers keep importing record types from the store, as they
+// did when it owned them.
+export type {
+  SessionKind,
+  StoredAccount,
+  StoredRider,
+  StoredSession,
+  StoredSupervisor,
+  SupervisorProfile,
+} from './rows';
+
 /**
- * An account as it exists at rest, with its credentials.
+ * A courier update.
  *
- * This type stays inside the server. `sanitize` in `./auth` converts it to the
- * `UserAccount` clients receive, which has no credential fields at all.
+ * `pinExpiresAt` is the one field with three states rather than two: absent
+ * leaves it alone, a string sets a deadline, and `null` clears one. Replacing a
+ * provisional PIN needs that third state — the deadline is spent, and the PIN
+ * the courier chose has no expiry.
  */
-export type StoredAccount = UserAccount & {
-  passwordSalt?: string;
-  passwordHash?: string;
+export type RiderPatch = Partial<Omit<StoredRider, 'pinExpiresAt'>> & {
+  pinExpiresAt?: string | null;
 };
 
-/** A bearer session issued by `/api/auth`. */
-export interface StoredSession {
-  token: string;
-  email: string;
-  createdAt: string;
-  expiresAt: string;
+/** camelCase field → column, for the partial updates couriers push. */
+const RIDER_COLUMNS: Record<string, string> = {
+  name: 'name',
+  avatar: 'avatar',
+  phone: 'phone',
+  employeeId: 'employee_id',
+  vehicle: 'vehicle',
+  vehiclePlate: 'vehicle_plate',
+  isOnline: 'is_online',
+  batteryLevel: 'battery_level',
+  gpsAccuracy: 'gps_accuracy',
+  speed: 'speed',
+  heading: 'heading',
+  coords: 'coords',
+  rating: 'rating',
+  todayDistance: 'today_distance',
+  todayEarnings: 'today_earnings',
+  completedCount: 'completed_count',
+  onTimeRate: 'on_time_rate',
+  acceptanceRate: 'acceptance_rate',
+  completionRate: 'completion_rate',
+  mustChangePin: 'must_change_pin',
+  pinSalt: 'pin_salt',
+  pinHash: 'pin_hash',
+  pinExpiresAt: 'pin_expires_at',
+  active: 'active',
+};
+
+function riderAssignments(patch: RiderPatch): Record<string, unknown> {
+  const assignments: Record<string, unknown> = {};
+
+  for (const [field, column] of Object.entries(RIDER_COLUMNS)) {
+    const value = (patch as Record<string, unknown>)[field];
+    // `undefined` means the caller did not mention the field. `null` is a
+    // deliberate clear, and has to survive to the query.
+    if (value !== undefined) assignments[column] = value;
+  }
+
+  return assignments;
 }
 
-export interface Database {
-  jobs: Job[];
-  riders: RiderState[];
-  messages: Message[];
-  notifications: Notification[];
-  accounts: StoredAccount[];
-  transactions: PaymentTransaction[];
-  sessions: StoredSession[];
+/**
+ * The comparable part of a number, matching the generated `phone_key` columns.
+ *
+ * Returns null below nine digits so a half-typed number matches nothing, which
+ * is what `samePhone` returns for one.
+ */
+function phoneLookup(value: string | undefined): string | null {
+  if (!value) return null;
+  const key = phoneKey(value);
+  return key.length === 9 ? key : null;
 }
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = process.env.DATA_DIR
-  ? path.resolve(process.env.DATA_DIR)
-  : path.resolve(HERE, '..', 'data');
-const DB_FILE = path.join(DATA_DIR, 'db.json');
-const SAVE_DEBOUNCE_MS = 250;
+/**
+ * `dispatch`, minus the four proof-of-service blobs.
+ *
+ * A proof photo is a base64 JPEG living inside the `dispatch` jsonb, and every
+ * list route used to hand back all of them: three surfaces poll their lists
+ * every four to five seconds, so a desk watching thirty live orders was pulling
+ * every photograph on the board out of TOAST storage, across the wire from
+ * Supabase and down to the browser, twelve times a minute — to render a table
+ * that shows none of them. They are fetched one order at a time now, from the
+ * `/:id` routes, at the moment something actually displays them.
+ *
+ * The override reasons stay: they are a sentence each, and they are exactly
+ * what a supervisor scanning the board needs to see without opening anything.
+ *
+ * Removing keys rather than naming the ones to keep is deliberate — a field
+ * added to `JobProof` later should arrive in the list by default and be dropped
+ * here on purpose, not vanish because nobody updated an allow-list.
+ */
+function DISPATCH_WITHOUT_PROOF(exec: Executor) {
+  return exec`dispatch #- '{proof,pickupPhoto}' #- '{proof,pickupSignature}' #- '{proof,deliveryPhoto}' #- '{proof,deliverySignature}'`;
+}
 
-function emptyDatabase(): Database {
+function repositories(exec: Executor) {
   return {
-    jobs: [],
-    riders: [],
-    messages: [],
-    notifications: [],
-    accounts: [],
-    transactions: [],
-    sessions: [],
+    // -----------------------------------------------------------------------
+    // Jobs
+    // -----------------------------------------------------------------------
+    jobs: {
+      /**
+       * `riderId` returns the open pool plus everything already theirs, which
+       * is what the rider console's board is. `email` narrows to one
+       * customer's history.
+       *
+       * The four proof-of-service blobs are left in the database. See
+       * `DISPATCH_WITHOUT_PROOF` — a job from here is a *summary*, and handing
+       * one back to `upsert` would erase the photographs it is missing.
+       */
+      async list(filter: { riderId?: string | null; email?: string | null } = {}): Promise<Job[]> {
+        const rows = await exec<JobRow[]>`
+          select
+            id, reference, status, created_at, updated_at,
+            customer, service, schedule, location, payment,
+            ${DISPATCH_WITHOUT_PROOF(exec)} as dispatch
+          from jobs
+          where ${
+            filter.riderId
+              ? exec`(rider_id is null or rider_id = ${filter.riderId})`
+              : exec`true`
+          }
+            and ${
+              filter.email
+                ? exec`customer_email = ${filter.email.toLowerCase()}`
+                : exec`true`
+            }
+          order by created_at desc, id desc
+        `;
+        return rows.map(toJob);
+      },
+
+      /**
+       * `lock` takes a row lock for the rest of the transaction, and is how a
+       * read-modify-write through `applyStatus` stays a single step. Two
+       * couriers racing for the same pickup now queue at the database rather
+       * than both reading an unassigned job and both winning.
+       */
+      async find(id: string, opts: { lock?: boolean } = {}): Promise<Job | null> {
+        const rows = await exec<JobRow[]>`
+          select * from jobs where id = ${id} ${opts.lock ? exec`for update` : exec``}
+        `;
+        return rows[0] ? toJob(rows[0]) : null;
+      },
+
+      async upsert(job: Job): Promise<Job> {
+        const rows = await exec<JobRow[]>`
+          insert into jobs (
+            id, reference, status, created_at, updated_at,
+            customer, service, schedule, location, dispatch, payment
+          ) values (
+            ${job.id}, ${job.reference}, ${job.status}, ${job.createdAt}, ${job.updatedAt},
+            ${exec.json(job.customer as never)}, ${exec.json(job.service as never)},
+            ${exec.json(job.schedule as never)}, ${exec.json(job.location as never)},
+            ${exec.json(job.dispatch as never)}, ${exec.json(job.payment as never)}
+          )
+          on conflict (id) do update set
+            reference  = excluded.reference,
+            status     = excluded.status,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            customer   = excluded.customer,
+            service    = excluded.service,
+            schedule   = excluded.schedule,
+            location   = excluded.location,
+            dispatch   = excluded.dispatch,
+            payment    = excluded.payment
+          returning *
+        `;
+        return toJob(rows[0]);
+      },
+
+      /**
+       * Jobs the hub has been sitting on long enough to move on.
+       *
+       * The two in-hub stages have their own dwell, so they get their own
+       * cutoff rather than one shared one — washing and finishing are not the
+       * same length of work and there is no reason to pretend they are.
+       *
+       * `updated_at` is the clock because it is stamped by `applyStatus` on
+       * every transition, so it is exactly "how long this job has been in the
+       * stage it is in". Nothing else on the record answers that.
+       */
+      async hubDue(cutoff: { droppedOff: string; processing: string }): Promise<Job[]> {
+        const rows = await exec<JobRow[]>`
+          select * from jobs
+          where (status = 'dropped_off' and updated_at <= ${cutoff.droppedOff})
+             or (status = 'processing'  and updated_at <= ${cutoff.processing})
+          order by updated_at
+        `;
+        return rows.map(toJob);
+      },
+
+      async remove(id: string): Promise<boolean> {
+        const result = await exec`delete from jobs where id = ${id}`;
+        return result.count > 0;
+      },
+
+      async count(): Promise<number> {
+        const rows = await exec<{ count: number }[]>`select count(*)::int as count from jobs`;
+        return rows[0].count;
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Riders
+    // -----------------------------------------------------------------------
+    riders: {
+      async list(opts: { activeOnly?: boolean } = {}): Promise<StoredRider[]> {
+        const rows = await exec<RiderRow[]>`
+          select * from riders
+          where ${opts.activeOnly ? exec`active` : exec`true`}
+          order by id
+        `;
+        return rows.map(toRider);
+      },
+
+      async find(id: string): Promise<StoredRider | null> {
+        const rows = await exec<RiderRow[]>`select * from riders where id = ${id}`;
+        return rows[0] ? toRider(rows[0]) : null;
+      },
+
+      /**
+       * Sign-in. The employee ID or the courier's own number resolves to the
+       * same record — somebody who has forgotten the first has not forgotten
+       * the second.
+       */
+      async findByIdentifier(identifier: string): Promise<StoredRider | null> {
+        const key = phoneLookup(identifier);
+        const rows = await exec<RiderRow[]>`
+          select * from riders
+          where lower(employee_id) = ${identifier.trim().toLowerCase()}
+             or (${key}::text is not null and phone_key = ${key})
+          limit 1
+        `;
+        return rows[0] ? toRider(rows[0]) : null;
+      },
+
+      /** Whether this number is already on the roster, however it was written. */
+      async findByPhone(phone: string): Promise<StoredRider | null> {
+        const key = phoneLookup(phone);
+        if (!key) return null;
+        const rows = await exec<RiderRow[]>`
+          select * from riders where phone_key = ${key} limit 1
+        `;
+        return rows[0] ? toRider(rows[0]) : null;
+      },
+
+      async insert(rider: StoredRider): Promise<StoredRider> {
+        const rows = await exec<RiderRow[]>`
+          insert into riders (
+            id, employee_id, phone, name, avatar, vehicle, vehicle_plate,
+            is_online, battery_level, gps_accuracy, speed, heading, coords,
+            rating, today_distance, today_earnings, completed_count,
+            on_time_rate, acceptance_rate, completion_rate,
+            pin_salt, pin_hash, must_change_pin, pin_expires_at, active
+          ) values (
+            ${rider.id}, ${rider.employeeId}, ${rider.phone}, ${rider.name},
+            ${rider.avatar}, ${rider.vehicle}, ${rider.vehiclePlate},
+            ${rider.isOnline}, ${rider.batteryLevel}, ${rider.gpsAccuracy},
+            ${rider.speed}, ${rider.heading}, ${exec.json(rider.coords as never)},
+            ${rider.rating}, ${rider.todayDistance}, ${rider.todayEarnings},
+            ${rider.completedCount}, ${rider.onTimeRate}, ${rider.acceptanceRate},
+            ${rider.completionRate}, ${rider.pinSalt ?? null}, ${rider.pinHash ?? null},
+            ${rider.mustChangePin ?? false}, ${rider.pinExpiresAt ?? null},
+            ${rider.active ?? true}
+          )
+          returning *
+        `;
+        return toRider(rows[0]);
+      },
+
+      async update(id: string, patch: RiderPatch): Promise<StoredRider | null> {
+        const assignments = riderAssignments(patch);
+
+        // Nothing to write. Reading the row back is what the caller wanted
+        // anyway, and an empty SET clause is a syntax error.
+        if (Object.keys(assignments).length === 0) {
+          const rows = await exec<RiderRow[]>`select * from riders where id = ${id}`;
+          return rows[0] ? toRider(rows[0]) : null;
+        }
+
+        const rows = await exec<RiderRow[]>`
+          update riders set ${exec(assignments)} where id = ${id} returning *
+        `;
+        return rows[0] ? toRider(rows[0]) : null;
+      },
+
+      /**
+       * Every id already taken, so a new courier can be given the next free
+       * one. Both are short readable strings rather than UUIDs, which is worth
+       * a query at provisioning time — it is not a hot path.
+       */
+      async takenIds(): Promise<{ ids: string[]; employeeIds: string[] }> {
+        const rows = await exec<{ id: string; employee_id: string }[]>`
+          select id, employee_id from riders
+        `;
+        return {
+          ids: rows.map((row) => row.id),
+          employeeIds: rows.map((row) => row.employee_id),
+        };
+      },
+
+      async count(): Promise<number> {
+        const rows = await exec<{ count: number }[]>`select count(*)::int as count from riders`;
+        return rows[0].count;
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Accounts
+    // -----------------------------------------------------------------------
+    accounts: {
+      async list(): Promise<StoredAccount[]> {
+        const rows = await exec<AccountRow[]>`select * from accounts order by created_at`;
+        return rows.map(toAccount);
+      },
+
+      async find(email: string, opts: { lock?: boolean } = {}): Promise<StoredAccount | null> {
+        const rows = await exec<AccountRow[]>`
+          select * from accounts where lower(email) = ${email.trim().toLowerCase()}
+          ${opts.lock ? exec`for update` : exec``}
+        `;
+        return rows[0] ? toAccount(rows[0]) : null;
+      },
+
+      /** Sign-in and registration both accept an email or a phone number. */
+      async findByIdentifier(identifier: string): Promise<StoredAccount | null> {
+        const key = phoneLookup(identifier);
+        const rows = await exec<AccountRow[]>`
+          select * from accounts
+          where lower(email) = ${identifier.trim().toLowerCase()}
+             or (${key}::text is not null and phone_key = ${key})
+          limit 1
+        `;
+        return rows[0] ? toAccount(rows[0]) : null;
+      },
+
+      /**
+       * Whether either half of a new registration already belongs to somebody.
+       *
+       * Ordered so an email match wins over a phone match. The array scan this
+       * replaced returned whichever record happened to sit earlier, which is
+       * not a rule anyone chose — and registration reads fields off the result,
+       * so which one comes back is visible in the account that gets created.
+       */
+      async findByEmailOrPhone(email: string, phone: string): Promise<StoredAccount | null> {
+        const wanted = email.trim().toLowerCase();
+        const key = phoneLookup(phone);
+
+        const rows = await exec<AccountRow[]>`
+          select * from accounts
+          where lower(email) = ${wanted}
+             or (${key}::text is not null and phone_key = ${key})
+          order by (lower(email) = ${wanted}) desc
+          limit 1
+        `;
+        return rows[0] ? toAccount(rows[0]) : null;
+      },
+
+      async insert(account: StoredAccount): Promise<StoredAccount> {
+        const rows = await exec<AccountRow[]>`
+          insert into accounts (
+            email, phone, name, created_at, points, wallet_balance,
+            password_salt, password_hash, email_verified
+          ) values (
+            ${account.email}, ${account.phone}, ${account.name},
+            ${account.createdAt}, ${account.points ?? null},
+            ${account.walletBalance ?? null},
+            ${account.passwordSalt ?? null}, ${account.passwordHash ?? null},
+            ${account.emailVerified ?? false}
+          )
+          returning *
+        `;
+        return toAccount(rows[0]);
+      },
+
+      /**
+       * Writes only the fields named. Credentials are not among them, and are
+       * not reachable from here at all — `/api/accounts` is a profile route,
+       * and a password is only ever set through `/api/auth/register`.
+       */
+      async updateProfile(
+        email: string,
+        patch: Partial<Pick<StoredAccount, 'email' | 'phone' | 'name' | 'points' | 'walletBalance'>>
+      ): Promise<StoredAccount | null> {
+        const columns: Record<string, string> = {
+          email: 'email',
+          phone: 'phone',
+          name: 'name',
+          points: 'points',
+          walletBalance: 'wallet_balance',
+        };
+
+        const assignments: Record<string, unknown> = {};
+        for (const [field, column] of Object.entries(columns)) {
+          const value = (patch as Record<string, unknown>)[field];
+          if (value !== undefined) assignments[column] = value;
+        }
+
+        if (Object.keys(assignments).length === 0) {
+          return this.find(email);
+        }
+
+        const rows = await exec<AccountRow[]>`
+          update accounts set ${exec(assignments)}
+          where lower(email) = ${email.trim().toLowerCase()}
+          returning *
+        `;
+        return rows[0] ? toAccount(rows[0]) : null;
+      },
+
+      /**
+       * Writes the membership, and optionally the wallet it is paid from.
+       *
+       * Deliberately not reachable from `updateProfile`: a plan is an
+       * entitlement somebody paid for, so it is written here — by the plan
+       * route, inside a transaction that also moves the money — and never by a
+       * client PUTting an account body.
+       *
+       * `walletBalance` is optional because a cancellation changes the plan and
+       * not the balance; when it is given, both land in the same statement so a
+       * renewal can never take the fee without recording the period it bought.
+       */
+      async setPlan(
+        email: string,
+        plan: ActivePlan | null,
+        walletBalance?: number
+      ): Promise<StoredAccount | null> {
+        const assignments: Record<string, unknown> = {
+          plan_id: plan?.planId ?? null,
+          plan_started_at: plan?.startedAt ?? null,
+          plan_period_start: plan?.periodStart ?? null,
+          plan_renews_on: plan?.renewsOn ?? null,
+          plan_price: plan?.price ?? null,
+          plan_pickups_used: plan?.pickupsUsed ?? 0,
+          plan_cancel_at_end: plan?.cancelAtPeriodEnd ?? false,
+        };
+
+        if (walletBalance !== undefined) assignments.wallet_balance = walletBalance;
+
+        const rows = await exec<AccountRow[]>`
+          update accounts set ${exec(assignments)}
+          where lower(email) = ${email.trim().toLowerCase()}
+          returning *
+        `;
+        return rows[0] ? toAccount(rows[0]) : null;
+      },
+
+      /**
+       * Records an outstanding confirmation link.
+       *
+       * Replaces whatever was there, so asking for a second link retires the
+       * first — two live links for one address means a customer confirming with
+       * the older mail in their inbox, which works but is impossible to reason
+       * about when it does not.
+       */
+      async setVerificationToken(
+        email: string,
+        token: { hash: string; expiresAt: string; sentAt: string }
+      ): Promise<StoredAccount | null> {
+        const rows = await exec<AccountRow[]>`
+          update accounts set
+            verification_token_hash = ${token.hash},
+            verification_expires_at = ${token.expiresAt},
+            verification_sent_at    = ${token.sentAt}
+          where lower(email) = ${email.trim().toLowerCase()}
+          returning *
+        `;
+        return rows[0] ? toAccount(rows[0]) : null;
+      },
+
+      /**
+       * The account holding this link, if the link is still live.
+       *
+       * Expiry is part of the where-clause rather than a check on the result:
+       * an expired token should not resolve to an account at all, and doing it
+       * here means no caller can forget.
+       */
+      async findByVerificationToken(hash: string): Promise<StoredAccount | null> {
+        const rows = await exec<AccountRow[]>`
+          select * from accounts
+          where verification_token_hash = ${hash}
+            and verification_expires_at > now()
+          limit 1
+        `;
+        return rows[0] ? toAccount(rows[0]) : null;
+      },
+
+      /**
+       * Confirms the address and spends the link in one statement.
+       *
+       * Clearing the token is what stops a confirmation URL — which lives in
+       * browser history and in the customer's inbox indefinitely — from being
+       * replayable afterwards.
+       */
+      async markEmailVerified(email: string): Promise<StoredAccount | null> {
+        const rows = await exec<AccountRow[]>`
+          update accounts set
+            email_verified          = true,
+            verification_token_hash = null,
+            verification_expires_at = null
+          where lower(email) = ${email.trim().toLowerCase()}
+          returning *
+        `;
+        return rows[0] ? toAccount(rows[0]) : null;
+      },
+
+      /**
+       * Records an outstanding reset link.
+       *
+       * Overwrites any previous one, so asking twice leaves exactly one live
+       * link — the newest. The older email still opens, but its token no longer
+       * matches anything.
+       */
+      async setResetToken(
+        email: string,
+        token: { hash: string; expiresAt: string; sentAt: string }
+      ): Promise<StoredAccount | null> {
+        const rows = await exec<AccountRow[]>`
+          update accounts set
+            reset_token_hash = ${token.hash},
+            reset_expires_at = ${token.expiresAt},
+            reset_sent_at    = ${token.sentAt}
+          where lower(email) = ${email.trim().toLowerCase()}
+          returning *
+        `;
+        return rows[0] ? toAccount(rows[0]) : null;
+      },
+
+      /**
+       * The account holding this reset link, if the link is still live.
+       *
+       * Expiry is in the where-clause rather than checked on the result, for
+       * the reason `findByVerificationToken` does it that way: an expired token
+       * should not resolve to an account at all, and no caller can forget.
+       */
+      async findByResetToken(hash: string): Promise<StoredAccount | null> {
+        const rows = await exec<AccountRow[]>`
+          select * from accounts
+          where reset_token_hash = ${hash}
+            and reset_expires_at > now()
+          limit 1
+        `;
+        return rows[0] ? toAccount(rows[0]) : null;
+      },
+
+      /**
+       * Spends the reset link.
+       *
+       * `reset_sent_at` is deliberately left alone: it is the rate limit, and
+       * clearing it here would let somebody complete a reset and immediately
+       * request another mail, which is the loop the cooldown exists to close.
+       */
+      async clearResetToken(email: string): Promise<StoredAccount | null> {
+        const rows = await exec<AccountRow[]>`
+          update accounts set
+            reset_token_hash = null,
+            reset_expires_at = null
+          where lower(email) = ${email.trim().toLowerCase()}
+          returning *
+        `;
+        return rows[0] ? toAccount(rows[0]) : null;
+      },
+
+      /** Sets or replaces the password on an existing account. */
+      async setPassword(
+        email: string,
+        credentials: { salt: string; hash: string; name?: string; phone?: string }
+      ): Promise<StoredAccount | null> {
+        const rows = await exec<AccountRow[]>`
+          update accounts set
+            password_salt = ${credentials.salt},
+            password_hash = ${credentials.hash},
+            name  = coalesce(${credentials.name ?? null}, name),
+            phone = coalesce(${credentials.phone ?? null}, phone)
+          where lower(email) = ${email.trim().toLowerCase()}
+          returning *
+        `;
+        return rows[0] ? toAccount(rows[0]) : null;
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Supervisors
+    // -----------------------------------------------------------------------
+    supervisors: {
+      async list(): Promise<StoredSupervisor[]> {
+        const rows = await exec<SupervisorRow[]>`select * from supervisors order by id`;
+        return rows.map(toSupervisor);
+      },
+
+      async findByEmail(email: string): Promise<StoredSupervisor | null> {
+        const rows = await exec<SupervisorRow[]>`
+          select * from supervisors where lower(email) = ${email.trim().toLowerCase()}
+        `;
+        return rows[0] ? toSupervisor(rows[0]) : null;
+      },
+
+      async insert(supervisor: StoredSupervisor): Promise<StoredSupervisor> {
+        const rows = await exec<SupervisorRow[]>`
+          insert into supervisors (id, name, email, created_at, active, password_salt, password_hash)
+          values (
+            ${supervisor.id}, ${supervisor.name}, ${supervisor.email},
+            ${supervisor.createdAt}, ${supervisor.active ?? true},
+            ${supervisor.passwordSalt ?? null}, ${supervisor.passwordHash ?? null}
+          )
+          returning *
+        `;
+        return toSupervisor(rows[0]);
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Messaging
+    // -----------------------------------------------------------------------
+    messages: {
+      /**
+       * Ordered by insertion, not by `timestamp` — that field holds a display
+       * label like "14:32" produced by `nowLabel()`, which cannot order a
+       * conversation that runs past midnight.
+       */
+      async list(orderId?: string | null): Promise<Message[]> {
+        const rows = await exec<MessageRow[]>`
+          select * from messages
+          where ${orderId ? exec`order_id = ${orderId}` : exec`true`}
+          order by seq
+        `;
+        return rows.map(toMessage);
+      },
+
+      async insert(message: Message): Promise<Message> {
+        const rows = await exec<MessageRow[]>`
+          insert into messages (id, sender, "text", "timestamp", order_id)
+          values (
+            ${message.id}, ${message.sender}, ${message.text},
+            ${message.timestamp}, ${message.orderId ?? null}
+          )
+          on conflict (id) do nothing
+          returning *
+        `;
+        // A replayed id is not an error — the offline queues in both clients
+        // resend, and the message already recorded is the right answer.
+        return rows[0] ? toMessage(rows[0]) : message;
+      },
+    },
+
+    notifications: {
+      async list(): Promise<Notification[]> {
+        const rows = await exec<NotificationRow[]>`
+          select * from notifications order by seq desc
+        `;
+        return rows.map(toNotification);
+      },
+
+      async insert(notification: Notification): Promise<Notification> {
+        const rows = await exec<NotificationRow[]>`
+          insert into notifications (id, title, body, "timestamp", "type", order_id, "read")
+          values (
+            ${notification.id}, ${notification.title}, ${notification.body},
+            ${notification.timestamp}, ${notification.type},
+            ${notification.orderId ?? null}, ${notification.read}
+          )
+          on conflict (id) do nothing
+          returning *
+        `;
+        return rows[0] ? toNotification(rows[0]) : notification;
+      },
+
+      async markRead(id: string): Promise<Notification | null> {
+        const rows = await exec<NotificationRow[]>`
+          update notifications set "read" = true where id = ${id} returning *
+        `;
+        return rows[0] ? toNotification(rows[0]) : null;
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Payments
+    // -----------------------------------------------------------------------
+    transactions: {
+      async list(email?: string | null): Promise<PaymentTransaction[]> {
+        const rows = await exec<TransactionRow[]>`
+          select * from transactions
+          where ${email ? exec`lower(user_email) = ${email.toLowerCase()}` : exec`true`}
+          order by seq desc
+        `;
+        return rows.map(toTransaction);
+      },
+
+      /** Matched on `reference` — what Paystack echoes back on a verify. */
+      async upsert(transaction: PaymentTransaction): Promise<PaymentTransaction> {
+        const rows = await exec<TransactionRow[]>`
+          insert into transactions (
+            id, reference, booking_id, user_email, amount, method,
+            status, "timestamp", description
+          ) values (
+            ${transaction.id}, ${transaction.reference}, ${transaction.bookingId ?? null},
+            ${transaction.userEmail ?? null}, ${transaction.amount}, ${transaction.method},
+            ${transaction.status}, ${transaction.timestamp}, ${transaction.description}
+          )
+          on conflict (reference) do update set
+            booking_id  = excluded.booking_id,
+            user_email  = excluded.user_email,
+            amount      = excluded.amount,
+            method      = excluded.method,
+            status      = excluded.status,
+            "timestamp" = excluded."timestamp",
+            description = excluded.description
+          returning *
+        `;
+        return toTransaction(rows[0]);
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Sessions
+    // -----------------------------------------------------------------------
+    sessions: {
+      async insert(session: StoredSession): Promise<StoredSession> {
+        const rows = await exec<SessionRow[]>`
+          insert into sessions (token, kind, subject, created_at, expires_at)
+          values (
+            ${session.token}, ${session.kind}, ${session.subject},
+            ${session.createdAt}, ${session.expiresAt}
+          )
+          returning *
+        `;
+        return toSession(rows[0]);
+      },
+
+      /**
+       * The live session behind a token. Expired ones are deleted on sight and
+       * reported as absent, so the sweep costs nothing on its own schedule.
+       */
+      async findLive(token: string, kind: SessionKind): Promise<StoredSession | null> {
+        const rows = await exec<SessionRow[]>`
+          select * from sessions
+          where token = ${token} and kind = ${kind} and expires_at > now()
+        `;
+        return rows[0] ? toSession(rows[0]) : null;
+      },
+
+      async revoke(token: string): Promise<void> {
+        await exec`delete from sessions where token = ${token}`;
+      },
+
+      /**
+       * Signs one subject out everywhere.
+       *
+       * What a completed password reset calls. Whoever knew the old password
+       * may still be holding a week-long bearer token, and leaving those alive
+       * would mean the reset changed the lock while the other key still turned
+       * it — which is precisely the case a reset exists for.
+       */
+      async revokeAllFor(kind: SessionKind, subject: string): Promise<void> {
+        await exec`
+          delete from sessions
+          where kind = ${kind}
+            and subject = ${kind === 'rider' ? subject : subject.toLowerCase()}
+        `;
+      },
+
+      /** Clears expired tokens. Called when a new one is issued. */
+      async pruneExpired(): Promise<void> {
+        await exec`delete from sessions where expires_at <= now()`;
+      },
+    },
   };
 }
 
-export function freshDatabase(): Database {
-  return {
-    jobs: seedJobs(),
-    riders: seedRiders(),
-    messages: seedMessages(),
-    notifications: seedNotifications(),
-    accounts: seedAccounts(),
-    transactions: [],
-    sessions: [],
-  };
-}
-
-function load(): Database {
-  try {
-    const raw = fs.readFileSync(DB_FILE, 'utf8');
-    const parsed = JSON.parse(raw) as Partial<Database>;
-    // Merge over an empty shape so a file written by an older build that
-    // predates a collection still loads instead of crashing on undefined.
-    return { ...emptyDatabase(), ...parsed };
-  } catch {
-    const seeded = freshDatabase();
-    persist(seeded);
-    return seeded;
-  }
-}
-
-function persist(data: Database): void {
-  try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf8');
-  } catch (error) {
-    console.error('[store] failed to persist database:', error);
-  }
-}
-
-let db: Database = load();
-let saveTimer: NodeJS.Timeout | null = null;
-
-function scheduleSave(): void {
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    persist(db);
-  }, SAVE_DEBOUNCE_MS);
-}
+/** Every repository, bound to one executor. */
+export type Repositories = ReturnType<typeof repositories>;
 
 export const store = {
-  /** Read-only snapshot. Callers must not mutate what they get back. */
-  read(): Readonly<Database> {
-    return db;
+  ...repositories(sql),
+
+  /**
+   * Runs several writes as one.
+   *
+   * Anything that touches more than one table belongs in here — a delivery
+   * completing writes the job, a message, a notification and the courier's
+   * totals, and three of those landing without the fourth is a worse record
+   * than none of them landing.
+   */
+  async tx<T>(fn: (t: Repositories) => Promise<T>): Promise<T> {
+    return (await sql.begin((transaction) => fn(repositories(transaction)))) as T;
   },
 
-  /** The only way to change anything. Returns whatever the mutator returns. */
-  mutate<T>(fn: (data: Database) => T): T {
-    const result = fn(db);
-    scheduleSave();
-    return result;
-  },
-
-  /** Wipe back to seed data — the admin dashboard's "reset" action. */
-  reset(): void {
-    db = freshDatabase();
-    persist(db);
-  },
-
-  /** Flush pending writes; called on shutdown. */
-  flush(): void {
-    if (saveTimer) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
-    }
-    persist(db);
-  },
-
-  get file(): string {
-    return DB_FILE;
+  /**
+   * Wipes every table back to nothing — the admin dashboard's "reset".
+   *
+   * `truncate ... cascade` rather than eight deletes so the foreign keys from
+   * messages and notifications back to jobs do not have to be untangled in
+   * order, and the sequences behind `seq` restart with the data.
+   */
+  async reset(): Promise<void> {
+    await sql`
+      truncate jobs, riders, accounts, supervisors, messages,
+               notifications, transactions, sessions
+      restart identity cascade
+    `;
   },
 };

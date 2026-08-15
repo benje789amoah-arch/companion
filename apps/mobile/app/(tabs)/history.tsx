@@ -4,7 +4,7 @@
  */
 
 import { History as HistoryIcon, ShieldCheck } from 'lucide-react-native';
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Card, EmptyState } from '../../src/components/ui';
@@ -12,12 +12,24 @@ import { useApp } from '../../src/store/AppStore';
 import { colors, formatCedis, radius } from '../../src/theme';
 
 export default function HistoryScreen() {
-  const { orders } = useApp();
+  const { orders, loadOrderProof } = useApp();
 
   const completed = useMemo(
     () => orders.filter((o) => o.status === 'delivered'),
     [orders]
   );
+
+  /**
+   * The board this list is built from arrives without its photographs — one
+   * request every four seconds cannot carry them. This screen is the only
+   * place a courier looks back at a finished job, so it asks for the ones it
+   * is about to draw, once each, and only for jobs it does not already hold.
+   */
+  useEffect(() => {
+    for (const order of completed) {
+      if (!order.deliveryPhoto) void loadOrderProof(order.id);
+    }
+  }, [completed, loadOrderProof]);
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>

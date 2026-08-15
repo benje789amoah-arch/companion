@@ -5,7 +5,7 @@
 
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Camera, Check, ImageIcon, RotateCcw } from 'lucide-react-native';
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { colors, radius } from '../theme';
 import { Button, Divider } from './ui';
@@ -17,66 +17,64 @@ interface CameraCaptureProps {
   context?: 'pickup' | 'delivery';
 }
 
-/** Stand-in shots so the flow is demoable without pointing a phone at laundry. */
-const PRESET_PHOTOS = {
-  pickup: [
-    {
-      id: 'p1',
-      label: 'Canvas bags on KNUST bench',
-      url: 'https://images.unsplash.com/photo-1545173168-9f19472ef7f8?auto=format&fit=crop&q=80&w=600',
-    },
-    {
-      id: 'p2',
-      label: 'Silk bags at reception',
-      url: 'https://images.unsplash.com/photo-1528570188406-29a019a2884c?auto=format&fit=crop&q=80&w=600',
-    },
-  ],
-  delivery: [
-    {
-      id: 'd1',
-      label: 'Pressed linen at the desk',
-      url: 'https://images.unsplash.com/photo-1541123437800-1bb1317badc2?auto=format&fit=crop&q=80&w=600',
-    },
-    {
-      id: 'd2',
-      label: 'Garments hung on valet',
-      url: 'https://images.unsplash.com/photo-1512436991641-6745cdb1723f?auto=format&fit=crop&q=80&w=600',
-    },
-  ],
-} as const;
-
-type CaptureMode = 'presets' | 'camera';
-
 export default function CameraCapture({
   onCapture,
   onCancel,
   title = 'Capture condition documentation',
   context = 'pickup',
 }: CameraCaptureProps) {
-  const [mode, setMode] = useState<CaptureMode>('presets');
-  const [captured, setCaptured] = useState<string | null>(null);
+  /**
+   * Two forms of the same shot.
+   *
+   * `preview` is the on-device file the camera hands back, which is what the
+   * viewfinder should render — pointing an `Image` at a multi-megabyte data URI
+   * to draw a 4:3 thumbnail is wasteful when the file is right there.
+   *
+   * `encoded` is what actually leaves the phone. This used to submit the file
+   * URI, which meant every proof photo on the job record was a path inside this
+   * app's sandbox: unreadable by the customer's app, by the supervisor's desk,
+   * and by this phone once the cache was cleared. The record said a photograph
+   * was taken and nobody could ever look at it.
+   */
+  const [preview, setPreview] = useState<string | null>(null);
+  const [encoded, setEncoded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView | null>(null);
 
-  const enterCameraMode = async () => {
-    if (!permission?.granted) {
-      const result = await requestPermission();
-      if (!result.granted) return;
+  // This attaches proof-of-service to the shared job record, so the only thing
+  // it will accept is a photograph taken here and now. There is deliberately no
+  // gallery, no stock image and no skip: a stand-in shot is worse than no
+  // photo, because it looks like evidence.
+  useEffect(() => {
+    if (permission && !permission.granted && permission.canAskAgain) {
+      void requestPermission();
     }
-    setMode('camera');
-  };
+  }, [permission, requestPermission]);
 
   const takePicture = async () => {
     if (!cameraRef.current || busy) return;
     setBusy(true);
+    setError('');
     try {
-      const photo = await cameraRef.current.takePictureAsync({ quality: 0.6 });
-      if (photo?.uri) setCaptured(photo.uri);
+      // Quality is deliberately low. This is a condition record, not a
+      // portfolio piece, and it travels over whatever signal a courier has in
+      // a stairwell — the server takes bodies up to 12mb and a full-quality
+      // phone photo encodes to a good fraction of that on its own.
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.4, base64: true });
+      if (photo?.base64) {
+        setPreview(photo.uri ?? null);
+        setEncoded(`data:image/jpeg;base64,${photo.base64}`);
+      } else if (photo?.uri) {
+        // Encoding failed but the file exists. Submitting the path would put a
+        // dead reference on the job, so treat it as no photo at all.
+        setError('The photo could not be prepared for upload. Try again.');
+      } else {
+        setError('The camera returned nothing. Try again.');
+      }
     } catch {
-      // Falling back to the presets keeps the workflow unblocked on a device
-      // where the camera is unavailable (simulator, hardware in use, etc).
-      setMode('presets');
+      setError('The camera is unavailable on this device. Call dispatch to record the handover.');
     } finally {
       setBusy(false);
     }
@@ -94,31 +92,14 @@ export default function CameraCapture({
         </View>
       </View>
 
-      {!captured && (
-        <View style={styles.modeToggle}>
-          <Pressable
-            onPress={() => setMode('presets')}
-            style={[styles.modeButton, mode === 'presets' && styles.modeButtonActive]}
-          >
-            <Text style={[styles.modeLabel, mode === 'presets' && styles.modeLabelActive]}>
-              Gallery presets
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={enterCameraMode}
-            style={[styles.modeButton, mode === 'camera' && styles.modeButtonActive]}
-          >
-            <Text style={[styles.modeLabel, mode === 'camera' && styles.modeLabelActive]}>
-              Device camera
-            </Text>
-          </Pressable>
-        </View>
-      )}
-
       <View style={styles.viewfinder}>
-        {captured ? (
-          <Image source={{ uri: captured }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-        ) : mode === 'camera' && permission?.granted ? (
+        {preview || encoded ? (
+          <Image
+            source={{ uri: preview ?? encoded! }}
+            style={StyleSheet.absoluteFill}
+            resizeMode="cover"
+          />
+        ) : permission?.granted ? (
           <>
             <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
             <Pressable
@@ -130,27 +111,20 @@ export default function CameraCapture({
             </Pressable>
           </>
         ) : (
-          <View style={styles.presetPane}>
+          <View style={styles.permissionPane}>
             <ImageIcon size={34} color="rgba(255,255,255,0.4)" />
-            <Text style={styles.presetTitle}>Select a dispatch photo</Text>
-            <Text style={styles.presetBody}>
-              Simulates capturing the concierge handover
+            <Text style={styles.permissionTitle}>Camera access needed</Text>
+            <Text style={styles.permissionBody}>
+              {context === 'pickup'
+                ? 'A photograph of the bags at collection is part of the record.'
+                : 'A photograph of the delivered garments is part of the record.'}
             </Text>
-
-            <View style={styles.presetGrid}>
-              {PRESET_PHOTOS[context].map((item) => (
-                <Pressable
-                  key={item.id}
-                  onPress={() => setCaptured(item.url)}
-                  style={({ pressed }) => [styles.presetCard, pressed && { opacity: 0.75 }]}
-                >
-                  <Image source={{ uri: item.url }} style={styles.presetImage} />
-                  <Text style={styles.presetCaption} numberOfLines={2}>
-                    {item.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
+            <Button
+              label="Enable camera"
+              variant="outline"
+              onPress={() => void requestPermission()}
+              style={{ marginTop: 10 }}
+            />
           </View>
         )}
 
@@ -160,21 +134,26 @@ export default function CameraCapture({
         <View style={[styles.corner, styles.cornerBR]} />
       </View>
 
+      {!!error && <Text style={styles.error}>{error}</Text>}
+
       <Divider />
 
       <View style={styles.actions}>
-        {captured ? (
+        {encoded ? (
           <>
             <Button
               label="Retake"
               variant="ghost"
-              onPress={() => setCaptured(null)}
+              onPress={() => {
+                setPreview(null);
+                setEncoded(null);
+              }}
               icon={<RotateCcw size={14} color={colors.textCharcoal} />}
               style={{ flex: 1 }}
             />
             <Button
               label="Submit proof"
-              onPress={() => onCapture(captured)}
+              onPress={() => onCapture(encoded)}
               icon={<Check size={15} color="#FFFFFF" />}
               style={{ flex: 1 }}
             />
@@ -198,18 +177,6 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   title: { fontSize: 14, fontWeight: '800', color: colors.textCharcoal },
   subtitle: { fontSize: 10, color: colors.textSlate, marginTop: 2 },
-
-  modeToggle: {
-    flexDirection: 'row',
-    backgroundColor: colors.bgLinen,
-    borderRadius: radius.md,
-    padding: 3,
-    gap: 3,
-  },
-  modeButton: { flex: 1, paddingVertical: 7, borderRadius: radius.sm, alignItems: 'center' },
-  modeButtonActive: { backgroundColor: colors.cardPure },
-  modeLabel: { fontSize: 10.5, fontWeight: '600', color: colors.textSlate },
-  modeLabelActive: { color: colors.textCharcoal },
 
   viewfinder: {
     aspectRatio: 4 / 3,
@@ -238,7 +205,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.statusError,
   },
 
-  presetPane: {
+  permissionPane: {
     position: 'absolute',
     top: 0,
     right: 0,
@@ -249,31 +216,14 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 3,
   },
-  presetTitle: { color: '#FFFFFF', fontSize: 12, fontWeight: '700', marginTop: 4 },
-  presetBody: { color: colors.textSlate, fontSize: 9.5, marginBottom: 8 },
-  presetGrid: { flexDirection: 'row', gap: 10 },
-  presetCard: {
-    width: 120,
-    borderRadius: radius.md,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.15)',
-  },
-  presetImage: { width: '100%', height: 64 },
-  presetCaption: {
-    fontSize: 8,
-    color: '#FFFFFF',
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    paddingHorizontal: 4,
-    paddingVertical: 3,
-    textAlign: 'center',
-  },
-
+  permissionTitle: { color: '#FFFFFF', fontSize: 12, fontWeight: '700', marginTop: 4 },
+  permissionBody: { color: colors.textSlate, fontSize: 9.5, marginBottom: 8 },
   corner: { position: 'absolute', width: 16, height: 16, borderColor: 'rgba(255,255,255,0.45)' },
   cornerTL: { top: 14, left: 14, borderTopWidth: 2, borderLeftWidth: 2 },
   cornerTR: { top: 14, right: 14, borderTopWidth: 2, borderRightWidth: 2 },
   cornerBL: { bottom: 14, left: 14, borderBottomWidth: 2, borderLeftWidth: 2 },
   cornerBR: { bottom: 14, right: 14, borderBottomWidth: 2, borderRightWidth: 2 },
 
+  error: { fontSize: 10.5, color: colors.statusError, lineHeight: 15 },
   actions: { flexDirection: 'row', gap: 10 },
 });

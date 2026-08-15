@@ -17,6 +17,7 @@ export type {
   BookingRiderView,
   BookingStatus,
   Coords,
+  JobProof,
   JobStatus,
   LoyaltyTier,
   MomoNetwork,

@@ -1,0 +1,248 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
+ * Settlement: what has been paid, what has not, and the receipt for either.
+ *
+ * Unpaid orders sort to the top. This pane exists to chase money, so the rows
+ * that need action should not be interleaved with the twenty settled ones a
+ * supervisor has no reason to look at.
+ */
+
+import { useMemo } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
+import { Printer, Receipt, Wallet, X } from 'lucide-react';
+import type { Booking } from '../../types';
+import { Badge, Button, EmptyState, Panel, TableHead, formatCedis } from './ui';
+
+const COLS =
+  'md:grid md:grid-cols-[112px_minmax(140px,1.4fr)_minmax(150px,1.4fr)_100px_96px_76px] md:items-center md:gap-3';
+
+/** Delivery is billed separately from the care package on the receipt. */
+const DISPATCH_FEE = 10;
+
+export default function FinancialsPanel({
+  bookings,
+  totalRevenue,
+  outstanding,
+  receiptFor,
+  onOpenReceipt,
+  onTogglePayment,
+}: {
+  bookings: Booking[];
+  totalRevenue: number;
+  outstanding: number;
+  receiptFor: Booking | null;
+  onOpenReceipt: (booking: Booking | null) => void;
+  onTogglePayment: (bookingId: string) => void;
+}) {
+  const ordered = useMemo(() => {
+    // Unpaid first, then by amount descending — the biggest debt at the top.
+    return [...bookings].sort((a, b) => {
+      const aPaid = a.paymentStatus === 'Paid' ? 1 : 0;
+      const bPaid = b.paymentStatus === 'Paid' ? 1 : 0;
+      if (aPaid !== bPaid) return aPaid - bPaid;
+      return (b.amount ?? 50) - (a.amount ?? 50);
+    });
+  }, [bookings]);
+
+  return (
+    <>
+      <Panel
+        title="Settlement"
+        description="Unpaid orders are listed first."
+        actions={
+          <div className="flex items-center gap-2">
+            <Badge tone="ok" mono>
+              Collected {formatCedis(totalRevenue)}
+            </Badge>
+            <Badge tone="warn" mono>
+              Outstanding {formatCedis(outstanding)}
+            </Badge>
+          </div>
+        }
+      >
+        {ordered.length === 0 ? (
+          <EmptyState
+            icon={Wallet}
+            title="Nothing to settle"
+            detail="Orders appear here as soon as they are booked."
+          />
+        ) : (
+          <>
+            <TableHead
+              className={COLS}
+              columns={[
+                { label: 'Order' },
+                { label: 'Customer' },
+                { label: 'Service' },
+                { label: 'Amount', className: 'text-right' },
+                { label: 'Status' },
+                { label: '', className: '' },
+              ]}
+            />
+            <div className="divide-y divide-admin-line">
+              {ordered.map((b) => {
+                const paid = b.paymentStatus === 'Paid';
+                return (
+                  <div key={b.id} className={`px-5 py-3 hover:bg-admin-hover ${COLS}`}>
+                    <span className="font-mono text-[12px] tabular-nums text-admin-accent">
+                      {b.id}
+                    </span>
+
+                    <div className="mt-0.5 min-w-0 md:mt-0">
+                      <span className="block truncate text-[13px] font-medium text-admin-fg">
+                        {b.name}
+                      </span>
+                      {b.transactionRef && (
+                        <span className="block truncate font-mono text-[11px] text-admin-fg-3">
+                          {b.transactionRef}
+                        </span>
+                      )}
+                    </div>
+
+                    <span className="mt-0.5 block truncate text-[12px] text-admin-fg-2 md:mt-0">
+                      {b.serviceType} · {b.suburb}
+                    </span>
+
+                    <span className="mt-1 block font-mono text-[13px] tabular-nums text-admin-fg md:mt-0 md:text-right">
+                      {formatCedis(b.amount ?? 50)}
+                    </span>
+
+                    <div className="mt-1.5 md:mt-0">
+                      <Badge tone={paid ? 'ok' : 'warn'} dot>
+                        {paid ? 'Paid' : 'Unpaid'}
+                      </Badge>
+                    </div>
+
+                    <div className="mt-2 flex items-center gap-1 md:mt-0 md:justify-self-end">
+                      <Button
+                        size="sm"
+                        variant={paid ? 'ghost' : 'primary'}
+                        onClick={() => onTogglePayment(b.id)}
+                        title={paid ? 'Revert to unpaid / COD' : 'Record payment'}
+                      >
+                        {paid ? 'Revert' : 'Settle'}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon={Printer}
+                        aria-label={`Receipt for ${b.id}`}
+                        title="Itemised receipt"
+                        onClick={() => onOpenReceipt(b)}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </Panel>
+
+      <AnimatePresence>
+        {receiptFor && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+            onClick={() => onOpenReceipt(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.97, y: 8 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.97, y: 8 }}
+              transition={{ duration: 0.15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="admin-card w-full max-w-sm rounded-2xl border border-admin-line bg-admin-panel"
+            >
+              <header className="flex items-center justify-between border-b border-admin-line px-4 py-3">
+                <div className="flex items-center gap-2">
+                  <Receipt className="h-4 w-4 text-admin-accent" />
+                  <h2 className="text-[13px] font-semibold text-admin-fg">Itemised receipt</h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onOpenReceipt(null)}
+                  aria-label="Close receipt"
+                  className="cursor-pointer rounded p-0.5 text-admin-fg-3 hover:text-admin-fg"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </header>
+
+              <div className="space-y-3 px-4 py-4 text-[12px]">
+                <ReceiptRow label="Order" value={receiptFor.id} mono />
+                <ReceiptRow label="Customer" value={receiptFor.name} />
+                <ReceiptRow label="Service" value={receiptFor.serviceType} />
+                <ReceiptRow
+                  label="Pickup"
+                  value={`${receiptFor.address}, ${receiptFor.suburb}`}
+                />
+
+                <div className="space-y-2 border-t border-admin-line pt-3">
+                  <ReceiptRow
+                    label="Care package"
+                    value={formatCedis((receiptFor.amount ?? 50) - DISPATCH_FEE)}
+                    mono
+                  />
+                  <ReceiptRow label="Dispatch fee" value={formatCedis(DISPATCH_FEE)} mono />
+                </div>
+
+                <div className="flex items-baseline justify-between border-t border-admin-line pt-3">
+                  <span className="text-[13px] font-medium text-admin-fg">Total</span>
+                  <span className="font-mono text-[15px] font-semibold tabular-nums text-admin-accent">
+                    {formatCedis(receiptFor.amount ?? 50)}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <span className="text-admin-fg-2">Status</span>
+                  <Badge tone={receiptFor.paymentStatus === 'Paid' ? 'ok' : 'warn'} dot>
+                    {receiptFor.paymentStatus ?? 'Pending'}
+                  </Badge>
+                </div>
+              </div>
+
+              <footer className="border-t border-admin-line px-4 py-3">
+                <Button
+                  variant="primary"
+                  icon={Printer}
+                  className="w-full"
+                  onClick={() => window.print()}
+                >
+                  Print / save PDF
+                </Button>
+              </footer>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+}
+
+function ReceiptRow({
+  label,
+  value,
+  mono = false,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="shrink-0 text-admin-fg-2">{label}</span>
+      <span
+        className={`min-w-0 truncate text-right text-admin-fg ${mono ? 'font-mono tabular-nums' : ''}`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
