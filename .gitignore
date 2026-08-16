@@ -21,3 +21,8 @@ apps/mobile/android/
 
 # Server's local JSON datastore
 apps/server/data/
+
+# Scratch git worktrees. Each is a full checkout with its own node_modules,
+# living inside the repo it belongs to — tracking them would commit the
+# repository into itself.
+.claude/worktrees/
