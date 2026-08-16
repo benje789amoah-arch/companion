@@ -143,6 +143,16 @@ export type SubscribeResult =
   | { ok: true; charged: number; credit: number }
   | { ok: false; reason: 'signed-out' | 'insufficient-funds' | 'offline' | 'rejected'; shortfall?: number; message: string };
 
+/** What a redemption did. `shortfall` is in points, not cedis. */
+export type RedeemResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: 'signed-out' | 'insufficient-points' | 'offline' | 'rejected';
+      shortfall?: number;
+      message: string;
+    };
+
 interface ClientState extends Mirror {
   hydrated: boolean;
   online: boolean;
@@ -187,8 +197,18 @@ interface ClientState extends Mirror {
   /** Attaches a photo and a note to the job's conversation. */
   reportIssue: (orderId: string, note: string, photoUri?: string) => void;
 
+  /**
+   * Credits the wallet after a settled payment. The server writes the balance
+   * and the statement row; nothing is computed on the device.
+   */
   topUpWallet: (amount: number, method: string) => Promise<void>;
+  /**
+   * Debits the wallet and earns the point-per-cedi that spend is worth.
+   * Resolves false when the balance will not cover it.
+   */
   chargeWallet: (amount: number, description: string, bookingId?: string) => Promise<boolean>;
+  /** Spends care points on a reward from the shared catalogue. */
+  redeemReward: (rewardId: string) => Promise<RedeemResult>;
   recordTransaction: (transaction: PaymentTransaction) => void;
   /**
    * Starts or switches a plan. The server prices it — including the credit for
@@ -640,14 +660,6 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
 
   // ---------------------------------------------------------------- wallet
 
-  const persistAccount = useCallback(
-    async (next: UserAccount) => {
-      applyAccount(next);
-      enqueue({ kind: 'account:upsert', account: next });
-    },
-    [applyAccount, enqueue]
-  );
-
   const recordTransaction = useCallback<ClientState['recordTransaction']>(
     (transaction) => {
       commit((current) => ({
@@ -665,55 +677,108 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
   const walletBalance = account?.walletBalance ?? 0;
   const points = account?.points ?? 0;
 
+  /**
+   * Files the row a wallet movement produced into the local statement.
+   *
+   * The server wrote it already — this only saves the wallet tab waiting out a
+   * poll to show what just happened.
+   */
+  const mergeTransaction = useCallback(
+    (transaction: PaymentTransaction | null) => {
+      if (!transaction) return;
+      commit((current) => ({
+        ...current,
+        transactions: [
+          transaction,
+          ...current.transactions.filter((t) => t.reference !== transaction.reference),
+        ],
+      }));
+    },
+    [commit]
+  );
+
+  /**
+   * Money and points move on the server, in one transaction with their ledger
+   * entry.
+   *
+   * This used to be local arithmetic followed by a queued `account:upsert`
+   * carrying an absolute balance — which meant a membership renewal the server
+   * had just debited was silently restored by the next write from this device,
+   * and that the app and the website each awarded loyalty points by their own
+   * rules. `/api/accounts/wallet` decides both now, and hands back the account
+   * to apply.
+   *
+   * Nothing here is queued for offline replay, for the reason `subscribeToPlan`
+   * is not: a balance applied late, from a number that was already stale when
+   * it was computed, is worse than a movement that failed and was retried.
+   */
   const topUpWallet = useCallback<ClientState['topUpWallet']>(
     async (amount, method) => {
-      if (!account) return;
+      const bearer = tokenRef.current;
+      if (!bearer) return;
 
-      await persistAccount({ ...account, walletBalance: (account.walletBalance ?? 0) + amount });
-
-      recordTransaction({
-        id: `txn-${Date.now()}`,
-        userEmail: account.email,
-        amount,
-        method,
-        status: 'Successful',
-        reference: `TXN-TOPUP-${Math.floor(100000 + Math.random() * 900000)}`,
-        timestamp: new Date().toISOString(),
-        description: `Wallet top-up via ${method}`,
-      });
+      const result = await api.topUpWallet({ amount, method }, bearer);
+      applyAccount(result.account);
+      mergeTransaction(result.transaction);
     },
-    [account, persistAccount, recordTransaction]
+    [applyAccount, mergeTransaction]
   );
 
   const chargeWallet = useCallback<ClientState['chargeWallet']>(
     async (amount, description, bookingId) => {
-      if (!account) return false;
+      const bearer = tokenRef.current;
+      if (!bearer) return false;
 
-      const balance = account.walletBalance ?? 0;
-      if (balance < amount) return false;
-
-      // Every ₵1 spent earns a loyalty point, matching the Bronze tier's copy.
-      await persistAccount({
-        ...account,
-        walletBalance: Number((balance - amount).toFixed(2)),
-        points: (account.points ?? 0) + Math.floor(amount),
-      });
-
-      recordTransaction({
-        id: `txn-${Date.now()}`,
-        bookingId,
-        userEmail: account.email,
-        amount,
-        method: 'Wallet',
-        status: 'Successful',
-        reference: `TXN-${Math.floor(100000 + Math.random() * 900000)}`,
-        timestamp: new Date().toISOString(),
-        description,
-      });
-
-      return true;
+      try {
+        // One point per whole cedi is awarded server-side, by the same rule the
+        // website's portal now goes through — see `pointsForSpend` in core.
+        const result = await api.chargeWallet(
+          { amount, description, bookingId },
+          bearer
+        );
+        applyAccount(result.account);
+        mergeTransaction(result.transaction);
+        return true;
+      } catch {
+        // Not enough in the wallet, or the server is unreachable. Either way
+        // the charge did not happen and the caller offers another method.
+        return false;
+      }
     },
-    [account, persistAccount, recordTransaction]
+    [applyAccount, mergeTransaction]
+  );
+
+  /** Spends care points on a reward from the shared catalogue. */
+  const redeemReward = useCallback<ClientState['redeemReward']>(
+    async (rewardId) => {
+      const bearer = tokenRef.current;
+      if (!bearer) {
+        return { ok: false, reason: 'signed-out', message: 'Sign in to redeem a reward.' };
+      }
+
+      try {
+        const result = await api.redeemReward({ rewardId }, bearer);
+        applyAccount(result.account);
+        mergeTransaction(result.transaction);
+        return { ok: true };
+      } catch (error) {
+        if (error instanceof ApiError) {
+          const body = error.body as { reason?: string; shortfall?: number } | undefined;
+          return {
+            ok: false,
+            reason: body?.reason === 'insufficient-points' ? 'insufficient-points' : 'rejected',
+            shortfall: body?.shortfall,
+            message: error.message,
+          };
+        }
+        return {
+          ok: false,
+          reason: 'offline',
+          message: 'Could not reach FreshFold. Check your connection and try again.',
+        };
+      }
+    },
+    [applyAccount, mergeTransaction]
   );
 
   // ----------------------------------------------------------- membership
@@ -955,6 +1020,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       reportIssue,
       topUpWallet,
       chargeWallet,
+      redeemReward,
       recordTransaction,
       subscribeToPlan,
       cancelPlan,
@@ -991,6 +1057,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       reportIssue,
       topUpWallet,
       chargeWallet,
+      redeemReward,
       recordTransaction,
       subscribeToPlan,
       cancelPlan,

@@ -12,7 +12,8 @@ import {
 import { Booking } from '../types';
 import * as store from '../services/store';
 import { SERVICES } from '../data';
-import PickupPinField from './PickupPinField';
+import AddressAutocomplete from './AddressAutocomplete';
+import PickupPinField, { type PinOrigin } from './PickupPinField';
 
 interface BookingModalProps {
   isOpen: boolean;
@@ -34,6 +35,8 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
    * the wrong street.
    */
   const [pickupPin, setPickupPin] = useState<Coords | null>(null);
+  /** How that pin came to be, so the field can say so under the map. */
+  const [pinOrigin, setPinOrigin] = useState<PinOrigin>(null);
   const [service, setService] = useState(SERVICES[0]?.name || 'Washing (Machine & Hand Wash)');
   const [pickupDate, setPickupDate] = useState('');
   const [pickupTimeSlot, setPickupTimeSlot] = useState('08:00 AM - 11:00 AM (Morning Concierge)');
@@ -151,8 +154,10 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
             // The pin travels with the address it was placed for. A patron
             // booking the same pickup again should not have to aim it twice.
             setPickupPin(latest.pickupCoords ?? null);
+            setPinOrigin(latest.pickupCoords ? 'map' : null);
           } else {
             setPickupPin(null);
+            setPinOrigin(null);
           }
         } else {
           setLoggedInUser(null);
@@ -163,6 +168,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
           setSuburb('');
           setCity('');
           setPickupPin(null);
+          setPinOrigin(null);
         }
       } catch (e) {
         console.warn('Could not read existing session state for booking prefill', e);
@@ -437,11 +443,18 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                   <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
                     Contactless Doorstep / Locker Pickup Address *
                   </label>
-                  <input
-                    type="text"
-                    required
+                  {/* Choosing a suggestion places the pin on the building, so
+                      the room number gets typed onto an address that is
+                      already in the right place. Typing straight past the list
+                      still works — it is a text field first. */}
+                  <AddressAutocomplete
                     value={address}
-                    onChange={(e) => setAddress(e.target.value)}
+                    onChange={setAddress}
+                    onPlaceSelected={(detail) => {
+                      setAddress(detail.address);
+                      setPickupPin(detail.coords);
+                      setPinOrigin('place');
+                    }}
                     placeholder="e.g. Victory Towers Hostel (Tabua's Court)"
                     className="w-full bg-[#161616] text-white placeholder-[#8E9299]/50 rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors"
                   />
@@ -477,7 +490,14 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                 {/* The doorstep itself, which the typed address above cannot
                     give us: a hostel block and room number is something no
                     geocoder knows. */}
-                <PickupPinField value={pickupPin} onChange={setPickupPin} suburb={suburb} />
+                <PickupPinField
+                  value={pickupPin}
+                  onChange={setPickupPin}
+                  suburb={suburb}
+                  address={address}
+                  origin={pinOrigin}
+                  onOriginChange={setPinOrigin}
+                />
 
                 {/* Short note for the rider */}
                 <div>

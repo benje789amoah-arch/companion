@@ -86,6 +86,56 @@ export const LANDMARKS: Landmark[] = [
 ];
 
 /**
+ * The landmark a free-text address is talking about, if any.
+ *
+ * Students type where they live the way they say it — "Evandy", "Conti",
+ * "Katanga Hall room 12" — and this table already knows where fifteen of those
+ * places are to the metre. Matching on the name with the bracketed nickname
+ * pulled out catches both halves: "Unity Hall (Conti)" answers to either.
+ *
+ * The three-character floor is what stops a short nickname matching inside an
+ * unrelated word. Returns null rather than guessing, because the caller's
+ * fallback — asking the customer to place a pin — is better than a confident
+ * wrong answer.
+ *
+ * Lived in the supervisor's map, where it decided where to *draw* a booking
+ * that already existed. It is more use here: the same match can put the pin
+ * roughly right while the customer is still typing.
+ */
+export function matchLandmark(address: string, suburb = ''): Landmark | null {
+  const haystacks = [address, suburb]
+    .map((part) => (part || '').trim().toLowerCase())
+    .filter(Boolean);
+
+  if (haystacks.length === 0) return null;
+
+  const found = LANDMARKS.find((mark) => {
+    const names = [
+      mark.name.split('(')[0].trim().toLowerCase(),
+      mark.name.match(/\((.*?)\)/)?.[1]?.trim().toLowerCase() ?? '',
+    ].filter((name) => name.length > 2);
+
+    return haystacks.some((part) =>
+      names.some(
+        (name) =>
+          // A finished address contains the place: "Evandy Hostel, Room 12".
+          part.includes(name) ||
+          // A half-typed one is the start of it: "Evandy" is on its way to
+          // Evandy Hostel. Anchored at the front, and four characters in,
+          // because a loose substring makes "Hall" pick whichever hall the
+          // table happens to list first.
+          (part.length >= MIN_TYPED_MATCH && name.startsWith(part))
+      )
+    );
+  });
+
+  return found ?? null;
+}
+
+/** Shortest partial worth resolving to a landmark while somebody is typing. */
+const MIN_TYPED_MATCH = 4;
+
+/**
  * Bounding box for the service area.
  *
  * Coordinates outside it are stale, corrupt, or not ours: the apps use it to

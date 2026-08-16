@@ -16,6 +16,8 @@ export * from './status';
 export * from './geo';
 export * from './phone';
 export * from './route';
+export * from './places';
 export * from './job';
 export * from './client';
 export * from './membership';
+export * from './loyalty';

@@ -19,7 +19,7 @@ import {
   MapPin,
   Sparkles,
 } from 'lucide-react-native';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -44,7 +44,9 @@ import {
   type Coords,
   type PaymentStatus,
 } from '@freshfold/core';
+import AddressAutocomplete from '../../src/components/AddressAutocomplete';
 import { Icon } from '../../src/components/Icon';
+import type { PinOrigin } from '../../src/components/PickupPinPanel';
 import PickupPinPicker from '../../src/components/PickupPinPicker';
 import {
   Badge,
@@ -125,6 +127,8 @@ export default function BookScreen() {
    * the server derived from the words they typed.
    */
   const [pickupPin, setPickupPin] = useState<Coords | null>(null);
+  /** How that pin came to be, so the picker can say so under the map. */
+  const [pinOrigin, setPinOrigin] = useState<PinOrigin>(null);
   const [saveThisAddress, setSaveThisAddress] = useState(false);
   const [scent, setScent] = useState<string>(SCENTS[0].id);
   const [starch, setStarch] = useState<string>(STARCH_LEVELS[0]);
@@ -211,14 +215,40 @@ export default function BookScreen() {
     }
   }, [account]);
 
+  /**
+   * The saved address fills the form once, when it arrives.
+   *
+   * It used to depend on `address` and run whenever `address` was empty, which
+   * made clearing the field the very thing that refilled it: blank the box,
+   * the effect re-runs, the guard passes, and the saved address is written
+   * straight back. There was no way to end up with an empty address field
+   * while a default existed.
+   *
+   * So: once per saved address, and only into a form nobody has typed into.
+   * `address` is read through a ref to keep that second guard without making
+   * the customer's own edits a trigger.
+   */
+  const addressRef = useRef(address);
+  addressRef.current = address;
+  const prefilledFor = useRef<string | null>(null);
+
   useEffect(() => {
-    if (defaultAddress && !address) {
-      setAddress(defaultAddress.address);
-      setSuburb(defaultAddress.suburb);
-      if (defaultAddress.city) setCity(defaultAddress.city);
-      if (defaultAddress.coords) setPickupPin({ ...defaultAddress.coords });
+    if (!defaultAddress) return;
+    if (prefilledFor.current === defaultAddress.id) return;
+    if (addressRef.current.trim()) return;
+
+    prefilledFor.current = defaultAddress.id;
+    setAddress(defaultAddress.address);
+    setSuburb(defaultAddress.suburb);
+    if (defaultAddress.city) setCity(defaultAddress.city);
+    if (defaultAddress.coords) {
+      setPickupPin({ ...defaultAddress.coords });
+      // A saved pin was placed deliberately last time, so it outranks the
+      // landmark match — otherwise restoring a saved address would move the
+      // pin off the gate the customer chose and back to the building.
+      setPinOrigin('map');
     }
-  }, [defaultAddress, address]);
+  }, [defaultAddress]);
 
   // Arriving from a service card or a segment tile preselects the service.
   useEffect(() => {
@@ -657,12 +687,18 @@ export default function BookScreen() {
                 </Pressable>
               )}
 
-              <Field
-                label="Pickup address"
+              {/* Choosing a suggestion puts the pin on the building, so the
+                  block and room get typed onto an address already in the right
+                  place. Typing straight past the list still works. */}
+              <AddressAutocomplete
                 value={address}
                 onChangeText={setAddress}
+                onPlaceSelected={(detail) => {
+                  setAddress(detail.address);
+                  setPickupPin(detail.coords);
+                  setPinOrigin('place');
+                }}
                 placeholder="Evandy Hostel, Block B, Room 304"
-                icon={<MapPin size={15} color={colors.textMuted} />}
                 hint="Include the block and room — this is what the courier reads at the door."
               />
 
@@ -691,6 +727,9 @@ export default function BookScreen() {
                   value={pickupPin}
                   onChange={setPickupPin}
                   suburb={suburb}
+                  address={address}
+                  origin={pinOrigin}
+                  onOriginChange={setPinOrigin}
                   onAddressSuggested={setAddress}
                 />
               </View>
@@ -1061,6 +1100,9 @@ export default function BookScreen() {
               // Addresses saved before pins existed have none; the customer
               // places one and this address learns it on the next save.
               setPickupPin(saved.coords ? { ...saved.coords } : null);
+              // A saved pin was aimed deliberately last time, so it outranks
+              // the landmark match the address would otherwise trigger.
+              setPinOrigin(saved.coords ? 'map' : null);
               setAddressPickerOpen(false);
             }}
           />

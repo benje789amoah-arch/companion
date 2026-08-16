@@ -5,9 +5,13 @@ import * as store from '../services/store';
 import {
   ApiError,
   BOOKING_STAGE_SEQUENCE,
+  LOYALTY_REWARDS,
   bookingProgressPercent,
-  samePhone,
+  membershipPlan,
+  tierForPoints,
+  tierProgress,
   type JobStatus,
+  type LoyaltyTierId,
   type Message,
 } from '@freshfold/core';
 import { 
@@ -52,6 +56,46 @@ const SENDER_LABELS: Record<Message['sender'], string> = {
   customer: 'You',
   dispatcher: 'Dispatch Desk',
   laundry_center: 'Bomso Atelier',
+};
+
+/**
+ * How each loyalty tier is dressed here.
+ *
+ * The tiers themselves — names, thresholds, discounts, benefits — come from
+ * `@freshfold/core` and are shared with the customer app and the server. This
+ * portal used to carry its own table inline, with Silver starting at 400 points
+ * and Gold at 700 against 500 and 1500 everywhere else, so the same customer
+ * read as Gold on the website and Silver in the app. Only the Tailwind classes
+ * are local now, because only they are specific to this surface.
+ */
+const TIER_STYLES: Record<LoyaltyTierId, {
+  colorClass: string;
+  borderColor: string;
+  bgGradient: string;
+  radialGradient: string;
+  badgeColor: string;
+}> = {
+  gold: {
+    colorClass: 'text-[#c5a880]',
+    borderColor: 'border-[#c5a880]/30',
+    bgGradient: 'from-[#1C1C16] to-[#0A0A0A]',
+    radialGradient: 'from-[#c5a880]/15',
+    badgeColor: 'bg-brand-gold/10 text-brand-gold border-brand-gold/20',
+  },
+  silver: {
+    colorClass: 'text-slate-300',
+    borderColor: 'border-slate-500/30',
+    bgGradient: 'from-[#1F2022] to-[#0E0F10]',
+    radialGradient: 'from-slate-400/10',
+    badgeColor: 'bg-slate-500/10 text-slate-300 border-slate-500/20',
+  },
+  basic: {
+    colorClass: 'text-amber-600',
+    borderColor: 'border-amber-700/30',
+    bgGradient: 'from-[#1A1412] to-[#0E0C0B]',
+    radialGradient: 'from-amber-700/10',
+    badgeColor: 'bg-amber-700/10 text-amber-500 border-amber-700/20',
+  },
 };
 
 /** What `GET /api/auth/claim` hands back for a live setup link. */
@@ -190,7 +234,6 @@ export default function ClientPortal({
   // Wallet top-up states
   const [topUpModalOpen, setTopUpModalOpen] = useState(false);
   const [topUpAmount, setTopUpAmount] = useState('100');
-  const [walletBalance, setWalletBalance] = useState<number>(150);
   const [topUpPaystackLoading, setTopUpPaystackLoading] = useState(false);
   const [topUpPaystackAuthUrl, setTopUpPaystackAuthUrl] = useState('');
   const [topUpPaystackRef, setTopUpPaystackRef] = useState('');
@@ -244,15 +287,18 @@ export default function ClientPortal({
       }
       if (data.data && data.data.status === 'success') {
         const amt = parseFloat(topUpAmount) || (data.data.amount / 100) || 0;
-        const newBal = walletBalance + amt;
-        setWalletBalance(newBal);
-        if (currentUser) {
-          store.writeWallet(currentUser.email, newBal);
-        }
+
+        // Credited by the server, keyed on Paystack's own reference — so this
+        // verify running twice, in two tabs or after a retry, credits once.
+        const account = await store.topUpWallet(amt, 'Paystack', topUpPaystackRef);
+
         setTopUpModalOpen(false);
         setTopUpPaystackAuthUrl('');
         setTopUpPaystackRef('');
-        setSuccessMsg(`Wallet successfully topped up with ₵${amt}.00 GHS via Paystack! New balance: ₵${newBal}.00 GHS`);
+        setSuccessMsg(
+          `Wallet topped up with ₵${amt.toFixed(2)} GHS via Paystack. ` +
+          `New balance: ₵${(account.walletBalance ?? 0).toFixed(2)} GHS`
+        );
       } else {
         alert(`Status: ${data.data?.status || 'pending'}. Complete payment in Paystack checkout and retry.`);
       }
@@ -296,83 +342,47 @@ export default function ClientPortal({
   const [savedSettingsMsg, setSavedSettingsMsg] = useState('');
   const [redeemedRewardMsg, setRedeemedRewardMsg] = useState('');
 
-  // Load wallet balance whenever currentUser changes. The balance lives on the
-  // shared account record, so a top-up made on another device shows up here.
-  useEffect(() => {
-    if (currentUser) {
-      const savedBal = store.readWallet(currentUser.email);
-      if (savedBal !== null) {
-        setWalletBalance(savedBal);
-      } else {
-        setWalletBalance(150); // Default GHS 150.00
-      }
-    }
-  }, [currentUser]);
+  /**
+   * The balance and the points, straight off the account.
+   *
+   * Both were invented here until now: the wallet was a `useState(150)` that
+   * only reloaded when the signed-in user changed, and the points fell back to
+   * 750 for anybody whose account had none. A customer saw ₵150 and 750 points
+   * in this portal and ₵0 and 0 in the app, for the same account, on the same
+   * day. There is nothing to fall back to — the server owns both, `pull()`
+   * re-reads them every five seconds, and every movement goes through
+   * `/api/accounts/wallet` and comes back as a new account.
+   */
+  const walletBalance = currentUser?.walletBalance ?? 0;
+  const patronPoints = currentUser?.points ?? 0;
 
-  // Load points dynamically from the verified account ledger
-  const getPatronPoints = (): number => {
-    try {
-      const savedAccounts: UserAccount[] = store.readAccounts();
-      if (currentUser) {
-        const matched = savedAccounts.find(a => a.email.toLowerCase() === currentUser.email.toLowerCase());
-        if (matched && matched.points !== undefined) {
-          return matched.points;
-        }
-      }
-    } catch (e) {
-      console.warn('Could not read user accounts ledger', e);
-    }
-    return currentUser?.points !== undefined ? currentUser.points : 750; // fallback standard 
-  };
+  const tier = tierForPoints(patronPoints);
+  const { next: nextTier, pointsToNext, percent: tierPercent } = tierProgress(patronPoints);
 
-  // Helper to map Care Points to subscription cards
-  // Bronze: 100-399 Care Points, Silver: 400-699 Care Points, Gold: 700+ Care Points
-  const getSubscriptionDetails = (points: number) => {
-    if (points >= 700) {
-      return {
-        cardName: "Pure Care Gold Card",
-        className: "Gold Class",
-        discountText: "*15% MEMBERSHIP DISCOUNT COEFF",
-        colorClass: "text-[#c5a880]",
-        borderColor: "border-[#c5a880]/30",
-        bgGradient: "from-[#1C1C16] to-[#0A0A0A]",
-        radialGradient: "from-[#c5a880]/15",
-        statusText: "Certified Gold tier: Exclusive organic fragrance infusion, waived priority booking dispatch, & express courier routing are active.",
-        badgeColor: "bg-brand-gold/10 text-brand-gold border-brand-gold/20"
-      };
-    } else if (points >= 400) {
-      return {
-        cardName: "Pure Care Silver Card",
-        className: "Silver Class",
-        discountText: "*10% MEMBERSHIP DISCOUNT COEFF",
-        colorClass: "text-slate-300",
-        borderColor: "border-slate-500/30",
-        bgGradient: "from-[#1F2022] to-[#0E0F10]",
-        radialGradient: "from-slate-400/10",
-        statusText: "Certified Silver tier: Classic botanical scent sprays & priority laundry processing window slots are active.",
-        badgeColor: "bg-slate-500/10 text-slate-300 border-slate-500/20"
-      };
-    } else {
-      return {
-        cardName: "Pure Care Bronze Card",
-        className: "Bronze Class",
-        discountText: "*5% MEMBERSHIP DISCOUNT COEFF",
-        colorClass: "text-amber-600",
-        borderColor: "border-amber-700/30",
-        bgGradient: "from-[#1A1412] to-[#0E0C0B]",
-        radialGradient: "from-amber-700/10",
-        statusText: "Certified Bronze tier: Essential bio-detergent cycles and standard scheduled logistics routing are active.",
-        badgeColor: "bg-amber-700/10 text-amber-500 border-amber-700/20"
-      };
-    }
-  };
+  /**
+   * The membership the customer is actually paying for, as opposed to the tier
+   * their points have earned. The portal had no notion of one at all, while the
+   * app read it off `account.plan` — so a paid subscription was invisible here.
+   */
+  const activePlan = currentUser?.plan ?? null;
+  const activePlanDefinition = membershipPlan(activePlan?.planId);
 
-  // Check for active logged in session on mount
+  /**
+   * Who is signed in, and everything that hangs off them.
+   *
+   * The subscription is the change that matters: this used to read the profile
+   * once on mount and never again, so a top-up made in the customer app, a
+   * membership renewal the server settled, or points earned on an order all sat
+   * invisible here until the next sign-in. `pull()` now re-reads `/auth/me` on
+   * every poll and notifies, so the balance on this screen is the balance.
+   */
   useEffect(() => {
     // Show the cached profile immediately, then check the token is still good.
     // An expired or revoked session resolves to null and signs the patron out
     // rather than leaving the portal looking authenticated when it isn't.
     setCurrentUser(store.readCurrentUser());
+
+    const unsubscribe = store.subscribe(() => setCurrentUser(store.readCurrentUser()));
 
     let cancelled = false;
     store.restoreSession().then((account) => {
@@ -381,32 +391,50 @@ export default function ClientPortal({
 
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, []);
 
-  // Update userBookings when currentUser changes or activeBookings is updated
+  /**
+   * This customer's orders, scoped by the server.
+   *
+   * The portal used to pull the entire ledger — every customer's orders, to
+   * every browser that opened this panel — and filter it here on `email OR
+   * samePhone`. The app asked the server for one customer's history instead,
+   * which matched on email alone, so the two surfaces disagreed about which
+   * orders belonged to whom. `GET /api/bookings?email=` now covers both: it
+   * matches the address *and* the number on that account, and it is the only
+   * list either surface reads.
+   */
   useEffect(() => {
-    if (currentUser) {
-      try {
-        const allBookings: Booking[] = store.readBookings();
-        // Filter bookings belonging to this user
-        const matched = allBookings.filter(
-          b => 
-            b.email.toLowerCase() === currentUser.email.toLowerCase() || 
-            samePhone(b.phone, currentUser.phone)
-        );
-        setUserBookings(matched);
-        if (matched.length > 0 && !activeTrackingId) {
-          setActiveTrackingId(matched[0].id);
-        }
-      } catch (e) {
-        console.warn('Could not filter bookings for user', e);
-      }
-    } else {
+    if (!currentUser) {
       setUserBookings([]);
       setActiveTrackingId(null);
+      return;
     }
-  }, [currentUser, activeBookings]);
+
+    let cancelled = false;
+
+    const load = () => {
+      store.readUserBookings(currentUser.email)
+        .then((matched) => {
+          if (cancelled) return;
+          setUserBookings(matched);
+          setActiveTrackingId((current) => current ?? matched[0]?.id ?? null);
+        })
+        .catch(() => {
+          // Offline. Whatever the last load produced stays on screen.
+        });
+    };
+
+    load();
+    const unsubscribe = store.subscribe(load);
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [currentUser?.email, activeBookings]);
 
   // Resolve the emailed setup link into the booking it opens
   useEffect(() => {
@@ -716,68 +744,127 @@ export default function ClientPortal({
     }
   };
 
-  // Complete payment for a booking inside the portal
-  const handleCompletePayment = (bookingId: string) => {
-    try {
-      const allBookings: Booking[] = store.readBookings();
-      const ref = 'TXN-' + payMethod.substring(0, 3).toUpperCase() + '-' + Math.floor(100000 + Math.random() * 900000);
-      const nowIso = new Date().toISOString();
+  /**
+   * Marks a booking paid, and — when it is paid from the wallet — moves the
+   * money.
+   *
+   * The wallet leg is a server call now, and it goes first: the debit is what
+   * can fail, and marking an order paid that was never actually paid for is the
+   * one outcome worth ordering the steps to avoid. It also earns the loyalty
+   * points the spend is worth, which this screen never did — the app awarded a
+   * point per cedi and the website awarded none, on the same ledger.
+   */
+  const handleCompletePayment = async (bookingId: string) => {
+    const cost = payModalBooking?.amount || 35;
+    let ref = 'TXN-' + payMethod.substring(0, 3).toUpperCase() + '-' + Math.floor(100000 + Math.random() * 900000);
 
-      const updated = allBookings.map(b => {
-        if (b.id === bookingId) {
-          return {
-            ...b,
-            paymentStatus: 'Paid' as const,
-            paymentMethod: payMethod,
-            transactionRef: ref,
-            paidAt: nowIso
-          };
-        }
-        return b;
-      });
+    if (payMethod === 'Wallet') {
+      try {
+        const account = await store.chargeWallet({
+          amount: cost,
+          description: `FreshFold order ${bookingId}`,
+          bookingId,
+          reference: ref,
+        });
+        setCurrentUser(account);
+      } catch (error) {
+        setSuccessMsg('');
+        setPaystackError(
+          error instanceof ApiError
+            ? error.message
+            : 'Could not reach FreshFold to take the payment. Try again in a moment.'
+        );
+        return;
+      }
+    }
+
+    try {
+      const nowIso = new Date().toISOString();
+      const allBookings: Booking[] = store.readBookings();
+
+      const updated = allBookings.map(b =>
+        b.id === bookingId
+          ? {
+              ...b,
+              paymentStatus: 'Paid' as const,
+              paymentMethod: payMethod,
+              transactionRef: ref,
+              paidAt: nowIso,
+            }
+          : b
+      );
 
       store.writeBookings(updated);
       onUpdateBookings(updated);
 
-      if (payMethod === 'Wallet' && payModalBooking) {
-        const cost = payModalBooking.amount || 35;
-        const newBal = Math.max(0, walletBalance - cost);
-        setWalletBalance(newBal);
-        if (currentUser) {
-          store.writeWallet(currentUser.email, newBal);
-        }
-      }
-
-      // Refresh list
-      if (currentUser) {
-        const matched = updated.filter(
-          b => b.email.toLowerCase() === currentUser.email.toLowerCase() ||
-               samePhone(b.phone, currentUser.phone)
-        );
-        setUserBookings(matched);
-      }
-
       setPayModalBooking(null);
       setPayUssdPrompt(false);
-      setSuccessMsg(`Payment of ₵${payModalBooking?.amount || 35}.00 GHS confirmed via ${payMethod}. Ref: ${ref}`);
+      setSuccessMsg(`Payment of ₵${cost.toFixed(2)} GHS confirmed via ${payMethod}. Ref: ${ref}`);
     } catch (e) {
       console.error('Payment error', e);
     }
   };
 
-  // Top up wallet balance
-  const handleTopUpConfirm = () => {
+  /**
+   * Tops the wallet up without going through Paystack — the MoMo and card
+   * paths, which settle out of band.
+   *
+   * The balance is whatever the server says it is afterwards. This used to add
+   * to a number held in this component and write it back absolutely, which is
+   * how a top-up here could erase a membership renewal the server had just
+   * debited.
+   */
+  const handleTopUpConfirm = async () => {
     const amt = parseFloat(topUpAmount) || 0;
     if (amt <= 0) return;
 
-    const newBal = walletBalance + amt;
-    setWalletBalance(newBal);
-    if (currentUser) {
-      store.writeWallet(currentUser.email, newBal);
+    try {
+      const account = await store.topUpWallet(amt, 'MoMo');
+      setTopUpModalOpen(false);
+      setSuccessMsg(
+        `Wallet topped up with ₵${amt.toFixed(2)} GHS. ` +
+        `New balance: ₵${(account.walletBalance ?? 0).toFixed(2)} GHS`
+      );
+    } catch (error) {
+      setTopUpPaystackError(
+        error instanceof ApiError
+          ? error.message
+          : 'Could not reach FreshFold. Your wallet is unchanged — try again in a moment.'
+      );
     }
+  };
 
-    setTopUpModalOpen(false);
-    setSuccessMsg(`Wallet successfully topped up with ₵${amt}.00 GHS! New balance: ₵${newBal}.00 GHS`);
+  /**
+   * Spends care points on a reward.
+   *
+   * These buttons used to check the balance, print "Successfully redeemed" and
+   * deduct nothing — the same 1000-point voucher could be claimed forever, and
+   * the ₵50 credit added money to a React state hook no other surface could
+   * see. The points come off on the server now, and the wallet credit with
+   * them.
+   */
+  const [redeemingReward, setRedeemingReward] = useState<string | null>(null);
+
+  const handleRedeem = async (rewardId: string) => {
+    setRedeemingReward(rewardId);
+    setRedeemedRewardMsg('');
+    try {
+      const account = await store.redeemReward(rewardId);
+      const reward = LOYALTY_REWARDS.find((candidate) => candidate.id === rewardId);
+      setRedeemedRewardMsg(
+        `Redeemed ${reward?.name ?? 'your reward'}. ${(account.points ?? 0).toLocaleString()} care points left.`
+      );
+      setTimeout(() => setRedeemedRewardMsg(''), 5000);
+    } catch (error) {
+      setRedeemedRewardMsg(
+        error instanceof ApiError
+          ? error.message
+          : 'Could not reach FreshFold. Your points are unchanged — try again in a moment.'
+      );
+      setTimeout(() => setRedeemedRewardMsg(''), 5000);
+    } finally {
+      setRedeemingReward(null);
+    }
   };
 
   // Progress percentage, from the shared stage model so the bar and the

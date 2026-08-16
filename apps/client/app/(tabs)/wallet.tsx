@@ -16,8 +16,18 @@ import {
   Wallet as WalletIcon,
 } from 'lucide-react-native';
 import React, { useCallback, useMemo, useState } from 'react';
-import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LOYALTY_REWARDS, tierProgress } from '@freshfold/core';
 import type { PaymentTransaction } from '@freshfold/core';
 import { Icon } from '../../src/components/Icon';
 import {
@@ -67,6 +77,7 @@ export default function WalletScreen() {
     includedPickupsLeft,
     planEndsOn,
     topUpWallet,
+    redeemReward,
     cancelPlan,
     resumePlan,
     refresh,
@@ -79,14 +90,18 @@ export default function WalletScreen() {
   const [busy, setBusy] = useState(false);
   const [planBusy, setPlanBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  /** The reward currently on the wire, so one tap cannot become two. */
+  const [redeeming, setRedeeming] = useState<string | null>(null);
 
   const tier = useMemo(() => tierForPoints(points), [points]);
   const next = useMemo(() => nextTierAfter(tier), [tier]);
 
-  const toNext = next ? Math.max(0, next.minPoints - points) : 0;
-  const tierProgress = next
-    ? Math.min(100, ((points - tier.minPoints) / (next.minPoints - tier.minPoints)) * 100)
-    : 100;
+  // From core, so this bar and the website's read the same. Both surfaces used
+  // to work the percentage out themselves against their own tier tables.
+  const { pointsToNext: toNext, percent: tierPercent } = useMemo(
+    () => tierProgress(points),
+    [points]
+  );
 
   const activePlan = useMemo(
     () => SUBSCRIPTION_PLANS.find((candidate) => candidate.id === plan?.planId),
@@ -98,6 +113,31 @@ export default function WalletScreen() {
     await refresh();
     setRefreshing(false);
   }, [refresh]);
+
+  /**
+   * Redeems, then says what the server did.
+   *
+   * The points come off there, so the balance on screen updates from the
+   * account that comes back rather than from anything worked out here.
+   */
+  const onRedeem = useCallback(
+    async (rewardId: string) => {
+      setRedeeming(rewardId);
+      try {
+        const result = await redeemReward(rewardId);
+
+        if (result.ok) {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          Alert.alert('Redeemed', 'Your reward is on your account.');
+        } else {
+          Alert.alert('Could not redeem', result.message);
+        }
+      } finally {
+        setRedeeming(null);
+      }
+    },
+    [redeemReward]
+  );
 
   /**
    * Cancelling asks first, and says what it will actually do.
@@ -253,7 +293,7 @@ export default function WalletScreen() {
 
             {next ? (
               <View style={{ gap: 6, marginTop: 12 }}>
-                <ProgressBar percent={tierProgress} tone="gold" height={5} />
+                <ProgressBar percent={tierPercent} tone="gold" height={5} />
                 <Text style={[styles.tierNext, { color: tier.accent }]}>
                   {toNext.toLocaleString()} points to {next.name}
                 </Text>
@@ -282,6 +322,55 @@ export default function WalletScreen() {
                 </Text>
               </>
             )}
+          </Card>
+
+          {/*
+            Spending points, which only the website offered — and offered
+            dishonestly: its buttons showed "Successfully redeemed" and deducted
+            nothing, so the same voucher could be claimed forever. Both surfaces
+            now post to `/api/accounts/wallet`, which takes the points.
+          */}
+          <Card style={{ gap: 10, marginTop: 12 }}>
+            <SectionLabel>Spend your points</SectionLabel>
+
+            {LOYALTY_REWARDS.map((reward) => {
+              const affordable = points >= reward.cost;
+
+              return (
+                <View key={reward.id} style={styles.rewardRow}>
+                  <View style={styles.rewardCopy}>
+                    <Text style={styles.rewardName}>{reward.name}</Text>
+                    <Text style={styles.rewardDesc}>{reward.description}</Text>
+                  </View>
+
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Redeem ${reward.name} for ${reward.cost} care points`}
+                    accessibilityState={{ disabled: !affordable || redeeming !== null }}
+                    disabled={!affordable || redeeming !== null}
+                    onPress={() => onRedeem(reward.id)}
+                    style={({ pressed }) => [
+                      styles.rewardButton,
+                      !affordable && styles.rewardButtonOff,
+                      pressed && affordable && { opacity: 0.75 },
+                    ]}
+                  >
+                    {redeeming === reward.id ? (
+                      <ActivityIndicator size="small" color={colors.textCharcoal} />
+                    ) : (
+                      <Text
+                        style={[
+                          styles.rewardButtonText,
+                          !affordable && styles.rewardButtonTextOff,
+                        ]}
+                      >
+                        {reward.cost.toLocaleString()} pts
+                      </Text>
+                    )}
+                  </Pressable>
+                </View>
+              );
+            })}
           </Card>
         </View>
 
@@ -543,6 +632,28 @@ const styles = StyleSheet.create({
   benefitRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 9 },
   benefitText: { flex: 1, fontSize: 11.5, color: colors.textCharcoal, lineHeight: 16 },
   discountNote: { fontSize: 10.5, color: colors.textSlate, lineHeight: 15 },
+
+  rewardRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  rewardCopy: { flex: 1, gap: 2 },
+  rewardName: { fontSize: 12.5, fontWeight: '700', color: colors.textCharcoal },
+  rewardDesc: { fontSize: 10.5, color: colors.textSlate, lineHeight: 14.5 },
+  rewardButton: {
+    minWidth: 78,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+    borderRadius: radius.md,
+    backgroundColor: colors.brandGold,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rewardButtonOff: { backgroundColor: tints.stone35 },
+  rewardButtonText: {
+    fontSize: 10.5,
+    fontWeight: '800',
+    color: colors.textCharcoal,
+    letterSpacing: 0.3,
+  },
+  rewardButtonTextOff: { color: colors.textMuted },
 
   planHead: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   planName: { fontSize: 13, fontWeight: '800', color: colors.textCharcoal },

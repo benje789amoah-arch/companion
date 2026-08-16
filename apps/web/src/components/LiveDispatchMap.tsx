@@ -12,6 +12,7 @@ import {
   LAUNDRY_HUB,
   SUBURB_COORDS,
   coordsForAddress,
+  matchLandmark,
   type BookingRiderView,
   type Coords,
   type Landmark,
@@ -193,23 +194,10 @@ export default function LiveDispatchMap({
     // The server already decided where this job is. Trust it.
     if (clientCoords) return clientCoords;
 
-    const addressLower = (clientAddress || '').toLowerCase();
-    const suburbLower = (clientSuburb || '').toLowerCase();
-
-    // 1. Check known campus hostels / halls landmarks
-    const matchedLandmark = landmarks.find(mark => {
-      const cleanName = mark.name.split('(')[0].trim().toLowerCase();
-      const nicknameMatch = mark.name.match(/\((.*?)\)/);
-      const nickname = nicknameMatch ? nicknameMatch[1].toLowerCase() : null;
-
-      return (
-        (cleanName.length > 2 && addressLower.includes(cleanName)) ||
-        (cleanName.length > 2 && suburbLower.includes(cleanName)) ||
-        (nickname && addressLower.includes(nickname)) ||
-        (nickname && suburbLower.includes(nickname))
-      );
-    });
-
+    // 1. Check known campus hostels / halls landmarks. The matcher lives in
+    //    core now, because the booking form uses the same one to put the pin
+    //    roughly right before the customer has touched the map.
+    const matchedLandmark = matchLandmark(clientAddress, clientSuburb);
     if (matchedLandmark) {
       return { lat: matchedLandmark.lat, lng: matchedLandmark.lng };
     }

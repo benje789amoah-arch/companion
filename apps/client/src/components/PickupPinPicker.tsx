@@ -4,10 +4,10 @@
  */
 
 import { Home } from 'lucide-react-native';
-import React, { useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import MapView, { type Region } from 'react-native-maps';
-import type { Coords } from '@freshfold/core';
+import { matchLandmark, type Coords } from '@freshfold/core';
 import { MAP_PROVIDER } from '@freshfold/rn-maps';
 import PickupPinPanel, {
   LocateButton,
@@ -82,7 +82,15 @@ class MapBoundary extends React.Component<
  * grab. The pin commits when the map settles, so a pan is one update rather
  * than sixty.
  */
-function NativePinPicker({ value, onChange, suburb, onAddressSuggested }: PickupPinPickerProps) {
+function NativePinPicker({
+  value,
+  onChange,
+  suburb,
+  onAddressSuggested,
+  address = '',
+  origin = null,
+  onOriginChange,
+}: PickupPinPickerProps) {
   const mapRef = useRef<MapView | null>(null);
   /**
    * `onRegionChangeComplete` also fires when the map first lays itself out.
@@ -92,15 +100,83 @@ function NativePinPicker({ value, onChange, suburb, onAddressSuggested }: Pickup
    */
   const touched = useRef(false);
 
+  /**
+   * Set while the camera is being moved by code rather than by a thumb.
+   *
+   * `animateToRegion` ends in `onRegionChangeComplete` exactly as a drag does,
+   * and on iOS there is no `isGesture` to tell them apart. Without this, every
+   * fly-to would re-commit its own destination as a hand-placed pin — which
+   * silences the provenance note and stops any later address match applying.
+   */
+  const programmatic = useRef(false);
+
+  const flyTo = useCallback((next: Coords) => {
+    programmatic.current = true;
+    mapRef.current?.animateToRegion(regionAround(next), 600);
+  }, []);
+
   const { locate, busy, error } = useDeviceFix((next) => {
     onChange(next);
-    mapRef.current?.animateToRegion(regionAround(next), 600);
+    onOriginChange?.('device');
   });
 
   const anchor = anchorFor(suburb);
   // Read once, on mount: after that the map owns its own camera, and feeding a
   // region back into a map the customer is panning fights them for it.
   const initialRegion = useMemo(() => regionAround(value ?? anchor), []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * Follow the suburb.
+   *
+   * The camera only — a suburb is a neighbourhood, not a doorstep, and
+   * dropping a pin in the middle of one is the derived-location behaviour this
+   * component exists to replace. What it fixes is the customer who picks Kotei
+   * and is left looking at a map of KNUST Campus two kilometres away, with
+   * nothing to do but drag.
+   */
+  const firstRender = useRef(true);
+  useEffect(() => {
+    if (firstRender.current) {
+      firstRender.current = false;
+      return;
+    }
+    flyTo(anchor);
+  }, [anchor.lat, anchor.lng]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * Follow the address, when it names somewhere we already know.
+   *
+   * Fifteen halls and hostels have exact coordinates in `@freshfold/core`, and
+   * the supervisor's map has always used them to place a booking after the
+   * fact. Used here they put the pin on the building while the customer is
+   * still typing the room number.
+   *
+   * Never overrides a pin the customer placed: a match is a starting point,
+   * and moving the map is the last word.
+   */
+  const matched = useMemo(() => matchLandmark(address, ''), [address]);
+  const appliedLandmark = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!matched) return;
+    if (appliedLandmark.current === matched.name) return;
+    if (value && (origin === 'map' || origin === 'device' || origin === 'place')) return;
+
+    appliedLandmark.current = matched.name;
+    onChange({ lat: matched.lat, lng: matched.lng });
+    onOriginChange?.('landmark');
+  }, [matched, value, origin, onChange, onOriginChange]);
+
+  /**
+   * The camera follows any pin the customer did not aim themselves — including
+   * one set from outside this component entirely, which is what choosing an
+   * address from the lookup does. Without it the pin lands on a building
+   * somewhere off the edge of a map still sitting over the suburb.
+   */
+  useEffect(() => {
+    if (!value || origin === 'map') return;
+    flyTo(value);
+  }, [value?.lat, value?.lng, origin, flyTo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <View style={{ gap: 8 }}>
@@ -114,8 +190,16 @@ function NativePinPicker({ value, onChange, suburb, onAddressSuggested }: Pickup
             touched.current = true;
           }}
           onRegionChangeComplete={(region, details) => {
+            if (programmatic.current) {
+              // The camera arrived where code sent it. Nothing to commit.
+              programmatic.current = false;
+              return;
+            }
             if (!touched.current && !details?.isGesture) return;
+            // The customer's own answer, which outranks every guess above and
+            // stops them being reapplied.
             onChange({ lat: region.latitude, lng: region.longitude });
+            onOriginChange?.('map');
           }}
           showsUserLocation
           showsMyLocationButton={false}
@@ -141,7 +225,15 @@ function NativePinPicker({ value, onChange, suburb, onAddressSuggested }: Pickup
       <LocateButton onPress={locate} busy={busy} />
       {!!error && <Text style={styles.error}>{error}</Text>}
       <NearestAddress pin={value} onAddressSuggested={onAddressSuggested} />
-      <PinReadout value={value} suburb={suburb} />
+      {/* The pin survives the address being cleared — it was aimed, and
+          throwing it away would cost the customer the one thing that is hard
+          to redo. But "matched from the address you typed" next to an empty
+          address box is a claim about text that is no longer there. */}
+      <PinReadout
+        value={value}
+        suburb={suburb}
+        origin={origin === 'landmark' && !address.trim() ? null : origin}
+      />
     </View>
   );
 }

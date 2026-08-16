@@ -11,6 +11,7 @@ import {
   type Coords,
   type RouteLeg,
 } from '@freshfold/core';
+import { rateLimit } from '../rateLimit';
 
 /**
  * Road routes, for every map in the product.
@@ -63,38 +64,11 @@ const MAX_CACHE_ENTRIES = 300;
  * asks at most once per twenty seconds per leg, and a supervisor with several
  * job maps open asks once per job. Thirty a minute leaves that untouched.
  */
-const RATE_LIMIT_WINDOW_MS = 60 * 1000;
-const RATE_LIMIT_MAX = 30;
-
-const callers = new Map<string, { count: number; windowStart: number }>();
-
-/**
- * Fixed window per IP, swept as it goes.
- *
- * In-memory, so it is per-instance: two servers behind a load balancer allow
- * twice this between them. That is the honest limitation of not having Redis
- * here, and it still turns an unbounded bill into a bounded one.
- */
-function overRateLimit(ip: string): boolean {
-  const now = Date.now();
-  const seen = callers.get(ip);
-
-  if (!seen || now - seen.windowStart > RATE_LIMIT_WINDOW_MS) {
-    // Cheap sweep: without it this map is a slow leak keyed by every IP that
-    // has ever asked.
-    if (callers.size > 5_000) {
-      for (const [key, entry] of callers) {
-        if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS) callers.delete(key);
-      }
-    }
-
-    callers.set(ip, { count: 1, windowStart: now });
-    return false;
-  }
-
-  seen.count += 1;
-  return seen.count > RATE_LIMIT_MAX;
-}
+const limit = rateLimit({
+  max: 30,
+  windowMs: 60 * 1000,
+  message: 'Too many route requests. Try again in a minute.',
+});
 
 interface CacheEntry {
   route: RouteLeg;
@@ -209,13 +183,7 @@ async function fetchRoadRoute(from: Coords, to: Coords, mode: string): Promise<R
  * routing proxy; the cache absorbs repeats of a leg; and the per-IP window
  * above bounds what a single caller can spend when they defeat the cache.
  */
-directionsRouter.get('/', async (req, res) => {
-  if (overRateLimit(req.ip ?? 'unknown')) {
-    return res
-      .status(429)
-      .json({ error: 'Too many route requests. Try again in a minute.' });
-  }
-
+directionsRouter.get('/', limit, async (req, res) => {
   const from = parseCoords(req.query.fromLat, req.query.fromLng);
   const to = parseCoords(req.query.toLat, req.query.toLng);
 

@@ -166,11 +166,22 @@ function repositories(exec: Executor) {
        * is what the rider console's board is. `email` narrows to one
        * customer's history.
        *
+       * `phone` widens that narrowing rather than tightening it: given both,
+       * a job matches on either. Somebody who booked as a guest under a second
+       * address is the same customer, and the website's portal has always shown
+       * them those orders by filtering `email OR samePhone(phone)` in the
+       * browser. Doing it here is what lets the app see the same list — and
+       * lets the portal stop pulling every customer's orders down to filter.
+       *
        * The four proof-of-service blobs are left in the database. See
        * `DISPATCH_WITHOUT_PROOF` — a job from here is a *summary*, and handing
        * one back to `upsert` would erase the photographs it is missing.
        */
-      async list(filter: { riderId?: string | null; email?: string | null } = {}): Promise<Job[]> {
+      async list(
+        filter: { riderId?: string | null; email?: string | null; phone?: string | null } = {}
+      ): Promise<Job[]> {
+        const key = phoneLookup(filter.phone ?? undefined);
+
         const rows = await exec<JobRow[]>`
           select
             id, reference, status, created_at, updated_at,
@@ -184,7 +195,9 @@ function repositories(exec: Executor) {
           }
             and ${
               filter.email
-                ? exec`customer_email = ${filter.email.toLowerCase()}`
+                ? key
+                  ? exec`(customer_email = ${filter.email.toLowerCase()} or customer_phone_key = ${key})`
+                  : exec`customer_email = ${filter.email.toLowerCase()}`
                 : exec`true`
             }
           order by created_at desc, id desc
@@ -786,6 +799,22 @@ function repositories(exec: Executor) {
           order by seq desc
         `;
         return rows.map(toTransaction);
+      },
+
+      /**
+       * One entry by its reference, or null.
+       *
+       * The wallet routes use this to make a movement idempotent: both apps
+       * queue their writes offline and replay them, and an upsert alone would
+       * dedupe the ledger row while the balance moved a second time. Finding
+       * the reference first is what makes a replayed top-up a no-op instead of
+       * free money.
+       */
+      async findByReference(reference: string): Promise<PaymentTransaction | null> {
+        const rows = await exec<TransactionRow[]>`
+          select * from transactions where reference = ${reference} limit 1
+        `;
+        return rows[0] ? toTransaction(rows[0]) : null;
       },
 
       /** Matched on `reference` — what Paystack echoes back on a verify. */

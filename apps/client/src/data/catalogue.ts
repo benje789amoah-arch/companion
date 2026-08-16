@@ -3,8 +3,19 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { MEMBERSHIP_PLANS } from '@freshfold/core';
-import type { MembershipPlanId, SubscriptionPlan, Testimonial } from '@freshfold/core';
+import {
+  MEMBERSHIP_PLANS,
+  LOYALTY_TIERS as CORE_LOYALTY_TIERS,
+  nextTierAfter as coreNextTierAfter,
+  tierForPoints as coreTierForPoints,
+} from '@freshfold/core';
+import type {
+  LoyaltyTier,
+  LoyaltyTierId,
+  MembershipPlanId,
+  SubscriptionPlan,
+  Testimonial,
+} from '@freshfold/core';
 
 /**
  * The marketing catalogue, ported from `apps/web/src/data.ts`.
@@ -263,90 +274,47 @@ export function clientPlan(id: string | undefined | null): ClientSubscriptionPla
 }
 
 /**
- * Loyalty tiers.
+ * Loyalty tiers, dressed for a phone.
  *
- * The website stores gradient stops as Tailwind class names (`from-stone-800`),
- * which mean nothing to React Native. The same visual intent is expressed here
- * as concrete hex pairs for the membership card's gradient.
+ * The tiers themselves — names, thresholds, discounts, benefits — come from
+ * `@freshfold/core` and are shared with the website and the server. This file
+ * used to declare its own array, which is how the app came to put Silver at 500
+ * points while the website's client portal put it at 400: the same customer,
+ * two tiers, depending on which screen they were looking at.
+ *
+ * What stays local is only presentation. The website expresses a card's
+ * gradient as Tailwind class names, which mean nothing to React Native, so the
+ * same visual intent is a pair of hex stops here.
  */
-export interface ClientLoyaltyTier {
-  id: 'basic' | 'silver' | 'gold';
-  name: string;
-  cardName: string;
-  description: string;
-  minPoints: number;
-  /** Fraction, e.g. `0.10` for 10% off. */
-  discountRate: number;
-  benefits: string[];
+interface TierPalette {
   gradient: [string, string];
   textColor: string;
   accent: string;
 }
 
-export const LOYALTY_TIERS: ClientLoyaltyTier[] = [
-  {
-    id: 'basic',
-    name: 'Bronze Membership',
-    cardName: 'FRESH VIP BASIC',
-    description: 'Our entry-level sanctuary code. Earn 1 point per ₵1 spent.',
-    minPoints: 0,
-    discountRate: 0,
-    benefits: [
-      'Live GPS courier tracking',
-      'Digital laundry historical ledger',
-      '24/7 custom scheduling lockers',
-    ],
-    gradient: ['#2E2B26', '#171613'],
-    textColor: '#D6D1C7',
-    accent: '#8C8577',
-  },
-  {
-    id: 'silver',
-    name: 'Silver Premium Club',
-    cardName: 'SILVER CONCIERGE',
-    description: 'Elevated garment tracking protocols. Attained at 500 lifetime points.',
-    minPoints: 500,
-    discountRate: 0.1,
-    benefits: [
-      '10% direct discount on all specialized stain care',
-      'Priority emergency morning collection',
-      'Complimentary seasonal conditioning washes',
-      'Dedicated Customer Care VIP line',
-    ],
-    gradient: ['#4A4E55', '#1E2024'],
-    textColor: '#F1F1EE',
-    accent: '#B9BEC4',
-  },
-  {
-    id: 'gold',
-    name: 'Gold Royal Patron',
-    cardName: 'GOLD ARCHITECT',
-    description: 'The ultimate bespoke fabric hospitality. Attained at 1500 lifetime points.',
-    minPoints: 1500,
-    discountRate: 0.2,
-    benefits: [
-      '20% lifetime standard discount on all wash and press cycles',
-      'Guaranteed same-day express return (surcharge always waived)',
-      'Direct contact of a Certified Master Artisan',
-      'Bespoke scent customization (Eucalyptus, Lavender, or Unscented)',
-    ],
-    gradient: ['#8A6A2E', '#312410'],
-    textColor: '#F6EBD6',
-    accent: '#E2C489',
-  },
-];
+const TIER_PALETTE: Record<LoyaltyTierId, TierPalette> = {
+  basic: { gradient: ['#2E2B26', '#171613'], textColor: '#D6D1C7', accent: '#8C8577' },
+  silver: { gradient: ['#4A4E55', '#1E2024'], textColor: '#F1F1EE', accent: '#B9BEC4' },
+  gold: { gradient: ['#8A6A2E', '#312410'], textColor: '#F6EBD6', accent: '#E2C489' },
+};
+
+export type ClientLoyaltyTier = LoyaltyTier & TierPalette;
+
+function dress(tier: LoyaltyTier): ClientLoyaltyTier {
+  return { ...tier, ...TIER_PALETTE[tier.id] };
+}
+
+export const LOYALTY_TIERS: ClientLoyaltyTier[] = CORE_LOYALTY_TIERS.map(dress);
 
 /** The highest tier the given lifetime points qualify for. */
 export function tierForPoints(points: number): ClientLoyaltyTier {
-  return (
-    [...LOYALTY_TIERS].reverse().find((tier) => points >= tier.minPoints) ?? LOYALTY_TIERS[0]
-  );
+  return dress(coreTierForPoints(points));
 }
 
 /** The next tier up, or `null` at the top. */
 export function nextTierAfter(tier: ClientLoyaltyTier): ClientLoyaltyTier | null {
-  const index = LOYALTY_TIERS.findIndex((candidate) => candidate.id === tier.id);
-  return LOYALTY_TIERS[index + 1] ?? null;
+  const next = coreNextTierAfter(tier);
+  return next ? dress(next) : null;
 }
 
 export const TESTIMONIALS: Testimonial[] = [

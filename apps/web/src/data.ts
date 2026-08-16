@@ -1,4 +1,4 @@
-import { ServiceItem, SubscriptionPlan, LoyaltyTier, Testimonial } from './types';
+import { ServiceItem, SubscriptionPlan, Testimonial } from './types';
 
 export const SERVICES: ServiceItem[] = [
   {
@@ -170,58 +170,16 @@ export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
   }
 ];
 
-export const LOYALTY_TIERS: LoyaltyTier[] = [
-  {
-    id: 'basic',
-    name: 'Bronze Membership',
-    cardName: 'FRESH VIP BASIC',
-    description: 'Our entry-level sanctuary code. Earn 1 point per $1 spent.',
-    minPoints: 0,
-    discountRate: 0,
-    benefits: [
-      'Live GPS courier tracking',
-      'Digital laundry historical ledger',
-      '24/7 custom scheduling lockers'
-    ],
-    colorFrom: 'from-stone-800',
-    colorTo: 'to-neutral-900',
-    textColor: 'text-stone-300'
-  },
-  {
-    id: 'silver',
-    name: 'Silver Premium Club',
-    cardName: 'SILVER CONCIERGE',
-    description: 'Elevated garment tracking protocols. Attained at 500 lifetime points.',
-    minPoints: 500,
-    discountRate: 0.10, // 10% discount
-    benefits: [
-      '10% direct discount on all specialized stain care',
-      'Priority emergency morning collection priority',
-      'Complimentary seasonal conditioning washes',
-      'Dedicated Customer Care VIP line'
-    ],
-    colorFrom: 'from-slate-700',
-    colorTo: 'to-zinc-900',
-    textColor: 'text-neutral-100'
-  },
-  {
-    id: 'gold',
-    name: 'Gold Royal Patron',
-    cardName: 'GOLD ARCHITECT',
-    description: 'The ultimate bespoke fabric hospitality. Attained at 1500 lifetime points.',
-    minPoints: 1500,
-    discountRate: 0.20, // 20% discount
-    benefits: [
-      '20% lifetime standard discount on all wash and press cycles',
-      'Guaranteed same-day express return (always waived surcharge)',
-      'Direct contact of a Certified Master Artisan',
-      'Bespoke scent customization (Eucalyptus, Lavender, or Unscented)'
-    ],
-    colorFrom: 'from-amber-600/90 via-stone-800 to-amber-900',
-    colorTo: 'to-amber-950',
-    textColor: 'text-amber-100'
-  }
-];
+/**
+ * Loyalty tiers come from `@freshfold/core`.
+ *
+ * This file used to declare its own array, the customer app's catalogue
+ * declared a second, and the client portal hardcoded a third inline — with
+ * Silver starting at 400 points in the portal and 500 everywhere else. Nothing
+ * rendered the Tailwind gradient fields that made a local copy look necessary,
+ * so the copy is gone rather than reconciled.
+ */
+export { LOYALTY_TIERS } from '@freshfold/core';
 
 export const TESTIMONIALS: Testimonial[] = [
   {

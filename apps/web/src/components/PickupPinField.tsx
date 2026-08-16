@@ -4,6 +4,7 @@ import { Crosshair, Loader2, MapPin } from 'lucide-react';
 import {
   anchorForSuburb,
   isOutsideServiceArea,
+  matchLandmark,
   metresBetween,
   type Coords,
 } from '@freshfold/core';
@@ -44,7 +45,27 @@ interface PickupPinFieldProps {
   onChange: (next: Coords | null) => void;
   /** Centres the map before a pin exists, and labels the fallback action. */
   suburb: string;
+  /**
+   * The typed address, watched for a hostel this product already knows the
+   * coordinates of. Nothing is read out of it beyond that match.
+   */
+  address?: string;
+  /**
+   * How the current pin came to be, for the read-back. A pin the customer
+   * dragged needs no explanation; one that appeared under them does.
+   */
+  origin?: PinOrigin;
+  onOriginChange?: (next: PinOrigin) => void;
 }
+
+export type PinOrigin = 'map' | 'device' | 'suburb' | 'landmark' | 'place' | null;
+
+const ORIGIN_NOTE: Record<Exclude<PinOrigin, null | 'map'>, string> = {
+  device: 'from your device location',
+  suburb: 'the middle of the suburb — drag the map to your gate',
+  landmark: 'matched from the address you typed — check it is the right gate',
+  place: 'from the address you chose — check it is the right gate',
+};
 
 /**
  * The pin does not move; the map does.
@@ -54,7 +75,14 @@ interface PickupPinFieldProps {
  * is under it. The pin sits at the centre of the viewport and the city slides
  * beneath it, committing when the map settles rather than on every frame.
  */
-function CentrePinCommitter({ onCommit }: { onCommit: (next: Coords) => void }) {
+function CentrePinCommitter({
+  onCommit,
+  programmatic,
+}: {
+  onCommit: (next: Coords) => void;
+  /** Set while the camera is being moved by code rather than by a hand. */
+  programmatic: React.MutableRefObject<boolean>;
+}) {
   const map = useMap();
 
   // Kept in a ref so a new callback identity does not re-subscribe the
@@ -72,14 +100,30 @@ function CentrePinCommitter({ onCommit }: { onCommit: (next: Coords) => void }) 
      * stop. So it only reports once the map has been moved on purpose.
      */
     let touched = false;
+
     const marks = ['dragstart', 'zoom_changed'].map((event) =>
       map.addListener(event, () => {
+        /*
+         * A fly-to is not a gesture. `MapFlyTo` changes the zoom, which fires
+         * `zoom_changed` exactly like a pinch would — so without this guard
+         * every programmatic move would mark the pin as hand-placed, which
+         * silences the provenance note under the map and stops any later
+         * address match from being applied.
+         */
+        if (programmatic.current) return;
         touched = true;
       })
     );
 
     const idle = map.addListener('idle', () => {
+      if (programmatic.current) {
+        // The camera has arrived where code sent it. Nothing to commit, and
+        // the next real gesture starts from a clean slate.
+        programmatic.current = false;
+        return;
+      }
       if (!touched) return;
+
       const centre = map.getCenter();
       if (centre) commitRef.current({ lat: centre.lat(), lng: centre.lng() });
     });
@@ -88,7 +132,7 @@ function CentrePinCommitter({ onCommit }: { onCommit: (next: Coords) => void }) 
       marks.forEach((mark) => mark.remove());
       idle.remove();
     };
-  }, [map]);
+  }, [map, programmatic]);
 
   return null;
 }
@@ -99,12 +143,19 @@ function CentrePinCommitter({ onCommit }: { onCommit: (next: Coords) => void }) 
  * separate piece of state to the committed pin: driving it from the pin itself
  * would make every commit pan the map, and every pan a commit.
  */
-function MapFlyTo({ target }: { target: Coords | null }) {
+function MapFlyTo({
+  target,
+  programmatic,
+}: {
+  target: Coords | null;
+  programmatic: React.MutableRefObject<boolean>;
+}) {
   const map = useMap();
   const key = target ? `${target.lat},${target.lng}` : null;
 
   useEffect(() => {
     if (!map || !target) return;
+    programmatic.current = true;
     map.panTo(target);
     map.setZoom(17);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -159,26 +210,92 @@ function formatDistance(metres: number): string {
   return metres < 950 ? `${Math.round(metres / 10) * 10} m` : `${(metres / 1000).toFixed(1)} km`;
 }
 
-export default function PickupPinField({ value, onChange, suburb }: PickupPinFieldProps) {
+export default function PickupPinField({
+  value,
+  onChange,
+  suburb,
+  address = '',
+  origin = null,
+  onOriginChange,
+}: PickupPinFieldProps) {
   const [flyTo, setFlyTo] = useState<Coords | null>(null);
+  const programmatic = useRef(false);
 
   const anchor = useMemo(() => anchorForSuburb(suburb), [suburb]);
 
   const place = useCallback(
-    (next: Coords) => {
+    (next: Coords, how: PinOrigin) => {
       onChange(next);
-      setFlyTo(next);
+      onOriginChange?.(how);
     },
-    [onChange]
+    [onChange, onOriginChange]
   );
 
-  const { locate, busy, error } = useBrowserFix(place);
+  /**
+   * The camera follows any pin the customer did not drag there.
+   *
+   * Covers the pin arriving from outside this component entirely — the address
+   * autocomplete sets it on the form, not here — which otherwise moved the pin
+   * to a building somewhere off the edge of a map still sitting over the
+   * suburb. `map` is excluded because a drag has already put the camera where
+   * the customer wants it, and flying to it would fight them.
+   */
+  useEffect(() => {
+    if (!value || origin === 'map') return;
+    setFlyTo({ ...value });
+  }, [value?.lat, value?.lng, origin]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const { locate, busy, error } = useBrowserFix(
+    useCallback((next: Coords) => place(next, 'device'), [place])
+  );
+
+  /**
+   * Follow the suburb.
+   *
+   * The camera only — a suburb is a neighbourhood, not a doorstep, and
+   * dropping a pin in the middle of one is the derived-location behaviour this
+   * field exists to replace. What it fixes is the customer who picks Kotei and
+   * is left looking at a map of KNUST Campus two kilometres away, with nothing
+   * to do but drag.
+   */
+  const firstRender = useRef(true);
+  useEffect(() => {
+    if (firstRender.current) {
+      firstRender.current = false;
+      return;
+    }
+    setFlyTo({ ...anchor });
+  }, [anchor.lat, anchor.lng]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * Follow the address, when it names somewhere we already know.
+   *
+   * Fifteen halls and hostels have exact coordinates in `@freshfold/core`, and
+   * the supervisor's map has always used them to place a booking after the
+   * fact. Used here they put the pin on the building while the customer is
+   * still typing the room number.
+   *
+   * It never overrides a pin the customer placed themselves — a match is a
+   * starting point, and dragging is the last word.
+   */
+  const matched = useMemo(() => matchLandmark(address, ''), [address]);
+  const appliedLandmark = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!matched) return;
+    if (appliedLandmark.current === matched.name) return;
+    if (value && (origin === 'map' || origin === 'device' || origin === 'place')) return;
+
+    appliedLandmark.current = matched.name;
+    place({ lat: matched.lat, lng: matched.lng }, 'landmark');
+  }, [matched, value, origin, place]);
 
   // Read once: after this the map owns its own camera, and handing a centre
   // back to a map the customer is dragging fights them for it.
   const initialCentre = useMemo(() => value ?? anchor, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fromAnchor = value ? metresBetween(value, anchor) : 0;
+  const originNote = origin && origin !== 'map' ? ORIGIN_NOTE[origin] : null;
 
   return (
     <div className="space-y-2">
@@ -202,8 +319,16 @@ export default function PickupPinField({ value, onChange, suburb }: PickupPinFie
               disableDefaultUI={true}
               zoomControl={true}
             >
-              <CentrePinCommitter onCommit={onChange} />
-              <MapFlyTo target={flyTo} />
+              {/* A drag is the customer's own answer; it outranks every guess
+                  above and stops them being reapplied. */}
+              <CentrePinCommitter
+                programmatic={programmatic}
+                onCommit={(next) => {
+                  onChange(next);
+                  onOriginChange?.('map');
+                }}
+              />
+              <MapFlyTo target={flyTo} programmatic={programmatic} />
             </Map>
           </APIProvider>
 
@@ -239,7 +364,7 @@ export default function PickupPinField({ value, onChange, suburb }: PickupPinFie
         </button>
         <button
           type="button"
-          onClick={() => place({ ...anchor })}
+          onClick={() => place({ ...anchor }, 'suburb')}
           className="flex-1 flex items-center justify-center gap-2 bg-white/5 hover:bg-white/10 border border-white/10 text-stone-200 rounded-xl py-2.5 text-[11px] font-semibold transition-colors cursor-pointer"
         >
           <MapPin className="w-3.5 h-3.5" />
@@ -254,12 +379,18 @@ export default function PickupPinField({ value, onChange, suburb }: PickupPinFie
       )}
 
       {value ? (
-        <p className="text-[10px] text-stone-400 font-mono">
-          Pinned at {value.lat.toFixed(5)}° N, {Math.abs(value.lng).toFixed(5)}° W ·{' '}
-          {fromAnchor < ANCHOR_TOLERANCE_M
-            ? `the centre of ${suburb.trim() || 'campus'}`
-            : `${formatDistance(fromAnchor)} from the centre of ${suburb.trim() || 'campus'}`}
-        </p>
+        <div className="space-y-0.5">
+          <p className="text-[10px] text-stone-400 font-mono">
+            Pinned at {value.lat.toFixed(5)}° N, {Math.abs(value.lng).toFixed(5)}° W ·{' '}
+            {fromAnchor < ANCHOR_TOLERANCE_M
+              ? `the centre of ${suburb.trim() || 'campus'}`
+              : `${formatDistance(fromAnchor)} from the centre of ${suburb.trim() || 'campus'}`}
+          </p>
+          {/* Where the pin came from, when it was not dragged there. A pin that
+              appeared under the customer without explanation is the same
+              unexamined guess the derived location used to be. */}
+          {!!originNote && <p className="text-[10px] text-brand-gold/90">{originNote}</p>}
+        </div>
       ) : (
         <p className="text-[10px] text-stone-500">
           {hasValidKey

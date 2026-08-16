@@ -582,18 +582,17 @@ export interface SubscriptionPlan {
   iconName: string;
 }
 
-export interface LoyaltyTier {
-  id: 'basic' | 'silver' | 'gold';
-  name: string;
-  cardName: string;
-  description: string;
-  minPoints: number;
-  discountRate: number;
-  benefits: string[];
-  colorFrom: string;
-  colorTo: string;
-  textColor: string;
-}
+/**
+ * `LoyaltyTier` lives in `./loyalty` now, alongside the one table of tiers and
+ * the rules for reading it. It was declared here as well, and the website, the
+ * customer app and the client portal each carried their own array against it —
+ * which is how the portal came to put Silver at 400 points while the app put it
+ * at 500, and how the same customer read as two different tiers.
+ *
+ * The three presentation fields that used to hang off it (`colorFrom`,
+ * `colorTo`, `textColor`) are gone with it: they were Tailwind class names that
+ * meant nothing to React Native, and nothing rendered them.
+ */
 
 export interface StatItem {
   id: string;

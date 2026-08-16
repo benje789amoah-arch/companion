@@ -18,6 +18,7 @@ import { authRouter } from './routes/auth';
 import { bookingsRouter } from './routes/bookings';
 import { directionsRouter } from './routes/directions';
 import { ordersRouter } from './routes/orders';
+import { placesRouter } from './routes/places';
 import { ridersRouter } from './routes/riders';
 import { messagesRouter, notificationsRouter } from './routes/messaging';
 import { accountsRouter, transactionsRouter } from './routes/accounts';
@@ -119,6 +120,7 @@ app.use('/api/auth', authRouter);
 app.use('/api/bookings', bookingsRouter);
 app.use('/api/directions', directionsRouter);
 app.use('/api/orders', ordersRouter);
+app.use('/api/places', placesRouter);
 app.use('/api/riders', ridersRouter);
 app.use('/api/messages', messagesRouter);
 app.use('/api/notifications', notificationsRouter);
@@ -172,6 +174,33 @@ function describeDatabase(): string {
 }
 
 /**
+ * What outbound email will actually do, for the startup banner.
+ *
+ * Worth a line because the failure it names is invisible from the product: a
+ * booking confirmation and the setup link it carries are sent after the
+ * response, so a refusal by Resend leaves the customer with a cheerful "check
+ * your inbox" and nothing in it. `onboarding@resend.dev` is Resend's shared
+ * sender, and it delivers only to the address that owns the Resend account —
+ * every customer address is rejected. That is fine for a first test and wrong
+ * the moment anybody else books.
+ */
+function describeEmail(): string {
+  if (!process.env.RESEND_API_KEY) return 'not configured — links are written to this log instead';
+
+  const from = process.env.EMAIL_FROM;
+  if (!from) return 'RESEND_API_KEY is set but EMAIL_FROM is not — nothing will be sent';
+
+  if (/@resend\.dev\b/i.test(from)) {
+    return (
+      `${from} — Resend's shared sender, which DELIVERS ONLY TO THE ADDRESS THAT ` +
+      'OWNS THE RESEND ACCOUNT. Verify a domain and set EMAIL_FROM to it before customers book.'
+    );
+  }
+
+  return from;
+}
+
+/**
  * Boot.
  *
  * The connection is checked and the bootstrap identities are put in place
@@ -201,6 +230,7 @@ async function start(): Promise<void> {
     console.log(`FreshFold dispatch server listening on http://0.0.0.0:${PORT}`);
     console.log(`  data: ${describeDatabase()}`);
     console.log(`  point the rider app at this machine's LAN address on port ${PORT}`);
+    console.log(`  email: ${describeEmail()}`);
   });
 
   // The laundry's own stages advance here rather than on a courier's phone, so

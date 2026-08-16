@@ -9,6 +9,7 @@ import {
   type AuthSession,
   type Booking,
   type Message,
+  type PaymentTransaction,
   type SupervisorProfile,
   type UserAccount,
 } from '@freshfold/core';
@@ -69,6 +70,8 @@ interface Mirror {
   accounts: UserAccount[];
   messages: Message[];
   auditLogs: AuditLog[];
+  /** The signed-in customer, refreshed from `/auth/me` on every poll. */
+  currentUser: UserAccount | null;
 }
 
 function readLocal<T>(key: string, fallback: T): T {
@@ -94,6 +97,7 @@ const mirror: Mirror = {
   accounts: readLocal<UserAccount[]>(KEYS.accounts, []),
   messages: readLocal<Message[]>(KEYS.messages, []),
   auditLogs: readLocal<AuditLog[]>(KEYS.auditLogs, []),
+  currentUser: readLocal<UserAccount | null>(KEYS.currentUser, null),
 };
 
 const listeners = new Set<Listener>();
@@ -219,6 +223,23 @@ export function readBookings(): Booking[] {
 
 export function readBooking(id: string): Booking | undefined {
   return mirror.bookings.find((booking) => booking.id === id);
+}
+
+/**
+ * One customer's orders, scoped by the server rather than filtered here.
+ *
+ * The portal used to take the whole ledger out of the mirror and match
+ * `email OR samePhone(phone)` in the browser, while the customer app asked
+ * `GET /api/bookings?email=` — which matched on the address alone. Same
+ * customer, two different histories. This is the app's call, so the two lists
+ * are the same list; the server matches the number on the account as well, so
+ * nothing the browser-side filter used to find has been lost.
+ *
+ * Async, unlike the reads above, because it is a request rather than a mirror
+ * lookup. Callers keep their last result when it rejects.
+ */
+export async function readUserBookings(email: string): Promise<Booking[]> {
+  return api.listBookings({ email });
 }
 
 /**
@@ -430,39 +451,62 @@ function nowLabel(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Wallet
+// Wallet and care points
 // ---------------------------------------------------------------------------
 
 /**
- * Wallet balance lives on the server account record, with a per-email
- * localStorage key kept in step so a reload before the first sync still shows
- * the right number.
+ * Money and points move on the server, never here.
+ *
+ * The portal used to hold the balance in a React state hook seeded with ₵150,
+ * add or subtract locally and PUT the result — so a top-up made in the customer
+ * app was invisible until the next sign-in, a membership renewal debited by the
+ * server was overwritten by the next profile save, and the reward buttons
+ * deducted no points at all. All three go through `/api/accounts/wallet`, which
+ * does the arithmetic, writes the ledger entry and hands back the account.
+ *
+ * Deliberately not queued for offline replay. A balance is the one thing that
+ * must not be applied twice or applied late from a stale number — these fail in
+ * front of the customer who pressed the button, and they retry.
  */
-export function readWallet(email: string): number | null {
-  const account = mirror.accounts.find(
-    (candidate) => candidate.email.toLowerCase() === email.toLowerCase()
-  );
-  if (account?.walletBalance !== undefined) return account.walletBalance;
 
-  const raw = localStorage.getItem(walletKey(email));
-  return raw === null ? null : Number(raw);
+async function moveWallet(
+  move: (token: string) => Promise<{ account: UserAccount; transaction: PaymentTransaction | null }>
+): Promise<UserAccount> {
+  const token = readAuthToken();
+  if (!token) throw new Error('Sign in to use your wallet.');
+
+  const { account } = await move(token);
+  applyAccount(account);
+  return account;
 }
 
-export function writeWallet(email: string, balance: number): void {
-  try {
-    localStorage.setItem(walletKey(email), String(balance));
-  } catch {
-    /* see writeLocal */
-  }
-
-  const account = mirror.accounts.find(
-    (candidate) => candidate.email.toLowerCase() === email.toLowerCase()
-  );
-  if (account) upsertAccount({ ...account, walletBalance: balance });
+/** Credits the wallet after a settled payment. Earns no points. */
+export async function topUpWallet(
+  amount: number,
+  method: string,
+  reference?: string
+): Promise<UserAccount> {
+  return moveWallet((token) => api.topUpWallet({ amount, method, reference }, token));
 }
 
-function walletKey(email: string): string {
-  return `freshfold_wallet_${email.toLowerCase()}`;
+/**
+ * Debits the wallet and earns the point-per-cedi that spend is worth.
+ *
+ * Throws an `ApiError` carrying `{ reason: 'insufficient-funds', shortfall }`
+ * when the balance is short, which the caller shows rather than guessing at.
+ */
+export async function chargeWallet(payload: {
+  amount: number;
+  description: string;
+  bookingId?: string;
+  reference?: string;
+}): Promise<UserAccount> {
+  return moveWallet((token) => api.chargeWallet(payload, token));
+}
+
+/** Spends care points on a reward from the shared catalogue. */
+export async function redeemReward(rewardId: string): Promise<UserAccount> {
+  return moveWallet((token) => api.redeemReward({ rewardId }, token));
 }
 
 // ---------------------------------------------------------------------------
@@ -479,13 +523,48 @@ function walletKey(email: string): string {
  * profile, both scoped to this browser.
  */
 
-/** Who is signed in on *this* browser. */
+/**
+ * Who is signed in on *this* browser.
+ *
+ * Part of the mirror rather than a bare `localStorage` read, so that a poll
+ * bringing back a fresh wallet balance or a renewed membership notifies
+ * subscribers like every other change does. Reading it stayed synchronous,
+ * which is what the screens calling it expect.
+ */
 export function readCurrentUser(): UserAccount | null {
-  return readLocal<UserAccount | null>(KEYS.currentUser, null);
+  return mirror.currentUser;
 }
 
-export function writeCurrentUser(account: UserAccount): void {
+/**
+ * Replaces the signed-in profile with the one the server just gave us.
+ *
+ * Every path that learns something new about the account goes through here —
+ * sign-in, the poll's `/auth/me`, and each wallet movement — so there is one
+ * place the balance, the points and the plan can come from.
+ */
+export function applyAccount(account: UserAccount): void {
+  mirror.currentUser = account;
   writeLocal(KEYS.currentUser, account);
+
+  // Keep the shared account list in step too: the portal's tier badge and the
+  // supervisor desk's patron table both read it, and a stale row there would
+  // contradict the profile we just wrote.
+  const index = mirror.accounts.findIndex(
+    (candidate) => candidate.email.toLowerCase() === account.email.toLowerCase()
+  );
+  if (index >= 0) {
+    mirror.accounts = mirror.accounts.map((candidate, at) =>
+      at === index ? { ...candidate, ...account } : candidate
+    );
+    writeLocal(KEYS.accounts, mirror.accounts);
+  }
+
+  notify();
+}
+
+/** @deprecated Prefer {@link applyAccount}; kept for the dashboard's session restore. */
+export function writeCurrentUser(account: UserAccount): void {
+  applyAccount(account);
 }
 
 export function readAuthToken(): string | null {
@@ -498,7 +577,7 @@ function writeSession(session: AuthSession): UserAccount {
   } catch {
     /* see writeLocal */
   }
-  writeCurrentUser(session.account);
+  applyAccount(session.account);
   return session.account;
 }
 
@@ -601,7 +680,7 @@ export async function restoreSession(): Promise<UserAccount | null> {
 
   try {
     const account = await api.me(token);
-    writeCurrentUser(account);
+    applyAccount(account);
     return account;
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
@@ -615,8 +694,10 @@ export async function restoreSession(): Promise<UserAccount | null> {
 }
 
 export function clearCurrentUser(): void {
+  mirror.currentUser = null;
   localStorage.removeItem(KEYS.currentUser);
   localStorage.removeItem(KEYS.authToken);
+  notify();
 }
 
 // ---------------------------------------------------------------------------
@@ -734,9 +815,36 @@ export async function pull(): Promise<void> {
     writeLocal(KEYS.accounts, accounts);
     writeLocal(KEYS.messages, messages);
     notify();
+
+    await pullAccount();
   } catch {
     // The server is down or we're offline. The mirror stands.
     online = false;
+  }
+}
+
+/**
+ * Re-reads the signed-in account, which is what makes a membership renew.
+ *
+ * There is no scheduler on the server: `/auth/me` settles the plan before it
+ * answers, so a month rolling over — or the wallet running dry and the plan
+ * lapsing — lands here on the next poll. It carries the balance and the points
+ * that settlement left behind, which is how a top-up made in the customer app
+ * shows up in this browser without a sign-out.
+ *
+ * The portal used to do this once, on mount, and never again. That single call
+ * is the reason a wallet could read ₵150 here and ₵0 in the app.
+ */
+async function pullAccount(): Promise<void> {
+  const token = readAuthToken();
+  if (!token || inFlight > 0) return;
+
+  try {
+    applyAccount(await api.me(token));
+  } catch (error) {
+    // An expired or revoked session signs this browser out; anything else is
+    // the connection, and the cached profile stands.
+    if (error instanceof ApiError && error.status === 401) clearCurrentUser();
   }
 }
 

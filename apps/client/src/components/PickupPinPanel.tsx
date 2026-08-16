@@ -36,7 +36,27 @@ export interface PickupPinPickerProps {
    * request.
    */
   onAddressSuggested?: (address: string) => void;
+  /**
+   * The typed address, watched for a hostel this product already knows the
+   * coordinates of. Nothing is read out of it beyond that match.
+   */
+  address?: string;
+  /**
+   * How the current pin came to be, for the read-back. A pin the customer
+   * placed themselves needs no explanation; one that appeared under them does.
+   */
+  origin?: PinOrigin;
+  onOriginChange?: (next: PinOrigin) => void;
 }
+
+export type PinOrigin = 'map' | 'device' | 'suburb' | 'landmark' | 'place' | null;
+
+const ORIGIN_NOTE: Record<Exclude<PinOrigin, null | 'map'>, string> = {
+  device: 'From your device location.',
+  suburb: 'The middle of the suburb — move the map to your gate.',
+  landmark: 'Matched from the address you typed — check it is the right gate.',
+  place: 'From the address you chose — check it is the right gate.',
+};
 
 /** How close to the suburb anchor still counts as "roughly the suburb". */
 const ANCHOR_TOLERANCE_M = 30;
@@ -177,7 +197,15 @@ export function LocateButton({ onPress, busy }: { onPress: () => void; busy: boo
 }
 
 /** What was chosen, in words a customer can sanity-check. */
-export function PinReadout({ value, suburb }: { value: Coords | null; suburb: string }) {
+export function PinReadout({
+  value,
+  suburb,
+  origin = null,
+}: {
+  value: Coords | null;
+  suburb: string;
+  origin?: PinOrigin;
+}) {
   if (!value) {
     return (
       <Text style={styles.readoutEmpty}>
@@ -187,14 +215,21 @@ export function PinReadout({ value, suburb }: { value: Coords | null; suburb: st
   }
 
   const fromAnchor = metresBetween(value, anchorFor(suburb));
+  const note = origin && origin !== 'map' ? ORIGIN_NOTE[origin] : null;
 
   return (
-    <Text style={styles.readout}>
-      Pinned at {value.lat.toFixed(5)}° N, {Math.abs(value.lng).toFixed(5)}° W ·{' '}
-      {fromAnchor < ANCHOR_TOLERANCE_M
-        ? `the centre of ${suburb}`
-        : `${formatDistance(fromAnchor)} from the centre of ${suburb}`}
-    </Text>
+    <View style={{ gap: 2 }}>
+      <Text style={styles.readout}>
+        Pinned at {value.lat.toFixed(5)}° N, {Math.abs(value.lng).toFixed(5)}° W ·{' '}
+        {fromAnchor < ANCHOR_TOLERANCE_M
+          ? `the centre of ${suburb}`
+          : `${formatDistance(fromAnchor)} from the centre of ${suburb}`}
+      </Text>
+      {/* Where the pin came from, when the customer did not put it there. A pin
+          that appears without explanation is the same unexamined guess the
+          derived location used to be. */}
+      {!!note && <Text style={styles.readoutNote}>{note}</Text>}
+    </View>
   );
 }
 
@@ -207,9 +242,19 @@ export default function PickupPinPanel({
   onChange,
   suburb,
   onAddressSuggested,
+  origin = null,
+  onOriginChange,
   notice,
 }: PickupPinPickerProps & { notice?: string }) {
-  const { locate, busy, error } = useDeviceFix(onChange);
+  const { locate, busy, error } = useDeviceFix(
+    useCallback(
+      (next: Coords) => {
+        onChange(next);
+        onOriginChange?.('device');
+      },
+      [onChange, onOriginChange]
+    )
+  );
 
   return (
     <View style={styles.panel}>
@@ -223,7 +268,10 @@ export default function PickupPinPanel({
       <LocateButton onPress={locate} busy={busy} />
 
       <Pressable
-        onPress={() => onChange({ ...anchorFor(suburb) })}
+        onPress={() => {
+          onChange({ ...anchorFor(suburb) });
+          onOriginChange?.('suburb');
+        }}
         style={({ pressed }) => [styles.secondaryButton, pressed && { opacity: 0.85 }]}
       >
         <MapPin size={14} color={colors.textCharcoal} />
@@ -232,7 +280,7 @@ export default function PickupPinPanel({
 
       {!!error && <Text style={styles.error}>{error}</Text>}
       <NearestAddress pin={value} onAddressSuggested={onAddressSuggested} />
-      <PinReadout value={value} suburb={suburb} />
+      <PinReadout value={value} suburb={suburb} origin={origin} />
     </View>
   );
 }
@@ -301,6 +349,7 @@ export const styles = StyleSheet.create({
   },
 
   readout: { fontSize: 10, color: colors.textSlate, lineHeight: 14 },
+  readoutNote: { fontSize: 10, color: colors.brandGold, lineHeight: 14 },
   readoutEmpty: { fontSize: 10, color: colors.textMuted, lineHeight: 14 },
   error: {
     fontSize: 10,

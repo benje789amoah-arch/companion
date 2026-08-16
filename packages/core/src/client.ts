@@ -4,6 +4,7 @@
  */
 
 import type { ActivePlan } from './membership';
+import type { PlaceDetail, PlaceSuggestion } from './places';
 import type { RouteLeg } from './route';
 import type {
   AdminSession,
@@ -64,6 +65,16 @@ export interface PaystackInitResult {
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+}
+
+/**
+ * What a wallet movement produced: the account as the server now has it, and
+ * the statement row it wrote. Callers apply the account rather than computing
+ * their own — that is the whole point of the route.
+ */
+export interface WalletMovement {
+  account: UserAccount;
+  transaction: PaymentTransaction | null;
 }
 
 export function createClient(options: ClientOptions) {
@@ -401,6 +412,25 @@ export function createClient(options: ClientOptions) {
         `/directions?fromLat=${from.lat}&fromLng=${from.lng}&toLat=${to.lat}&toLng=${to.lng}`
       ),
 
+    /**
+     * Addresses matching what the customer has typed so far.
+     *
+     * `sessionToken` groups the keystrokes of one lookup with the detail call
+     * that ends it, which is how Google bills a search as one search rather
+     * than as eight autocompletes. Mint one per lookup and discard it after
+     * `getPlace`.
+     */
+    searchPlaces: (query: string, sessionToken: string) =>
+      request<PlaceSuggestion[]>(
+        `/places/search?q=${encodeURIComponent(query)}&session=${encodeURIComponent(sessionToken)}`
+      ),
+
+    /** Turns a chosen suggestion into an address and a coordinate. */
+    getPlace: (id: string, sessionToken: string) =>
+      request<PlaceDetail>(
+        `/places/${encodeURIComponent(id)}?session=${encodeURIComponent(sessionToken)}`
+      ),
+
     listRiders: (token: string) => request<RiderState[]>('/riders', { headers: bearer(token) }),
 
     getRider: (id: string, token: string) =>
@@ -510,6 +540,53 @@ export function createClient(options: ClientOptions) {
         '/accounts/plan',
         { method: 'DELETE', headers: bearer(token), query: { resume: 'true' } }
       ),
+
+    // -- Wallet and care points --------------------------------------------
+    //
+    // The one path that moves a balance or a points total, and the reason
+    // neither app computes either any more: `upsertAccount` will not write them.
+    // The server debits, credits, awards the point-per-cedi and writes the
+    // ledger entry as one transaction, then hands back the account it produced.
+    //
+    // `reference` is optional and makes the movement idempotent — pass one from
+    // an offline queue so a replayed write does not move the balance twice.
+
+    /** Credits the wallet. Earns no points; points are for laundry. */
+    topUpWallet: (
+      payload: { amount: number; method: string; reference?: string },
+      token: string
+    ) =>
+      request<WalletMovement>('/accounts/wallet', {
+        ...json('POST', { action: 'topup', ...payload }),
+        headers: bearer(token),
+      }),
+
+    /**
+     * Debits the wallet and awards the points that spend is worth.
+     *
+     * Throws `ApiError` 409 with `{ reason: 'insufficient-funds', shortfall }`
+     * when the balance cannot cover it.
+     */
+    chargeWallet: (
+      payload: { amount: number; description: string; bookingId?: string; reference?: string },
+      token: string
+    ) =>
+      request<WalletMovement>('/accounts/wallet', {
+        ...json('POST', { action: 'charge', ...payload }),
+        headers: bearer(token),
+      }),
+
+    /**
+     * Spends care points on a reward from the shared catalogue.
+     *
+     * Throws `ApiError` 409 with `{ reason: 'insufficient-points', shortfall }`
+     * when the balance is short.
+     */
+    redeemReward: (payload: { rewardId: string; reference?: string }, token: string) =>
+      request<WalletMovement>('/accounts/wallet', {
+        ...json('POST', { action: 'redeem', ...payload }),
+        headers: bearer(token),
+      }),
 
     // -- Payment ledger ----------------------------------------------------
     //

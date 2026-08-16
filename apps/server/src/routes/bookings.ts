@@ -30,11 +30,24 @@ import { accountBlocked, bookingView, bookingViews, guard, notFound } from '../h
  */
 export const bookingsRouter = Router();
 
+/**
+ * One customer's orders, or the whole board.
+ *
+ * Scoping by email also picks up anything booked under the phone number on that
+ * account. A customer who booked as a guest from the marketing site — same
+ * person, same number, whatever address they typed into the form that day —
+ * gets those orders in their history, which is what the website's portal has
+ * always shown by filtering in the browser. The number is read off the account
+ * rather than taken from the query, so this cannot be used to fish for somebody
+ * else's jobs by guessing their mobile.
+ */
 bookingsRouter.get(
   '/',
   guard(async (req, res) => {
     const email = typeof req.query.email === 'string' ? req.query.email : null;
-    const jobs = await store.jobs.list({ email });
+    const account = email ? await store.accounts.find(email) : null;
+
+    const jobs = await store.jobs.list({ email, phone: account?.phone ?? null });
     res.json(await bookingViews(jobs));
   })
 );

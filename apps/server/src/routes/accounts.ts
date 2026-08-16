@@ -16,6 +16,7 @@ import { requireAuth, requireSupervisor } from '../auth';
 import { cancel, resume, settleAccountByEmail, subscribe } from '../membership';
 import { sanitize } from '../passwords';
 import { store, type StoredAccount } from '../store';
+import { charge, redeem, topUp, type WalletOutcome } from '../wallet';
 import { guard, notFound } from '../helpers';
 
 /**
@@ -28,21 +29,25 @@ import { guard, notFound } from '../helpers';
  */
 export const accountsRouter = Router();
 
-/** Fields a client is allowed to write through this route. */
-type WritableAccountFields = Pick<
-  UserAccount,
-  'email' | 'phone' | 'name' | 'points' | 'walletBalance'
->;
+/**
+ * Fields a client is allowed to write through this route.
+ *
+ * `points` and `walletBalance` are deliberately not among them any more. Both
+ * apps used to compute a new balance locally and PUT it here, which meant the
+ * last writer won: a membership renewal debited by the server was silently
+ * restored by whichever device next saved a profile, and a client could award
+ * itself any number of care points by asking. Money and points move through
+ * `/accounts/wallet` below, which decides the arithmetic itself.
+ */
+type WritableAccountFields = Pick<UserAccount, 'email' | 'phone' | 'name'>;
 
 function pickWritable(body: Partial<UserAccount>): Partial<WritableAccountFields> {
-  const { email, phone, name, points, walletBalance } = body;
+  const { email, phone, name } = body;
   const writable: Partial<WritableAccountFields> = {};
 
   if (email !== undefined) writable.email = email;
   if (phone !== undefined) writable.phone = phone;
   if (name !== undefined) writable.name = name;
-  if (points !== undefined) writable.points = points;
-  if (walletBalance !== undefined) writable.walletBalance = walletBalance;
 
   return writable;
 }
@@ -85,8 +90,6 @@ accountsRouter.put(
           phone: incoming.phone ?? '',
           name: incoming.name ?? '',
           createdAt: new Date().toISOString(),
-          points: incoming.points,
-          walletBalance: incoming.walletBalance,
         });
       }
 
@@ -188,6 +191,110 @@ accountsRouter.delete(
 function formatShortfall(amount: number | undefined): string {
   return `₵${(amount ?? 0).toFixed(2)}`;
 }
+
+// ---------------------------------------------------------------------------
+// Wallet and care points
+// ---------------------------------------------------------------------------
+
+/**
+ * The one path that moves a balance or a points total.
+ *
+ * Authenticated, and scoped to whoever the bearer token says is asking — never
+ * to an email in the body. Three actions, all of which write the account and
+ * its ledger entry in a single transaction:
+ *
+ *   topup   — credits the wallet. Earns no points; points are for laundry.
+ *   charge  — debits it and awards a point per whole cedi.
+ *   redeem  — spends care points on a reward from the shared catalogue.
+ *
+ * `reference` is optional and, when given, makes the movement idempotent: both
+ * apps queue writes offline and replay them, and a replay must not move the
+ * balance twice.
+ */
+accountsRouter.post(
+  '/wallet',
+  requireAuth,
+  guard(async (req, res) => {
+    const body = (req.body ?? {}) as {
+      action?: unknown;
+      amount?: unknown;
+      method?: unknown;
+      description?: unknown;
+      bookingId?: unknown;
+      rewardId?: unknown;
+      reference?: unknown;
+    };
+
+    const email = req.account!.email;
+    const reference = typeof body.reference === 'string' ? body.reference : undefined;
+    const amount = typeof body.amount === 'number' ? body.amount : NaN;
+
+    let outcome: WalletOutcome;
+
+    switch (body.action) {
+      case 'topup':
+        outcome = await topUp({
+          email,
+          amount,
+          method: typeof body.method === 'string' ? body.method : 'Wallet',
+          reference,
+        });
+        break;
+
+      case 'charge':
+        outcome = await charge({
+          email,
+          amount,
+          description: typeof body.description === 'string' ? body.description : '',
+          bookingId: typeof body.bookingId === 'string' ? body.bookingId : undefined,
+          reference,
+        });
+        break;
+
+      case 'redeem':
+        outcome = await redeem({
+          email,
+          rewardId: typeof body.rewardId === 'string' ? body.rewardId : '',
+          reference,
+        });
+        break;
+
+      default:
+        res.status(400).json({ error: 'A wallet movement needs an action.' });
+        return;
+    }
+
+    if (!outcome.ok) {
+      const status =
+        outcome.reason === 'no-account'
+          ? 404
+          : outcome.reason === 'bad-amount' || outcome.reason === 'unknown-reward'
+            ? 400
+            : 409;
+
+      res.status(status).json({
+        error:
+          outcome.reason === 'bad-amount'
+            ? 'A wallet movement needs an amount above zero.'
+            : outcome.reason === 'unknown-reward'
+              ? 'That reward is no longer offered.'
+              : outcome.reason === 'insufficient-funds'
+                ? `Top up ${formatShortfall(outcome.shortfall)} to cover this.`
+                : outcome.reason === 'insufficient-points'
+                  ? `${outcome.shortfall ?? 0} more care points needed for that reward.`
+                  : 'No account for that session.',
+        reason: outcome.reason,
+        shortfall: outcome.shortfall,
+      });
+      return;
+    }
+
+    res.json({
+      account: sanitize(outcome.account),
+      transaction: outcome.transaction,
+    });
+  })
+);
 
 // ---------------------------------------------------------------------------
 // Supervisor actions
