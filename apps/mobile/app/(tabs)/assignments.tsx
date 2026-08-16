@@ -16,22 +16,25 @@ import { useApp } from '../../src/store/AppStore';
 import { colors, formatCedis, humanizeStatus, radius, shadow } from '../../src/theme';
 import { Order } from '../../src/types';
 
-type Filter = 'all' | 'upcoming' | 'active' | 'completed';
+type Filter = 'all' | 'mine' | 'available' | 'completed';
 
 const FILTERS: { id: Filter; label: string }[] = [
   { id: 'all', label: 'All jobs' },
-  { id: 'upcoming', label: 'Unassigned' },
-  { id: 'active', label: 'Active tasks' },
+  { id: 'mine', label: 'In my hands' },
+  { id: 'available', label: 'Going spare' },
   { id: 'completed', label: 'Completed' },
 ];
 
 export default function AssignmentsScreen() {
   const router = useRouter();
-  const { orders, acceptOrder, connected, profileComplete } = useApp();
+  const { orders, myOrders, acceptOrder, focusOrder, connected, profileComplete } = useApp();
   const refreshControl = usePullToRefresh();
 
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
+
+  /** Ids this courier is holding, for the per-card decisions below. */
+  const mine = useMemo(() => new Set(myOrders.map((o) => o.id)), [myOrders]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -45,21 +48,21 @@ export default function AssignmentsScreen() {
       if (!matches) return false;
 
       switch (filter) {
-        case 'upcoming':
-          return order.status === 'unassigned';
-        case 'active':
-          return (
-            order.status !== 'unassigned' &&
-            order.status !== 'delivered' &&
-            order.status !== 'cancelled'
-          );
+        case 'mine':
+          return mine.has(order.id);
+        // Anything nobody holds and that is still running — which is not the
+        // same as `unassigned`. A job the desk moved to a courier leg without
+        // naming a courier is going spare too, and hiding it here is how those
+        // sat on the customer's timeline with nobody collecting.
+        case 'available':
+          return !order.riderId && order.status !== 'delivered' && order.status !== 'cancelled';
         case 'completed':
           return order.status === 'delivered';
         default:
           return true;
       }
     });
-  }, [orders, filter, query]);
+  }, [orders, filter, query, mine]);
 
   const statusTone = (order: Order) => {
     if (order.status === 'delivered') return 'success' as const;
@@ -193,7 +196,11 @@ export default function AssignmentsScreen() {
                   <Text style={styles.payout}>{formatCedis(order.price)}</Text>
                 </View>
 
-                {order.status === 'unassigned' ? (
+                {/* Keyed on who holds the job rather than on its status: a job
+                    the desk left mid-flight with no courier is still one this
+                    rider can take, and one they already hold is theirs to
+                    drive whatever stage it has reached. */}
+                {order.status !== 'delivered' && !order.riderId ? (
                   <Pressable
                     accessibilityRole="button"
                     disabled={!profileComplete}
@@ -216,18 +223,24 @@ export default function AssignmentsScreen() {
                       Accept payout
                     </Text>
                   </Pressable>
-                ) : order.status !== 'delivered' ? (
+                ) : mine.has(order.id) ? (
                   <Pressable
-                    onPress={() => router.push('/(tabs)')}
+                    onPress={() => {
+                      // Put the sheet on *this* job before leaving, or the home
+                      // screen would open on whichever one it was already
+                      // showing — the whole point of tapping this card.
+                      focusOrder(order.id);
+                      router.push('/(tabs)');
+                    }}
                     style={({ pressed }) => [
                       styles.actionChip,
                       styles.actionChipGold,
                       pressed && { opacity: 0.85 },
                     ]}
                   >
-                    <Text style={styles.actionChipLabel}>Go to active map</Text>
+                    <Text style={styles.actionChipLabel}>Open workflow</Text>
                   </Pressable>
-                ) : (
+                ) : order.status !== 'delivered' ? null : (
                   <View style={styles.completeRow}>
                     <CheckCircle2 size={14} color={colors.statusSuccess} />
                     <Text style={styles.completeLabel}>Complete</Text>

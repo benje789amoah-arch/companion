@@ -36,6 +36,7 @@ import NotificationsSheet from '../../src/components/NotificationsSheet';
 import QRScanner from '../../src/components/QRScanner';
 import SignaturePad from '../../src/components/SignaturePad';
 import { Avatar, Badge, Button, ConnectionPill } from '../../src/components/ui';
+import { toBookingStatus } from '@freshfold/core';
 import { useApp } from '../../src/store/AppStore';
 import { colors, formatCedis, humanizeStatus, radius, shadow, tints } from '../../src/theme';
 
@@ -57,7 +58,11 @@ export default function HomeScreen() {
     rider,
     orders,
     notifications,
+    myOrders,
     activeOrder,
+    focusedOrderId,
+    focusOrder,
+    canTakeMore,
     backlogOrders,
     connected,
     locationDenied,
@@ -87,7 +92,6 @@ export default function HomeScreen() {
    * the hub's code, and that is dispatch's call, not this flag's.
    */
   const [dropoffBagsCheckedFor, setDropoffBagsCheckedFor] = useState<string | null>(null);
-  const [focusedOrderId, setFocusedOrderId] = useState<string | null>(null);
 
   // Delivery hand-off gate. The code is never on this device — it is typed
   // from what the customer says and checked by the server, so what is held
@@ -118,12 +122,20 @@ export default function HomeScreen() {
    */
   const handoverReady = overrideMode ? overrideReason.trim().length >= 8 : otpInput.length === 4;
 
+  /**
+   * The next job worth putting in front of the courier.
+   *
+   * Gated on `canTakeMore` rather than on having no job at all: a round trip
+   * parks a job at the hub for as long as the washing takes, and a courier
+   * standing idle through that was capacity this console used to throw away.
+   * What still blocks an offer is being mid-leg — on the road or at a door.
+   */
   const offer = useMemo(
     () =>
-      rider.isOnline && !activeOrder
+      rider.isOnline && canTakeMore
         ? backlogOrders.find((o) => !dismissedOfferIds.includes(o.id))
         : undefined,
-    [rider.isOnline, activeOrder, backlogOrders, dismissedOfferIds]
+    [rider.isOnline, canTakeMore, backlogOrders, dismissedOfferIds]
   );
 
   /**
@@ -211,8 +223,13 @@ export default function HomeScreen() {
         orders={orders}
         activeOrder={activeOrder}
         navigationTarget={navigationTarget}
-        focusedOrderId={focusedOrderId}
-        onSelectOrder={(order) => setFocusedOrderId(order.id)}
+        focusedOrderId={focusedOrderId ?? activeOrder?.id ?? null}
+        // Selecting one of this courier's own pins moves the workflow sheet to
+        // it as well, so the map and the sheet never disagree about which job
+        // is in front of them. Tapping a pin from the open pool only previews.
+        onSelectOrder={(order) => {
+          if (myOrders.some((o) => o.id === order.id)) focusOrder(order.id);
+        }}
         // Withheld until the profile is complete, so the map simply offers no
         // accept rather than one that refuses. The banner on Tasks and the
         // offer card above both explain why.
@@ -311,10 +328,66 @@ export default function HomeScreen() {
             </View>
           )}
 
+          {/*
+            The job strip. Only worth the space once there is a choice to make —
+            with one job it says nothing the workflow header does not.
+          */}
+          {rider.isOnline && myOrders.length > 1 && (
+            <View style={styles.stripWrap}>
+              <Text style={styles.stripLabel}>
+                {myOrders.length} jobs in hand · tap to switch
+              </Text>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={styles.stripScroll}
+                contentContainerStyle={styles.strip}
+              >
+                {myOrders.map((job) => {
+                  const selected = job.id === activeOrder?.id;
+                  const riding = navigationTarget?.orderId === job.id;
+
+                  return (
+                    <Pressable
+                      key={job.id}
+                      onPress={() => focusOrder(job.id)}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={`${job.orderNumber}, ${toBookingStatus(job.status)}`}
+                      style={({ pressed }) => [
+                        styles.jobChip,
+                        selected && styles.jobChipOn,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <View style={styles.jobChipTop}>
+                        {riding && <View style={styles.ridingDot} />}
+                        <Text
+                          style={[styles.jobChipRef, selected && styles.jobChipRefOn]}
+                          numberOfLines={1}
+                        >
+                          {job.orderNumber}
+                        </Text>
+                      </View>
+                      <Text
+                        style={[styles.jobChipStage, selected && styles.jobChipStageOn]}
+                        numberOfLines={1}
+                      >
+                        {toBookingStatus(job.status)}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            </View>
+          )}
+
           {rider.isOnline && activeOrder && (
             <View style={styles.workflow}>
               <View style={styles.workflowHeader}>
-                <Text style={styles.workflowLabel}>Active assignment workflow</Text>
+                <Text style={styles.workflowLabel} numberOfLines={1}>
+                  {myOrders.length > 1 ? activeOrder.orderNumber : 'Active assignment workflow'}
+                </Text>
                 <Badge
                   label={humanizeStatus(activeOrder.status)}
                   tone={activeOrder.priority === 'elite' ? 'gold' : 'sage'}
@@ -339,7 +412,9 @@ export default function HomeScreen() {
                 </>
               )}
 
-              {navigationTarget && (
+              {/* Only for the job whose road it is — the courier may be
+                  looking at a different card while riding this one. */}
+              {navigationTarget?.orderId === activeOrder.id && (
                 <>
                   <Text style={styles.workflowMuted}>
                     {locationDenied
@@ -735,7 +810,7 @@ export default function HomeScreen() {
           markNotificationRead(notif.id);
           setShowNotifications(false);
           if (notif.orderId) {
-            setFocusedOrderId(notif.orderId);
+            focusOrder(notif.orderId);
             router.push('/(tabs)/assignments');
           }
         }}
@@ -877,6 +952,56 @@ const styles = StyleSheet.create({
   },
   statValue: { fontSize: 13, fontWeight: '800', color: colors.textCharcoal, marginTop: 4 },
 
+  stripWrap: {
+    gap: 7,
+    borderTopWidth: 1,
+    borderTopColor: colors.borderSoft,
+    paddingTop: 14,
+  },
+  stripLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    color: colors.textSlate,
+  },
+  // Cancels the sheet's own 18 of padding so the chips bleed to the screen
+  // edges as they scroll — a half-visible chip reads as "more this way"
+  // rather than as a clipping mistake — and puts it back inside the content.
+  stripScroll: { marginHorizontal: -18 },
+  strip: { gap: 8, paddingHorizontal: 18 },
+  jobChip: {
+    minWidth: 116,
+    gap: 3,
+    paddingVertical: 8,
+    paddingHorizontal: 11,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.borderSoft,
+    backgroundColor: colors.bgLinen,
+  },
+  jobChipOn: {
+    borderColor: colors.brandSage,
+    backgroundColor: tints.sage15,
+  },
+  jobChipTop: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  /** Marks the job the courier is actually riding for. */
+  ridingDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.brandGold,
+  },
+  jobChipRef: {
+    flexShrink: 1,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+    color: colors.textSlate,
+  },
+  jobChipRefOn: { color: colors.textCharcoal },
+  jobChipStage: { fontSize: 9, fontWeight: '600', color: colors.textSlate },
+  jobChipStageOn: { color: colors.brandSage },
   workflow: {
     gap: 10,
     borderTopWidth: 1,

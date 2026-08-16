@@ -9,7 +9,8 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "check": "tsx src/store/workload.check.ts"
   },
   "dependencies": {
     "@expo/metro-runtime": "~6.1.2",

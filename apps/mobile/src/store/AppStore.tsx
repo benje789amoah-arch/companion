@@ -38,6 +38,7 @@ import {
   LAUNDRY_HUB_COORDS,
 } from '../data/initialState';
 import { api } from '../services/api';
+import { canAcceptMore, goingSpare, heldBy, ridingLeg } from './workload';
 import { useSession } from './SessionStore';
 import { nowLabel } from '../theme';
 
@@ -78,6 +79,12 @@ interface Fix {
 
 /** Where the rider is currently headed, if anywhere. */
 export interface NavigationTarget {
+  /**
+   * The job being ridden for. Carried explicitly because the courier may be
+   * *looking at* a different one — arrival has to land on the job whose road
+   * this is, not on whichever card is open.
+   */
+  orderId: string;
   coords: Coords;
   label: string;
   /** Status the order moves to once the rider reaches this point. */
@@ -92,7 +99,18 @@ interface AppState {
   orders: Order[];
   messages: Message[];
   notifications: Notification[];
+  /** Every job this courier holds, soonest-needed first. */
+  myOrders: Order[];
+  /** The one the workflow sheet is driving — the courier's pick, or `myOrders[0]`. */
   activeOrder?: Order;
+  /** The job being ridden for, which may not be the one on screen. */
+  navigatingOrder?: Order;
+  /** Which job the courier chose, or null while following the automatic pick. */
+  focusedOrderId: string | null;
+  /** Put a job in front of the courier. `null` returns to the automatic pick. */
+  focusOrder: (orderId: string | null) => void;
+  /** False while the courier is mid-leg, so offers stop rather than pile up. */
+  canTakeMore: boolean;
   backlogOrders: Order[];
   unreadCount: number;
   /** False until the rider has filled every field dispatch requires. */
@@ -192,6 +210,7 @@ export const PROFILE_FIELD_LABELS: Record<(typeof REQUIRED_PROFILE_FIELDS)[numbe
 const ARRIVAL_CONFIRMATIONS = 2;
 const POLL_INTERVAL_MS = 4000;
 
+
 /** Where a courier is placed when the device's fix is unusable. */
 const HUB_COORDS: Coords = { lat: LAUNDRY_HUB.lat, lng: LAUNDRY_HUB.lng };
 /** Position is published on its own slower tick than the device reports it. */
@@ -229,6 +248,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const [hydrated, setHydrated] = useState(false);
   const [connected, setConnected] = useState(false);
+  /**
+   * The job the courier has chosen to look at, or null to follow the automatic
+   * pick. Session state rather than persisted: which job is in front of you is
+   * a question about right now, and it is answered again on the next launch.
+   */
+  const [focusedOrderId, setFocusedOrderId] = useState<string | null>(null);
   /** True once the device has refused location, so the UI can say why. */
   const [locationDenied, setLocationDenied] = useState(false);
   /** The last position the device reported that was worth keeping. */
@@ -253,7 +278,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
    * `pull` drives the poll interval, and rebuilding it on every render would
    * restart the timer four times a second.
    */
-  const activeOrderRef = useRef<Order | undefined>(undefined);
+  const myOrdersRef = useRef<Order[]>([]);
   const pushNotificationRef = useRef<(notif: Omit<Notification, 'timestamp'>) => void>(
     () => {}
   );
@@ -380,18 +405,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (inFlight.current > 0) return;
 
       // A job the rider is part-way through can vanish from under them — a
-      // supervisor deleting it from the master ledger is the usual reason. The
-      // workflow sheet is driven off `activeOrder`, so it would simply
-      // disappear, leaving a courier holding someone's laundry with nothing on
-      // screen to explain it. Say so before the board is replaced.
-      const active = activeOrderRef.current;
-      if (active && !serverOrders.some((o) => o.id === active.id)) {
+      // supervisor deleting it from the master ledger is the usual reason. It
+      // would simply drop off the strip, leaving a courier holding someone's
+      // laundry with nothing on screen to explain it. Say so before the board
+      // is replaced, for every job they hold rather than only the one on
+      // screen: the courier is carrying the bags for all of them.
+      for (const held of myOrdersRef.current) {
+        if (serverOrders.some((o) => o.id === held.id)) continue;
+
         pushNotificationRef.current({
-          id: `notif-withdrawn-${active.id}-${Date.now()}`,
+          id: `notif-withdrawn-${held.id}-${Date.now()}`,
           title: 'Job withdrawn by dispatch',
-          body: `${active.orderNumber} for ${active.customerName} was removed from the ledger. Stop work on it and call the concierge desk if you already have the bags.`,
+          body: `${held.orderNumber} for ${held.customerName} was removed from the ledger. Stop work on it and call the concierge desk if you already have the bags.`,
           type: 'alert',
-          orderId: active.id,
+          orderId: held.id,
           read: false,
         });
       }
@@ -497,34 +524,41 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   /** This courier's id, as the board's own records name it. */
   const myRiderId = signedInRider?.id ?? '';
 
-  /**
-   * The job this courier is working.
-   *
-   * Scoped by `riderId`, because the board holds the open pool as well. Without
-   * that this was the first non-`unassigned` job in the list — which is fine
-   * while exactly one job is ever in flight and wrong the moment a second is:
-   * every courier's phone showed the same job, drove its workflow, and offered
-   * them nothing else because the offer card is gated on there being no active
-   * order.
-   */
-  const activeOrder = useMemo(
-    () =>
-      orders.find((o) => !!o.riderId && o.riderId === myRiderId && !isTerminal(o.status)),
-    [orders, myRiderId]
-  );
+  /** Every job this courier is holding, soonest-needed first. */
+  const myOrders = useMemo(() => heldBy(orders, myRiderId), [orders, myRiderId]);
+
+  /** The leg the courier is physically committed to — not what is on screen. */
+  const navigatingOrder = useMemo(() => ridingLeg(myOrders), [myOrders]);
 
   /**
-   * What is going spare — anything still running that nobody holds.
+   * The job the workflow sheet is driving.
    *
-   * Not just `unassigned`: a supervisor moving a booking to a courier leg from
-   * the dashboard leaves it in flight with no courier on it, and keying on that
-   * one status hid those jobs from every rider on the roster. They stayed on
-   * the customer's timeline reading *Collecting* with nobody collecting.
+   * The courier's own pick while it lasts, otherwise whatever needs them
+   * soonest. `focusedOrderId` is cleared when that job leaves the board, so a
+   * completed delivery hands the sheet to the next job rather than emptying it.
    */
-  const backlogOrders = useMemo(
-    () => orders.filter((o) => !o.riderId && !isTerminal(o.status)),
-    [orders]
+  const activeOrder = useMemo(
+    () => myOrders.find((o) => o.id === focusedOrderId) ?? myOrders[0],
+    [myOrders, focusedOrderId]
   );
+
+  /** False while mid-leg, so offers stop rather than pile up on a busy courier. */
+  const canTakeMore = useMemo(() => canAcceptMore(myOrders), [myOrders]);
+
+  // A focus that has outlived its job — delivered, cancelled, or withdrawn by
+  // the desk — is dropped so `activeOrder` falls back to the automatic pick.
+  useEffect(() => {
+    if (focusedOrderId && !myOrders.some((o) => o.id === focusedOrderId)) {
+      setFocusedOrderId(null);
+    }
+  }, [focusedOrderId, myOrders]);
+
+  const focusOrder = useCallback((orderId: string | null) => {
+    setFocusedOrderId(orderId);
+  }, []);
+
+  /** Anything still running that no courier holds. */
+  const backlogOrders = useMemo(() => goingSpare(orders), [orders]);
 
   const unreadCount = useMemo(
     () => notifications.filter((n) => !n.read).length,
@@ -532,7 +566,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
 
   // Keep the refs `pull` reads in step with the values it needs.
-  activeOrderRef.current = activeOrder;
+  myOrdersRef.current = myOrders;
 
   /**
    * Whether this rider may take work.
@@ -561,32 +595,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [rider]
   );
 
+  // Off the job being ridden, not the one on screen — see `navigatingOrder`.
   const navigationTarget = useMemo<NavigationTarget | null>(() => {
-    if (!activeOrder) return null;
+    if (!navigatingOrder) return null;
 
-    switch (activeOrder.status) {
+    switch (navigatingOrder.status) {
       case 'navigating_to_pickup':
         return {
-          coords: activeOrder.pickupCoords,
-          label: activeOrder.pickupAddress,
+          orderId: navigatingOrder.id,
+          coords: navigatingOrder.pickupCoords,
+          label: navigatingOrder.pickupAddress,
           arrivalStatus: 'arrived_at_pickup',
         };
       case 'navigating_to_laundry':
         return {
+          orderId: navigatingOrder.id,
           coords: LAUNDRY_HUB_COORDS,
           label: LAUNDRY_HUB.name,
           arrivalStatus: 'arrived_at_laundry',
         };
       case 'navigating_to_delivery':
         return {
-          coords: activeOrder.deliveryCoords,
-          label: activeOrder.deliveryAddress,
+          orderId: navigatingOrder.id,
+          coords: navigatingOrder.deliveryCoords,
+          label: navigatingOrder.deliveryAddress,
           arrivalStatus: 'arrived_at_delivery',
         };
       default:
         return null;
     }
-  }, [activeOrder]);
+  }, [navigatingOrder]);
 
   const isNavigating = navigationTarget !== null;
 
@@ -667,6 +705,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             : o
         )
       );
+
+      // Put it in front of them. Accepting a job while another is parked at the
+      // hub would otherwise leave the sheet on the parked one, since that is
+      // the older job and the strip is ordered by what needs doing.
+      setFocusedOrderId(orderId);
 
       void (async () => {
         try {
@@ -787,9 +830,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const arriveAtDestination = useCallback(() => {
-    if (!activeOrder || !navigationTarget) return;
-    updateOrderStatus(activeOrder.id, navigationTarget.arrivalStatus);
-  }, [activeOrder, navigationTarget, updateOrderStatus]);
+    if (!navigationTarget) return;
+    updateOrderStatus(navigationTarget.orderId, navigationTarget.arrivalStatus);
+  }, [navigationTarget, updateOrderStatus]);
 
   /**
    * Completing a delivery, which is the one transition this app cannot make on
@@ -1193,7 +1236,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       orders,
       messages,
       notifications,
+      myOrders,
       activeOrder,
+      navigatingOrder,
+      focusedOrderId,
+      focusOrder,
+      canTakeMore,
       backlogOrders,
       unreadCount,
       profileComplete,
@@ -1222,7 +1270,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       orders,
       messages,
       notifications,
+      myOrders,
       activeOrder,
+      navigatingOrder,
+      focusedOrderId,
+      focusOrder,
+      canTakeMore,
       backlogOrders,
       unreadCount,
       profileComplete,

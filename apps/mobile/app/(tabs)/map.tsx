@@ -15,8 +15,17 @@ import { colors, radius, shadow } from '../../src/theme';
 export default function MapScreen() {
   // Tapping "Pin" on an assignment card routes here with the order to frame.
   const { focus } = useLocalSearchParams<{ focus?: string }>();
-  const { rider, orders, activeOrder, navigationTarget, acceptOrder, profileComplete } =
-    useApp();
+  const {
+    rider,
+    orders,
+    myOrders,
+    activeOrder,
+    focusedOrderId,
+    focusOrder,
+    navigationTarget,
+    acceptOrder,
+    profileComplete,
+  } = useApp();
 
   return (
     <View style={styles.container}>
@@ -25,7 +34,13 @@ export default function MapScreen() {
         orders={orders}
         activeOrder={activeOrder}
         navigationTarget={navigationTarget}
-        focusedOrderId={focus ?? null}
+        // The route param wins — it is the courier having just tapped "Pin" on
+        // a specific card — and otherwise this follows the job the workflow
+        // sheet is on, so switching jobs on the home screen reframes the map.
+        focusedOrderId={focus ?? focusedOrderId ?? activeOrder?.id ?? null}
+        onSelectOrder={(order) => {
+          if (myOrders.some((o) => o.id === order.id)) focusOrder(order.id);
+        }}
         // See the note on the home screen's map: no accept control at all
         // until the profile is complete.
         onAcceptOrder={profileComplete ? acceptOrder : undefined}
