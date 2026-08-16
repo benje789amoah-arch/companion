@@ -8,6 +8,7 @@ import {
   LOYALTY_REWARDS,
   bookingProgressPercent,
   membershipPlan,
+  samePhone,
   tierForPoints,
   tierProgress,
   type JobStatus,
@@ -1355,24 +1356,62 @@ export default function ClientPortal({
                     </div>
 
                     {/* Care Points Card */}
-                    {(() => {
-                      const sub = getSubscriptionDetails(getPatronPoints());
-                      return (
-                        <div className="bg-[#161616] rounded-2xl border border-white/10 p-5 space-y-3">
-                          <div className="flex justify-between items-center">
-                            <span className="font-mono text-[9px] text-[#8E9299] uppercase tracking-widest font-bold">CARE POINTS PASS</span>
-                            <span className={`text-[10px] font-serif ${sub.colorClass} font-bold`}>{sub.className}</span>
+                    <div className="bg-[#161616] rounded-2xl border border-white/10 p-5 space-y-3">
+                      <div className="flex justify-between items-center">
+                        <span className="font-mono text-[9px] text-[#8E9299] uppercase tracking-widest font-bold">CARE POINTS PASS</span>
+                        <span className={`text-[10px] font-serif ${TIER_STYLES[tier.id].colorClass} font-bold`}>{tier.name}</span>
+                      </div>
+                      <div className="flex items-baseline justify-between">
+                        <span className={`font-serif text-xl font-bold ${TIER_STYLES[tier.id].colorClass}`}>
+                          {patronPoints.toLocaleString()} pts
+                        </span>
+                        {tier.discountRate > 0 && (
+                          <span className="text-[9px] font-mono text-stone-400">
+                            *{Math.round(tier.discountRate * 100)}% MEMBERSHIP DISCOUNT COEFF
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10px] text-stone-400 font-sans leading-relaxed">
+                        {tier.description}
+                      </p>
+                      {nextTier && (
+                        <div className="space-y-1.5 pt-1">
+                          <div className="h-1 rounded-full bg-white/10 overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-brand-gold transition-all"
+                              style={{ width: `${tierPercent}%` }}
+                            />
                           </div>
-                          <div className="flex items-baseline justify-between">
-                            <span className={`font-serif text-xl font-bold ${sub.colorClass}`}>{getPatronPoints()} pts</span>
-                            <span className="text-[9px] font-mono text-stone-400">{sub.discountText}</span>
-                          </div>
-                          <p className="text-[10px] text-stone-400 font-sans leading-relaxed">
-                            {sub.statusText}
+                          <p className="text-[9px] font-mono text-stone-400">
+                            {pointsToNext.toLocaleString()} points to {nextTier.name}
                           </p>
                         </div>
-                      );
-                    })()}
+                      )}
+                    </div>
+
+                    {/*
+                      The membership the customer pays for, which this portal
+                      had no notion of — the app read it off `account.plan`
+                      while the website showed only the points tier, so a paid
+                      subscription was invisible on one of the two surfaces.
+                    */}
+                    {activePlan && activePlanDefinition && (
+                      <div className="bg-[#161616] rounded-2xl border border-brand-sage/30 p-5 space-y-2">
+                        <div className="flex justify-between items-center">
+                          <span className="font-mono text-[9px] text-[#8E9299] uppercase tracking-widest font-bold">Subscription</span>
+                          <span className="text-[10px] font-serif text-brand-sage font-bold">
+                            {activePlan.cancelAtPeriodEnd ? 'Ends soon' : 'Active'}
+                          </span>
+                        </div>
+                        <p className="font-serif text-lg text-white font-bold">{activePlanDefinition.name}</p>
+                        <p className="text-[10px] text-stone-400 font-sans leading-relaxed">
+                          {Math.max(0, activePlanDefinition.includedPickups - (activePlan.pickupsUsed ?? 0))} of{' '}
+                          {activePlanDefinition.includedPickups} included pickups left ·{' '}
+                          {activePlan.cancelAtPeriodEnd ? 'ends' : 'renews'} on{' '}
+                          {new Date(activePlan.renewsOn).toLocaleDateString()}
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   {/* Right Column: Live GPS Delivery Map & Active Shipment Tracking */}
@@ -1716,7 +1755,7 @@ export default function ClientPortal({
                     <div className="bg-[#161616] rounded-2xl border border-white/10 p-6 space-y-5 shadow-xl">
                       <div className="flex justify-between items-center">
                         <span className="font-mono text-[9px] text-brand-sage uppercase tracking-widest font-bold">CARE POINTS REWARD STORE</span>
-                        <span className="text-xs font-serif font-bold text-brand-gold">{getPatronPoints()} Care Points</span>
+                        <span className="text-xs font-serif font-bold text-brand-gold">{patronPoints.toLocaleString()} Care Points</span>
                       </div>
 
                       {redeemedRewardMsg && (
@@ -1726,70 +1765,44 @@ export default function ClientPortal({
                         </div>
                       )}
 
+                      {/*
+                        One list, from `@freshfold/core`, so the customer app's
+                        wallet screen offers exactly these rewards at exactly
+                        these prices. Each button posts to the server, which is
+                        what takes the points — these used to check the balance,
+                        say "Successfully redeemed" and deduct nothing at all.
+                      */}
                       <div className="space-y-3">
-                        <div className="p-4 bg-black/40 rounded-xl border border-white/10 flex justify-between items-center">
-                          <div>
-                            <h5 className="font-serif text-sm text-white font-bold">Free Organic Scent Spray</h5>
-                            <p className="text-[10.5px] text-stone-400 font-light">Redeem 300 Care Points for French Lavender or Cedarwood infusion.</p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (getPatronPoints() >= 300) {
-                                setRedeemedRewardMsg('Successfully redeemed Organic Scent Spray Voucher!');
-                                setTimeout(() => setRedeemedRewardMsg(''), 3000);
-                              } else {
-                                alert('Requires 300 Care Points.');
-                              }
-                            }}
-                            className="px-3 py-1.5 bg-brand-sage text-white rounded-lg text-[10px] font-mono font-bold uppercase hover:bg-brand-sage-light cursor-pointer shrink-0"
-                          >
-                            Redeem 300 pts
-                          </button>
-                        </div>
+                        {LOYALTY_REWARDS.map((reward) => {
+                          const affordable = patronPoints >= reward.cost;
+                          const busy = redeemingReward === reward.id;
 
-                        <div className="p-4 bg-black/40 rounded-xl border border-white/10 flex justify-between items-center">
-                          <div>
-                            <h5 className="font-serif text-sm text-white font-bold">Free Express Courier Dispatch</h5>
-                            <p className="text-[10.5px] text-stone-400 font-light">Redeem 500 Care Points to waive express same-day courier dispatch.</p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (getPatronPoints() >= 500) {
-                                setRedeemedRewardMsg('Successfully redeemed Free Express Dispatch Voucher!');
-                                setTimeout(() => setRedeemedRewardMsg(''), 3000);
-                              } else {
-                                alert('Requires 500 Care Points.');
-                              }
-                            }}
-                            className="px-3 py-1.5 bg-brand-gold text-black rounded-lg text-[10px] font-mono font-bold uppercase hover:bg-yellow-400 cursor-pointer shrink-0"
-                          >
-                            Redeem 500 pts
-                          </button>
-                        </div>
-
-                        <div className="p-4 bg-black/40 rounded-xl border border-white/10 flex justify-between items-center">
-                          <div>
-                            <h5 className="font-serif text-sm text-white font-bold">₵50.00 GHS Direct Wallet Credit</h5>
-                            <p className="text-[10.5px] text-stone-400 font-light">Redeem 1000 Care Points for GHS 50 added straight to your FreshFold wallet.</p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (getPatronPoints() >= 1000) {
-                                setWalletBalance(prev => prev + 50);
-                                setRedeemedRewardMsg('Successfully redeemed ₵50.00 GHS added to your wallet!');
-                                setTimeout(() => setRedeemedRewardMsg(''), 3000);
-                              } else {
-                                alert('Requires 1000 Care Points. Keep earning on completed orders!');
-                              }
-                            }}
-                            className="px-3 py-1.5 bg-white text-black rounded-lg text-[10px] font-mono font-bold uppercase hover:bg-brand-sage hover:text-white cursor-pointer shrink-0"
-                          >
-                            Redeem 1000 pts
-                          </button>
-                        </div>
+                          return (
+                            <div
+                              key={reward.id}
+                              className="p-4 bg-black/40 rounded-xl border border-white/10 flex justify-between items-center gap-3"
+                            >
+                              <div>
+                                <h5 className="font-serif text-sm text-white font-bold">{reward.name}</h5>
+                                <p className="text-[10.5px] text-stone-400 font-light">
+                                  Redeem {reward.cost.toLocaleString()} Care Points — {reward.description}
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                disabled={!affordable || busy}
+                                onClick={() => handleRedeem(reward.id)}
+                                className={`px-3 py-1.5 rounded-lg text-[10px] font-mono font-bold uppercase shrink-0 transition-colors ${
+                                  affordable && !busy
+                                    ? 'bg-brand-gold text-black hover:bg-yellow-400 cursor-pointer'
+                                    : 'bg-white/10 text-stone-500 cursor-not-allowed'
+                                }`}
+                              >
+                                {busy ? 'Redeeming…' : `Redeem ${reward.cost.toLocaleString()} pts`}
+                              </button>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   </div>
