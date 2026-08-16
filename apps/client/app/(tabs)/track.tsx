@@ -65,7 +65,7 @@ const COLLECTION_PENDING = new Set<JobStatus>([
  */
 export default function TrackScreen() {
   const router = useRouter();
-  const { activeBookings, primaryBooking, online, refresh, messagesFor } = useClient();
+  const { activeBookings, primaryBooking, online, probed, refresh, messagesFor } = useClient();
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -99,7 +99,7 @@ export default function TrackScreen() {
       <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.header}>
           <Text style={styles.headerTitle}>Track</Text>
-          <ConnectionPill online={online} />
+          <ConnectionPill online={online} pending={!probed} />
         </View>
         <View style={{ padding: 20 }}>
           <EmptyState
@@ -123,7 +123,7 @@ export default function TrackScreen() {
           <Text style={styles.headerTitle}>Track</Text>
           <Text style={styles.headerSub}>{booking.id}</Text>
         </View>
-        <ConnectionPill online={online} />
+        <ConnectionPill online={online} pending={!probed} />
       </View>
 
       <ScrollView

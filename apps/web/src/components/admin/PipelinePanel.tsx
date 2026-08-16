@@ -24,7 +24,6 @@ import {
   Inbox,
   Mail,
   MapPin,
-  MessageSquare,
   Phone,
   Sparkles,
   Trash2,
@@ -318,14 +317,7 @@ export default function PipelinePanel({
                           </a>
                         )}
 
-                        <a
-                          href={`https://wa.me/${b.phone.replace(/[^0-9]/g, '')}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-admin-line bg-admin-raised px-2 text-[12px] text-admin-fg transition-colors hover:bg-admin-hover"
-                        >
-                          <MessageSquare className="h-3.5 w-3.5 text-admin-ok" /> WhatsApp
-                        </a>
+                        {/* WhatsApp shortcut hidden for now. */}
 
                         <Button
                           size="sm"

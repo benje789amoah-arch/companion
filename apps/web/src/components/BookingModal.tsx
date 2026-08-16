@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Calendar, MapPin, Sparkles, MessageSquare, Clock, ShieldCheck, CheckCircle, Smartphone, CreditCard, Wallet, Banknote, Lock, CheckCircle2, QrCode } from 'lucide-react';
+import { X, Calendar, MapPin, Sparkles, Clock, ShieldCheck, CheckCircle, Smartphone, CreditCard, Wallet, Banknote, Lock, CheckCircle2, QrCode } from 'lucide-react';
 import {
   PHONE_DIGITS,
   PHONE_LENGTH_MESSAGE,
@@ -301,24 +301,30 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
 
   // Compile WhatsApp redirect URL based on form data.
   //
+  // Hidden for now, along with the button on the success screen. The confirmation
+  // email already carries this detail, so nothing is lost while it is switched off.
+  //
   // A note to the desk about the order, and nothing more. The portal setup link
   // used to ride along in this message; it is emailed now, so it no longer sits
   // in a chat thread that anyone holding the phone can scroll back through.
-  const triggerWhatsAppRedirect = () => {
-    if (!createdBooking) return;
-    const formatMsg = `Hi FreshFold Laundry Co.! I would like to confirm my premium clothing pickup:
-• Booking ID: ${createdBooking.id}
-• Patron: ${createdBooking.name}
-• Fabric Treatment: ${createdBooking.serviceType}
-• Pickup: ${createdBooking.pickupDate} @ ${createdBooking.pickupTime}
-• Scent: ${specialScent}
-• Delivery: ${createdBooking.deliveryDate}
-• Surcharges Estimate: ₵${estimatedPrice}.00 GHS
-• Address: ${createdBooking.address}, ${createdBooking.suburb}${createdBooking.riderNote ? `\n• Note for Rider: ${createdBooking.riderNote}` : ''}`;
-    
-    const encoded = encodeURIComponent(formatMsg);
-    window.open(`https://wa.me/233257880675?text=${encoded}`, '_blank');
-  };
+  // const triggerWhatsAppRedirect = () => {
+  //   if (!createdBooking) return;
+  //   const formatMsg = [
+  //     'Hi FreshFold Laundry Co.! I would like to confirm my premium clothing pickup:',
+  //     `• Booking ID: ${createdBooking.id}`,
+  //     `• Patron: ${createdBooking.name}`,
+  //     `• Fabric Treatment: ${createdBooking.serviceType}`,
+  //     `• Pickup: ${createdBooking.pickupDate} @ ${createdBooking.pickupTime}`,
+  //     `• Scent: ${specialScent}`,
+  //     `• Delivery: ${createdBooking.deliveryDate}`,
+  //     `• Surcharges Estimate: ₵${estimatedPrice}.00 GHS`,
+  //     `• Address: ${createdBooking.address}, ${createdBooking.suburb}`,
+  //     createdBooking.riderNote ? `• Note for Rider: ${createdBooking.riderNote}` : '',
+  //   ].filter(Boolean).join('\n');
+  //
+  //   const encoded = encodeURIComponent(formatMsg);
+  //   window.open(`https://wa.me/233257880675?text=${encoded}`, '_blank');
+  // };
 
   if (!isOpen) return null;
 
@@ -932,18 +938,8 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                 </button>
               </div>
 
-              {/* WhatsApp routing call link */}
+              {/* WhatsApp routing call link — hidden for now. */}
               <div className="space-y-3 max-w-sm mx-auto pt-2">
-                <button
-                  onClick={triggerWhatsAppRedirect}
-                  className="w-full py-3.5 bg-[#25D366] hover:bg-[#20BA5A] text-white text-xs font-bold tracking-wider uppercase rounded-xl transition-all duration-300 flex items-center justify-center space-x-2 cursor-pointer shadow-lg hover:shadow-[#25d366]/10"
-                >
-                  <MessageSquare className="w-4 h-4 font-black" />
-                  <span>Send Confirmation to WhatsApp</span>
-                </button>
-                <p className="text-[10px] text-stone-500 font-light font-sans max-w-xs mx-auto leading-relaxed">
-                  Triggers prefilled message dispatch to our concierge dispatchers for ultra-fast approval!
-                </p>
                 <div className="pt-2">
                   <button
                     onClick={() => {

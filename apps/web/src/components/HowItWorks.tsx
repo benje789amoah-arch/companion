@@ -11,7 +11,7 @@ export default function HowItWorks() {
       sub: 'Decide your timeline',
       icon: Calendar,
       duration: 'Est. 2 minutes',
-      details: 'Select your preferred pickup day and timeslot through our online booking engine or quick WhatsApp link. Inform us about custom fabric requirements, laundry volume, or scent preferences.',
+      details: 'Select your preferred pickup day and timeslot through our online booking engine or a quick call to the desk. Inform us about custom fabric requirements, laundry volume, or scent preferences.',
       highlight: 'Keyless lock drops and contactless options available 24/7.'
     },
     {

@@ -134,6 +134,33 @@
       "port": 8084
     },
     {
+      "name": "dispatch-server-4001",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:server"],
+      "env": {
+        "PORT": "4001"
+      },
+      "port": 4001
+    },
+    {
+      "name": "admin-web-4001",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--workspace",
+        "@freshfold/web",
+        "--",
+        "--port",
+        "3100",
+        "--strictPort"
+      ],
+      "env": {
+        "API_URL": "http://localhost:4001"
+      },
+      "port": 3100
+    },
+    {
       "name": "rider-app",
       "runtimeExecutable": "npm",
       "runtimeArgs": [

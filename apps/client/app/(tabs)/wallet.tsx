@@ -100,6 +100,7 @@ export default function WalletScreen() {
     resumePlan,
     refresh,
     online,
+    probed,
   } = useClient();
 
   const [topUpOpen, setTopUpOpen] = useState(false);
@@ -325,7 +326,7 @@ export default function WalletScreen() {
           <Text style={styles.headerTitle}>Wallet</Text>
           <Text style={styles.headerSub}>{account?.email}</Text>
         </View>
-        {!online && <Badge label="Offline" tone="warning" />}
+        {probed && !online && <Badge label="Offline" tone="warning" />}
       </View>
 
       <ScrollView

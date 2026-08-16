@@ -2177,7 +2177,7 @@ export default function ClientPortal({
                   <p className="text-stone-400 text-xs leading-relaxed">
                     {threadOrderId
                       ? <>Live thread with your courier and the Bomso dispatch desk for order <strong className="text-brand-gold font-mono">{threadOrderId}</strong>. Replies appear here as they are sent.</>
-                      : <>Schedule a pickup to open a live thread with your courier. In the meantime, the desk is reachable on WhatsApp or the hotline below.</>}
+                      : <>Schedule a pickup to open a live thread with your courier. In the meantime, the desk is reachable on the hotline below.</>}
                   </p>
                 </div>
 
@@ -2256,15 +2256,8 @@ export default function ClientPortal({
                     <Send className="w-3.5 h-3.5" /> {threadOrderId ? 'Send to Courier & Desk' : 'No Active Order'}
                   </button>
 
-                  <div className="grid grid-cols-2 gap-2 pt-1 text-[10px] font-mono">
-                    <a
-                      href="https://wa.me/233244123456?text=Hello%20FreshFold%20Concierge%20Desk"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="p-2.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-xl text-center font-bold block"
-                    >
-                      💬 WhatsApp HQ
-                    </a>
+                  {/* WhatsApp HQ shortcut hidden for now — hotline only. */}
+                  <div className="pt-1 text-[10px] font-mono">
                     <a
                       href="tel:+233244123456"
                       className="p-2.5 bg-brand-sage/10 hover:bg-brand-sage/20 text-brand-sage border border-brand-sage/30 rounded-xl text-center font-bold block"

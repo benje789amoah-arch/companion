@@ -13,7 +13,6 @@ import {
   Clock,
   Mail,
   MapPin,
-  MessageCircle,
   Phone,
   Quote,
   Star,
@@ -69,7 +68,7 @@ import { colors, courierName, formatCedis, radius, shadow, tints } from '../../s
 export default function HomeScreen() {
   const router = useRouter();
   const { account, isAuthenticated } = useSession();
-  const { primaryBooking, activeBookings, unreadCount, online, points, refresh } = useClient();
+  const { primaryBooking, activeBookings, unreadCount, online, probed, points, refresh } = useClient();
 
   const [category, setCategory] = useState<ServiceCategory>('core');
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -118,7 +117,7 @@ export default function HomeScreen() {
               {firstName ? `, ${firstName}` : ''}
             </Text>
             <View style={styles.topMeta}>
-              <ConnectionPill online={online} />
+              <ConnectionPill online={online} pending={!probed} />
               {isAuthenticated && <Badge label={tier.cardName} tone="gold" />}
             </View>
           </View>
@@ -380,12 +379,7 @@ export default function HomeScreen() {
               caption="Call the concierge desk"
               onPress={() => Linking.openURL(`tel:${CONTACT.phone.replace(/\s/g, '')}`)}
             />
-            <ContactRow
-              icon={<MessageCircle size={15} color={colors.brandSage} />}
-              label="WhatsApp"
-              caption="Fastest for a quick question"
-              onPress={() => Linking.openURL(`https://wa.me/${CONTACT.whatsapp}`)}
-            />
+            {/* WhatsApp row hidden for now. */}
             <ContactRow
               icon={<Bot size={15} color={colors.brandSage} />}
               label="Ask Foldie"

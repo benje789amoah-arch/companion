@@ -13,7 +13,6 @@ import {
   LogOut,
   Mail,
   MapPin,
-  MessageCircle,
   Package,
   Phone,
   Plus,
@@ -76,6 +75,7 @@ export default function AccountScreen() {
     walletBalance,
     unreadCount,
     online,
+    probed,
   } = useClient();
 
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -169,7 +169,7 @@ export default function AccountScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Account</Text>
-        <ConnectionPill online={online} />
+        <ConnectionPill online={online} pending={!probed} />
         <Pressable
           onPress={() => setNotificationsOpen(true)}
           hitSlop={8}
@@ -372,12 +372,7 @@ export default function AccountScreen() {
               caption="Concierge assistant, in-app"
               onPress={() => router.push('/concierge')}
             />
-            <SupportRow
-              icon={<MessageCircle size={15} color={colors.brandSage} />}
-              label="WhatsApp the desk"
-              caption="Fastest for a quick question"
-              onPress={() => Linking.openURL(`https://wa.me/${CONTACT.whatsapp}`)}
-            />
+            {/* WhatsApp row hidden for now. */}
             <SupportRow
               icon={<Phone size={15} color={colors.brandSage} />}
               label={CONTACT.phone}

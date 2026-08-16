@@ -156,6 +156,15 @@ export type RedeemResult =
 interface ClientState extends Mirror {
   hydrated: boolean;
   online: boolean;
+  /**
+   * False until the first poll has come back, either way.
+   *
+   * `online` alone cannot express "we have not asked yet", and it starts false —
+   * so anything reading it during startup concluded the server was down when
+   * nothing had been tried. Screens showing a connection indicator wait for
+   * this before believing a negative.
+   */
+  probed: boolean;
   /** Bookings still in flight, newest first. */
   activeBookings: Booking[];
   /** Delivered or cancelled, newest first. */
@@ -237,6 +246,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
   const [mirror, setMirror] = useState<Mirror>(EMPTY_MIRROR);
   const [hydrated, setHydrated] = useState(false);
   const [online, setOnline] = useState(false);
+  const [probed, setProbed] = useState(false);
 
   const queueRef = useRef<PendingWrite[]>([]);
   const drainingRef = useRef(false);
@@ -485,6 +495,9 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // The server is down or we're offline. The mirror stands.
       setOnline(false);
+    } finally {
+      // Asked and answered, either way — so a negative now means something.
+      setProbed(true);
     }
   }, [commit, applyAccount]);
 
@@ -998,6 +1011,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       ...mirror,
       hydrated,
       online,
+      probed,
       activeBookings,
       pastBookings,
       primaryBooking,
@@ -1035,6 +1049,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       mirror,
       hydrated,
       online,
+      probed,
       activeBookings,
       pastBookings,
       primaryBooking,

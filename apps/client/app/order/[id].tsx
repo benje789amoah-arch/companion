@@ -21,7 +21,7 @@ import {
   Share2,
 } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Image, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { bagsForJob, humanizeStatus, type JobStatus } from '@freshfold/core';
 
@@ -195,11 +195,11 @@ export default function OrderDetailScreen() {
         subtitle={booking.serviceType}
         onBack={() => router.back()}
         onShare={() =>
-          Linking.openURL(
-            `https://wa.me/?text=${encodeURIComponent(
-              `Tracking my FreshFold order ${booking.id} — ${booking.status}.`
-            )}`
-          )
+          // The OS share sheet, rather than a hard-coded chat app, so the
+          // patron picks wherever they want the update to go.
+          Share.share({
+            message: `Tracking my FreshFold order ${booking.id} — ${booking.status}.`,
+          })
         }
       />
 

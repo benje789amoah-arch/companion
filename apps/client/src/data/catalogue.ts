@@ -647,6 +647,8 @@ export const CUSTOMER_SEGMENTS = [
 
 export const CONTACT = {
   phone: '+233 55 000 1234',
+  // Unused while the WhatsApp entry points are hidden; kept so they can be
+  // switched back on without hunting for the number again.
   whatsapp: '233550001234',
   email: 'concierge@freshfold.com',
   hours: 'Mon–Sat 07:00–21:00 · Sun 10:00–18:00',

@@ -545,23 +545,28 @@ export function ScrollSheet({
   );
 }
 
-/** Small pill for connection state, shown in screen headers. */
-export function ConnectionPill({ online }: { online: boolean }) {
+/**
+ * Small pill for connection state, shown in screen headers.
+ *
+ * `pending` is the state before the first poll has come back either way, and it
+ * exists because "not yet known" is not the same as "offline". The pill had two
+ * states and `online` starts false, so every cold start accused the server of
+ * being unreachable — in a warning colour — for as long as the first round trip
+ * took, which on a phone is easily a few seconds and on a slow connection is
+ * exactly when a customer is most likely to believe it.
+ */
+export function ConnectionPill({ online, pending }: { online: boolean; pending?: boolean }) {
+  const tone = pending
+    ? colors.textSlate
+    : online
+      ? colors.statusSuccess
+      : colors.statusWarning;
+
   return (
-    <View style={[styles.connPill, !online && { backgroundColor: tints.warning10 }]}>
-      <View
-        style={[
-          styles.connDot,
-          { backgroundColor: online ? colors.statusSuccess : colors.statusWarning },
-        ]}
-      />
-      <Text
-        style={[
-          styles.connLabel,
-          { color: online ? colors.statusSuccess : colors.statusWarning },
-        ]}
-      >
-        {online ? 'Live' : 'Offline'}
+    <View style={[styles.connPill, !online && !pending && { backgroundColor: tints.warning10 }]}>
+      <View style={[styles.connDot, { backgroundColor: tone }]} />
+      <Text style={[styles.connLabel, { color: tone }]}>
+        {pending ? 'Connecting…' : online ? 'Live' : 'Offline'}
       </Text>
     </View>
   );

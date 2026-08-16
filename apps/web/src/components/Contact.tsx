@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { MapPin, Phone, Mail, Clock, MessageSquare, Send, CheckCircle, Smartphone } from 'lucide-react';
+import { MapPin, Phone, Mail, Clock, Send, CheckCircle, Smartphone } from 'lucide-react';
 
 export default function Contact() {
   const [inquiryName, setInquiryName] = useState('');
@@ -51,10 +51,12 @@ export default function Contact() {
     }, 4000);
   };
 
-  const triggerWhatsAppDirect = () => {
-    const encoded = encodeURIComponent("Hello FreshFold! I'd like to ask a general question about your luxury dry care options.");
-    window.open(`https://wa.me/233257880675?text=${encoded}`, '_blank');
-  };
+  // WhatsApp routing is hidden for now. The handler stays here so the button
+  // below can be restored without rebuilding the message.
+  // const triggerWhatsAppDirect = () => {
+  //   const encoded = encodeURIComponent("Hello FreshFold! I'd like to ask a general question about your luxury dry care options.");
+  //   window.open(`https://wa.me/233257880675?text=${encoded}`, '_blank');
+  // };
 
   return (
     <section id="contact" className="py-24 bg-brand-charcoal relative border-b border-white/5">
@@ -71,7 +73,7 @@ export default function Contact() {
             Initiate Care <span className="font-serif italic text-brand-sage">& Communications</span>
           </h2>
           <p className="font-sans text-[#8E9299] text-sm mt-4 font-light tracking-wide max-w-xl mx-auto leading-relaxed">
-            Connect with an active wardrobe specialist. Drop us a short message, drop by our physical Kiosk, or request a quick-schedule call via WhatsApp.
+            Connect with an active wardrobe specialist. Drop us a short message, drop by our physical Kiosk, or request a quick-schedule call on the hotline.
           </p>
         </div>
 
@@ -235,14 +237,7 @@ export default function Contact() {
                   </button>
                 )}
 
-                <button
-                  type="button"
-                  onClick={triggerWhatsAppDirect}
-                  className="w-full sm:w-auto px-6 py-3.5 bg-transparent border border-white/15 hover:bg-brand-sage hover:text-white hover:border-brand-sage text-white text-xs font-bold tracking-widest uppercase rounded-xl transition-all cursor-pointer flex items-center justify-center space-x-2"
-                >
-                  <MessageSquare className="w-3.5 h-3.5" />
-                  <span>WhatsApp Instantly</span>
-                </button>
+                {/* WhatsApp shortcut hidden for now. */}
               </div>
 
             </form>

@@ -1,0 +1,98 @@
+# Render blueprint for the FreshFold dispatch server.
+#
+# The server is deliberately NOT serverless. `startHubCycle()` in
+# apps/server/src/hub.ts sweeps every 15 seconds to walk jobs through the hub
+# stages, and `start()` in index.ts checks the database and seeds the roster
+# before the port opens. Both need one long-lived process, which is why this
+# lives here rather than next to the website on Vercel.
+#
+# The website is served from Vercel and proxies /api back here — see
+# vercel.json. Deploy this first: the Render URL is what that rewrite points at.
+
+services:
+  - type: web
+    name: freshfold-server
+    runtime: node
+    plan: free
+
+    # Should match the Supabase project's region — every request the server
+    # serves makes at least one round trip to Postgres, so the distance between
+    # these two matters far more than the distance to the browser.
+    region: frankfurt
+
+    # Installed from the repo root so the npm workspace link to
+    # @freshfold/core resolves. The build bundles with esbuild but leaves
+    # express/cors/dotenv/postgres/@google/genai external, so node_modules has
+    # to survive into the runtime — Render keeps it, so this works.
+    buildCommand: npm install && npm run build --workspace @freshfold/server
+    startCommand: npm run start --workspace @freshfold/server
+
+    # Answers 503 when Postgres is unreachable rather than a cheerful 200, so a
+    # process that is up but cannot serve anything gets recycled instead of
+    # sitting in the routing table returning 500s.
+    healthCheckPath: /api/health
+
+    envVars:
+      # Turns on the CORS allow-list and the static-file branch in index.ts.
+      - key: NODE_ENV
+        value: production
+
+      # Render terminates TLS at its own proxy, so X-Forwarded-For carries the
+      # real client IP and /api/directions can rate-limit per caller instead of
+      # putting the whole internet in one bucket.
+      - key: TRUST_PROXY
+        value: "1"
+
+      # Render injects PORT; index.ts already reads it.
+
+      # Kept well under Supabase's connection limit. Use the *pooled* Supabase
+      # string (port 6543) — the free instance will not survive a direct 5432
+      # connection per process.
+      - key: DATABASE_POOL_MAX
+        value: "5"
+
+      # --- Set these in the Render dashboard; `sync: false` keeps them out of git ---
+
+      # Supabase → Project Settings → Database → Connection string → URI.
+      - key: DATABASE_URL
+        sync: false
+
+      # The Vercel origin, so the customer app and any Expo web build can call
+      # this cross-origin. The website itself does not need to be listed — its
+      # /api calls are proxied by Vercel server-side and arrive same-origin.
+      - key: CORS_ORIGINS
+        sync: false
+
+      # Public origin of the deployed site. Used as the Paystack callback and
+      # baked into the links inside outbound email, so it must be the domain a
+      # customer actually sees — not the onrender.com URL.
+      - key: APP_URL
+        sync: false
+
+      # Outbound email. Brevo is used in preference to Resend when both are
+      # set — it verifies a single sender address rather than a whole domain,
+      # which is what lets confirmations reach customers before we own one.
+      - key: BREVO_API_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+
+      # Must be a sender the provider recognises: verified in Brevo's Senders
+      # list, or on a domain verified in Resend. Anything @resend.dev only ever
+      # reaches the account owner.
+      - key: EMAIL_FROM
+        sync: false
+
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      - key: GOOGLE_MAPS_PLATFORM_KEY
+        sync: false
+
+      # How long the hub spends on each stage. Both default to 2 minutes, which
+      # is a demo value — set them to what the laundry actually takes.
+      - key: HUB_WASH_MINUTES
+        sync: false
+      - key: HUB_FINISH_MINUTES
+        sync: false
