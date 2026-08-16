@@ -17,7 +17,7 @@ export const SERVICES: ServiceItem[] = [
     priceInfo: 'Included with Wash',
     iconName: 'Wind',
     category: 'core',
-    imageUrl: 'https://images.unsplash.com/photo-1489274495757-95c7c837b101?auto=format&fit=crop&q=80&w=800'
+    imageUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSPI6SKSgSeb7TRH3tohbZVtJXr9VLQq8uyyryGaMA3AQ&s=10'
   },
   {
     id: 'ironing-folding',
@@ -62,7 +62,7 @@ export const SERVICES: ServiceItem[] = [
     priceInfo: 'Complimentary',
     iconName: 'Truck',
     category: 'express',
-    imageUrl: 'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?auto=format&fit=crop&q=80&w=800'
+    imageUrl: 'https://images.unsplash.com/photo-1617347454431-f49d7ff5c3b1?auto=format&fit=crop&q=80&w=800'
   },
   {
     id: 'car-detailing',

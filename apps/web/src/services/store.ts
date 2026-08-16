@@ -6,6 +6,7 @@
 import {
   ApiError,
   createClient,
+  samePhone,
   type AuthSession,
   type Booking,
   type Message,
@@ -45,6 +46,7 @@ const KEYS = {
   adminToken: 'freshfold_admin_token',
   adminSupervisor: 'freshfold_admin_supervisor',
   queue: 'freshfold_pending_writes',
+  localIds: 'freshfold_local_booking_ids',
 } as const;
 
 const POLL_INTERVAL_MS = 5000;
@@ -72,6 +74,17 @@ interface Mirror {
   auditLogs: AuditLog[];
   /** The signed-in customer, refreshed from `/auth/me` on every poll. */
   currentUser: UserAccount | null;
+  /**
+   * Ids booked from *this* browser.
+   *
+   * `bookings` above is the whole ledger — the supervisor dashboard needs it,
+   * so the poll fetches it unscoped. That makes it the wrong thing to ask "does
+   * the person looking at this page have an order on the go", because the
+   * answer was always yes for whoever booked last, anywhere. This is the same
+   * device-local list the customer app keeps (`localIds` in its ClientStore)
+   * and it is what a signed-out visitor is entitled to see.
+   */
+  localIds: string[];
 }
 
 function readLocal<T>(key: string, fallback: T): T {
@@ -98,6 +111,7 @@ const mirror: Mirror = {
   messages: readLocal<Message[]>(KEYS.messages, []),
   auditLogs: readLocal<AuditLog[]>(KEYS.auditLogs, []),
   currentUser: readLocal<UserAccount | null>(KEYS.currentUser, null),
+  localIds: readLocal<string[]>(KEYS.localIds, []),
 };
 
 const listeners = new Set<Listener>();
@@ -243,6 +257,33 @@ export async function readUserBookings(email: string): Promise<Booking[]> {
 }
 
 /**
+ * The orders the person at this browser is entitled to see, newest first.
+ *
+ * Two ways to qualify: the order was booked here — which is the only claim a
+ * signed-out visitor has — or it belongs to whoever is signed in, matched on
+ * the address or the number exactly as `GET /api/bookings?email=` matches it
+ * server-side.
+ *
+ * This exists because `readBookings()` is the whole ledger. The floating
+ * "Track Order" notifier used to read `readBookings()[0]`, so every visitor to
+ * the marketing site was shown the order id of the last booking made by
+ * anybody. Synchronous, off the mirror, because it decides whether to render a
+ * button rather than what to put in an order history.
+ */
+export function readOwnBookings(): Booking[] {
+  const own = new Set(mirror.localIds);
+  const user = mirror.currentUser;
+
+  return mirror.bookings.filter(
+    (booking) =>
+      own.has(booking.id) ||
+      (user !== null &&
+        (booking.email.toLowerCase() === user.email.toLowerCase() ||
+          samePhone(booking.phone, user.phone)))
+  );
+}
+
+/**
  * Replace the whole ledger. Several screens already work this way — they build
  * a new array and hand it over — so this keeps that shape.
  *
@@ -280,6 +321,12 @@ export function writeBookings(next: Booking[]): void {
 export function createBooking(booking: Booking): void {
   mirror.bookings = [booking, ...mirror.bookings.filter((b) => b.id !== booking.id)];
   writeLocal(KEYS.bookings, mirror.bookings);
+
+  // Remember it as ours. A visitor books without signing in, so this id is the
+  // only claim this browser has to the order afterwards.
+  mirror.localIds = Array.from(new Set([booking.id, ...mirror.localIds]));
+  writeLocal(KEYS.localIds, mirror.localIds);
+
   enqueue({ kind: 'booking:create', booking });
   notify();
 }
@@ -359,6 +406,42 @@ export async function setAccountBlocked(
   );
   writeLocal(KEYS.accounts, mirror.accounts);
   notify();
+
+  return updated;
+}
+
+/**
+ * Awards or deducts care points. Supervisor desk only.
+ *
+ * Not queued, for the same reason `setAccountBlocked` is not: it carries the
+ * desk's token, and a grant replayed hours later out of order is not something
+ * anybody asked for. Sent as a delta so the server applies it to the balance as
+ * it actually stands — the dashboard used to compute the new total from its own
+ * copy of the account and write that, which lost one of two adjustments made at
+ * the same time and let the desk overwrite points a customer had just earned.
+ */
+export async function adjustPatronPoints(
+  email: string,
+  delta: number,
+  reason?: string
+): Promise<UserAccount> {
+  const token = readAdminToken();
+  if (!token) throw new Error('Sign in to the supervisor desk to adjust points.');
+
+  const updated = await api.adjustAccountPoints(email, { delta, reason }, token);
+
+  mirror.accounts = mirror.accounts.map((account) =>
+    account.email.toLowerCase() === email.toLowerCase() ? { ...account, ...updated } : account
+  );
+  writeLocal(KEYS.accounts, mirror.accounts);
+
+  // The desk and the portal can be the same browser, so keep the signed-in
+  // profile in step rather than letting it disagree with the table beside it.
+  if (mirror.currentUser?.email.toLowerCase() === email.toLowerCase()) {
+    applyAccount({ ...mirror.currentUser, ...updated });
+  } else {
+    notify();
+  }
 
   return updated;
 }
@@ -480,13 +563,14 @@ async function moveWallet(
   return account;
 }
 
-/** Credits the wallet after a settled payment. Earns no points. */
-export async function topUpWallet(
-  amount: number,
-  method: string,
-  reference?: string
-): Promise<UserAccount> {
-  return moveWallet((token) => api.topUpWallet({ amount, method, reference }, token));
+/**
+ * Credits the wallet against a settled Paystack payment. Earns no points.
+ *
+ * The amount is not ours to choose — the server verifies `reference` with
+ * Paystack and credits what was actually collected.
+ */
+export async function topUpWallet(method: string, reference: string): Promise<UserAccount> {
+  return moveWallet((token) => api.topUpWallet({ method, reference }, token));
 }
 
 /**
@@ -543,6 +627,12 @@ export function readCurrentUser(): UserAccount | null {
  * place the balance, the points and the plan can come from.
  */
 export function applyAccount(account: UserAccount): void {
+  // The poll re-reads the account every five seconds and it is almost always
+  // identical. Notifying anyway would re-render every subscriber on a timer —
+  // and the portal answers a change by re-fetching its order list, so an
+  // unconditional notify here turns one poll into two requests.
+  if (JSON.stringify(mirror.currentUser) === JSON.stringify(account)) return;
+
   mirror.currentUser = account;
   writeLocal(KEYS.currentUser, account);
 

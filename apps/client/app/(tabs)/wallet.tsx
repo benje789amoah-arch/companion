@@ -5,6 +5,8 @@
 
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
+import * as Linking from 'expo-linking';
+import * as WebBrowser from 'expo-web-browser';
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -27,7 +29,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { LOYALTY_REWARDS, tierProgress } from '@freshfold/core';
+import { ApiError, LOYALTY_REWARDS, tierProgress } from '@freshfold/core';
 import type { PaymentTransaction } from '@freshfold/core';
 import { Icon } from '../../src/components/Icon';
 import {
@@ -36,24 +38,40 @@ import {
   Card,
   Divider,
   EmptyState,
-  OptionRow,
   ProgressBar,
   SectionHeader,
   SectionLabel,
   Sheet,
 } from '../../src/components/ui';
-import {
-  PAYMENT_METHODS,
-  SUBSCRIPTION_PLANS,
-  nextTierAfter,
-  tierForPoints,
-} from '../../src/data/catalogue';
+import { SUBSCRIPTION_PLANS, nextTierAfter, tierForPoints } from '../../src/data/catalogue';
+import { api } from '../../src/services/api';
 import { useClient } from '../../src/store/ClientStore';
 import { useSession } from '../../src/store/SessionStore';
 import { colors, formatCedis, radius, relativeTime, shadow, tints } from '../../src/theme';
 
 /** Preset top-up amounts, in cedis. */
 const TOP_UPS = [50, 100, 200, 500];
+
+/**
+ * Why a top-up call failed, in terms of the thing that actually broke.
+ *
+ * Three failures wore one message before, and only one of them was Paystack's.
+ * A refused answer from the gateway, a dispatch server that is not running, and
+ * a request that ran out of its eight seconds all told the customer to check
+ * their connection — so the one case a developer needed to recognise, the
+ * server being down, read as a phone problem. The server's address is in the
+ * message for the same reason: on a phone it is the LAN address, and being
+ * wrong about it is the usual cause.
+ */
+function gatewayProblem(err: unknown): string {
+  if (err instanceof ApiError) return `Payment gateway: ${err.message}`;
+
+  if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) {
+    return 'The payment gateway took too long to answer. Nothing was charged — try again.';
+  }
+
+  return `Could not reach FreshFold at ${api.baseUrl}. Check that the dispatch server is running and that this device can see it.`;
+}
 
 /**
  * Wallet & membership.
@@ -86,8 +104,10 @@ export default function WalletScreen() {
 
   const [topUpOpen, setTopUpOpen] = useState(false);
   const [amount, setAmount] = useState(TOP_UPS[1]);
-  const [method, setMethod] = useState('MTN MoMo');
   const [busy, setBusy] = useState(false);
+  /** Paystack's reference for the checkout in flight, once one exists. */
+  const [checkoutRef, setCheckoutRef] = useState('');
+  const [topUpNotice, setTopUpNotice] = useState('');
   const [planBusy, setPlanBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   /** The reward currently on the wire, so one tap cannot become two. */
@@ -194,16 +214,90 @@ export default function WalletScreen() {
       .finally(() => setPlanBusy(false));
   }, [resumePlan]);
 
-  const submitTopUp = useCallback(async () => {
+  const closeTopUp = useCallback(() => {
+    setTopUpOpen(false);
+    setCheckoutRef('');
+    setTopUpNotice('');
+  }, []);
+
+  /**
+   * Opens a Paystack checkout for the chosen amount.
+   *
+   * This screen used to credit the balance the moment the button was pressed —
+   * it called the wallet route with an amount and nothing else, so the money
+   * appeared without anyone ever having paid. Nothing moves now until Paystack
+   * has taken the payment and the server has confirmed it did.
+   *
+   * Initializing and opening the browser fail differently, and are reported
+   * differently: a blocked browser must not send someone off to try again when
+   * a perfectly good transaction is already waiting for them.
+   */
+  const startTopUp = useCallback(async () => {
     setBusy(true);
+    setTopUpNotice('');
+
+    let checkout: { reference: string; authorization_url: string };
+
     try {
-      await topUpWallet(amount, method);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      setTopUpOpen(false);
+      checkout = await api.initializePayment({
+        email: account?.email ?? '',
+        amount,
+        // Back into the app rather than the server's `APP_URL`, which on a
+        // phone is a localhost page that does not exist.
+        callback_url: Linking.createURL('paystack-success'),
+        // The server refuses to credit a wallet from a reference that was not
+        // marked as a top-up, so a booking payment cannot be replayed here.
+        metadata: { type: 'wallet_topup', customer_name: account?.name ?? 'Patron' },
+      });
+    } catch (err) {
+      setBusy(false);
+      setTopUpNotice(gatewayProblem(err));
+      return;
+    }
+
+    setCheckoutRef(checkout.reference);
+
+    try {
+      await WebBrowser.openBrowserAsync(checkout.authorization_url);
+      setTopUpNotice('Finish on the Paystack page, then tap “I have paid” to collect the funds.');
+    } catch {
+      setTopUpNotice(
+        `Could not open the checkout page here. Reference ${checkout.reference} is live — pay on Paystack, then tap “I have paid”.`
+      );
     } finally {
       setBusy(false);
     }
-  }, [amount, method, topUpWallet]);
+  }, [account?.email, account?.name, amount]);
+
+  /**
+   * Claims the payment.
+   *
+   * The reference is all that is sent: the server verifies it with Paystack
+   * itself and credits what Paystack says was collected, so a wrong amount
+   * here could not become a wrong balance. Keyed on the reference too, so
+   * tapping twice credits once.
+   */
+  const collectTopUp = useCallback(async () => {
+    if (!checkoutRef) return;
+    setBusy(true);
+
+    try {
+      await topUpWallet('Paystack', checkoutRef);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      closeTopUp();
+    } catch (err) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      // The reference is kept, so this stays retryable: a payment that settled
+      // is collectable later even if this attempt could not reach the server.
+      setTopUpNotice(
+        err instanceof ApiError
+          ? err.message
+          : `Could not confirm the payment with FreshFold at ${api.baseUrl}. If you were charged, your funds are safe — tap “I have paid” again once the server is reachable.`
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, [checkoutRef, closeTopUp, topUpWallet]);
 
   if (!isAuthenticated) {
     return (
@@ -470,11 +564,12 @@ export default function WalletScreen() {
       </ScrollView>
 
       {/* -------------------------------------------------------- top-up */}
-      <Sheet visible={topUpOpen} onClose={() => setTopUpOpen(false)}>
+      <Sheet visible={topUpOpen} onClose={closeTopUp}>
         <ScrollView contentContainerStyle={styles.topUp} keyboardShouldPersistTaps="handled">
           <Text style={styles.topUpTitle}>Top up your wallet</Text>
           <Text style={styles.topUpBody}>
-            Funds are available immediately and can be spent on any service.
+            Paid through Paystack — MTN MoMo, Telecel Cash, AT Money, Visa or Mastercard. Funds
+            land the moment the payment settles.
           </Text>
 
           <View style={styles.amountRow}>
@@ -482,7 +577,12 @@ export default function WalletScreen() {
               <Pressable
                 key={value}
                 onPress={() => setAmount(value)}
-                style={[styles.amountCell, amount === value && styles.amountCellActive]}
+                disabled={!!checkoutRef}
+                style={[
+                  styles.amountCell,
+                  amount === value && styles.amountCellActive,
+                  !!checkoutRef && styles.amountCellLocked,
+                ]}
               >
                 <Text style={[styles.amountLabel, amount === value && { color: '#FFFFFF' }]}>
                   ₵{value}
@@ -491,34 +591,28 @@ export default function WalletScreen() {
             ))}
           </View>
 
-          <SectionLabel>Pay with</SectionLabel>
-          {PAYMENT_METHODS.filter(
-            (option) => option.id !== 'Wallet' && option.id !== 'Pay on Pickup'
-          ).map((option) => (
-            <OptionRow
-              key={option.id}
-              title={option.label}
-              subtitle={option.blurb}
-              icon={<Icon name={option.iconName} size={15} color={colors.brandSage} />}
-              selected={method === option.id}
-              onPress={() => setMethod(option.id)}
-            />
-          ))}
-
           <Divider style={{ marginVertical: 4 }} />
 
           <View style={styles.topUpSummary}>
-            <Text style={styles.topUpSummaryLabel}>New balance</Text>
+            <Text style={styles.topUpSummaryLabel}>Balance after payment</Text>
             <Text style={styles.topUpSummaryValue}>{formatCedis(walletBalance + amount)}</Text>
           </View>
 
+          {!!topUpNotice && <Text style={styles.topUpNotice}>{topUpNotice}</Text>}
+
           <Button
-            label={`Add ${formatCedis(amount)}`}
-            onPress={submitTopUp}
-            loading={busy}
+            label={checkoutRef ? 'Reopen checkout' : `Pay ${formatCedis(amount)} with Paystack`}
+            onPress={startTopUp}
+            loading={busy && !checkoutRef}
+            variant={checkoutRef ? 'ghost' : 'primary'}
             size="lg"
           />
-          <Button label="Cancel" variant="ghost" onPress={() => setTopUpOpen(false)} />
+
+          {!!checkoutRef && (
+            <Button label="I have paid — collect funds" onPress={collectTopUp} loading={busy} size="lg" />
+          )}
+
+          <Button label="Cancel" variant="ghost" onPress={closeTopUp} />
         </ScrollView>
       </Sheet>
     </SafeAreaView>
@@ -689,7 +783,19 @@ const styles = StyleSheet.create({
     backgroundColor: colors.cardPure,
   },
   amountCellActive: { backgroundColor: colors.brandSage, borderColor: colors.brandSage },
+  // Once a checkout exists it is for a fixed amount, so the presets stop being
+  // a choice — changing one here would only disagree with what Paystack charges.
+  amountCellLocked: { opacity: 0.5 },
   amountLabel: { fontSize: 13, fontWeight: '800', color: colors.textCharcoal },
+
+  topUpNotice: {
+    fontSize: 11,
+    lineHeight: 15.5,
+    color: colors.textSlate,
+    backgroundColor: tints.warning10,
+    borderRadius: radius.lg,
+    padding: 10,
+  },
 
   topUpSummary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   topUpSummaryLabel: { fontSize: 11, color: colors.textSlate },

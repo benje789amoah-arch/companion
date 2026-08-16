@@ -21,6 +21,21 @@
       "port": 4001
     },
     {
+      "name": "dispatch-server-bundled",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "start",
+        "--workspace",
+        "@freshfold/server"
+      ],
+      "env": {
+        "NODE_ENV": "production",
+        "PORT": "4002"
+      },
+      "port": 4002
+    },
+    {
       "name": "admin-web",
       "runtimeExecutable": "npm",
       "runtimeArgs": [
@@ -99,9 +114,10 @@
         "@freshfold/client",
         "--",
         "--port",
-        "8082"
+        "8085"
       ],
-      "port": 8082
+      "autoPort": false,
+      "port": 8085
     },
     {
       "name": "client-app-alt",

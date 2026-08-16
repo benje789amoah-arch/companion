@@ -22,6 +22,8 @@ export default function App() {
   const [isBookingOpen, setIsBookingOpen] = useState(false);
   const [preselectedService, setPreselectedService] = useState('');
   const [activeBookings, setActiveBookings] = useState<Booking[]>([]);
+  /** The subset of the ledger this browser is entitled to see. See the notifier. */
+  const [ownBookings, setOwnBookings] = useState<Booking[]>([]);
   const [activeSection, setActiveSection] = useState('hero');
   const [showScrollTop, setShowScrollTop] = useState(false);
 
@@ -78,9 +80,14 @@ export default function App() {
   // immediately so the first paint has data, then subscribe: every poll that
   // brings back a rider's progress re-renders the portal and the live map.
   useEffect(() => {
-    setActiveBookings(store.readBookings());
+    const sync = () => {
+      setActiveBookings(store.readBookings());
+      setOwnBookings(store.readOwnBookings());
+    };
 
-    const unsubscribe = store.subscribe(() => setActiveBookings(store.readBookings()));
+    sync();
+
+    const unsubscribe = store.subscribe(sync);
     const stopSync = store.startSync();
 
     return () => {
@@ -88,6 +95,15 @@ export default function App() {
       stopSync();
     };
   }, []);
+
+  /**
+   * The one order the floating notifier offers to track: this visitor's own,
+   * still in flight, furthest along.
+   */
+  const trackableBooking =
+    ownBookings.find(
+      (booking) => booking.status !== 'Delivered' && booking.status !== 'Cancelled'
+    ) ?? null;
 
   // Monitor URL hash/query variations for secure client portal transition triggers
   useEffect(() => {
@@ -286,8 +302,17 @@ export default function App() {
         />
       )}
 
-      {/* Floating Active Delivery Notifier (Quick indicator if a booking exists in local session) */}
-      {activeBookings.length > 0 && (
+      {/*
+        Floating notifier for an order *this* visitor has on the go.
+
+        Read from `readOwnBookings()`, not from the ledger. It used to show
+        `activeBookings[0].id`, and `activeBookings` is every booking on the
+        board — so anybody who opened the marketing site was shown the order
+        number of the last person to book, whoever they were. Delivered and
+        cancelled orders are left out too: there is nothing left to track, and
+        a pulsing button that never goes away is not a notification.
+      */}
+      {trackableBooking && (
         <button
           onClick={() => {
             window.location.hash = '#portal';
@@ -296,7 +321,7 @@ export default function App() {
           id="active-order-floating-notifier"
         >
           <span className="w-2 h-2 rounded-full bg-brand-sage" />
-          <span>Track Order: {activeBookings[0].id}</span>
+          <span>Track Order: {trackableBooking.id}</span>
         </button>
       )}
 

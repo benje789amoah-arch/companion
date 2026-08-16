@@ -5,10 +5,10 @@
   "private": true,
   "description": "FreshFold — the customer app. Everything the website offers, plus the live-dispatch surfaces the rider app introduced.",
   "scripts": {
-    "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
-    "web": "expo start --web",
+    "start": "cross-env EXPO_NO_CACHE=1 expo start",
+    "android": "cross-env EXPO_NO_CACHE=1 expo start --android",
+    "ios": "cross-env EXPO_NO_CACHE=1 expo start --ios",
+    "web": "cross-env EXPO_NO_CACHE=1 expo start --web",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -42,6 +42,7 @@
   },
   "devDependencies": {
     "@types/qrcode": "^1.5.6",
-    "@types/react": "~19.1.10"
+    "@types/react": "~19.1.10",
+    "cross-env": "^10.1.0"
   }
 }

@@ -287,17 +287,17 @@ export default function ClientPortal({
         throw new Error(data.error || 'Payment verification failed.');
       }
       if (data.data && data.data.status === 'success') {
-        const amt = parseFloat(topUpAmount) || (data.data.amount / 100) || 0;
-
-        // Credited by the server, keyed on Paystack's own reference — so this
-        // verify running twice, in two tabs or after a retry, credits once.
-        const account = await store.topUpWallet(amt, 'Paystack', topUpPaystackRef);
+        // Credited by the server, which verifies this reference with Paystack
+        // again and credits what Paystack says was collected — this call sends
+        // no amount. Keyed on the reference, so the verify running twice, in
+        // two tabs or after a retry, credits once.
+        const account = await store.topUpWallet('Paystack', topUpPaystackRef);
 
         setTopUpModalOpen(false);
         setTopUpPaystackAuthUrl('');
         setTopUpPaystackRef('');
         setSuccessMsg(
-          `Wallet topped up with ₵${amt.toFixed(2)} GHS via Paystack. ` +
+          `Wallet topped up via Paystack. ` +
           `New balance: ₵${(account.walletBalance ?? 0).toFixed(2)} GHS`
         );
       } else {
@@ -803,35 +803,6 @@ export default function ClientPortal({
       setSuccessMsg(`Payment of ₵${cost.toFixed(2)} GHS confirmed via ${payMethod}. Ref: ${ref}`);
     } catch (e) {
       console.error('Payment error', e);
-    }
-  };
-
-  /**
-   * Tops the wallet up without going through Paystack — the MoMo and card
-   * paths, which settle out of band.
-   *
-   * The balance is whatever the server says it is afterwards. This used to add
-   * to a number held in this component and write it back absolutely, which is
-   * how a top-up here could erase a membership renewal the server had just
-   * debited.
-   */
-  const handleTopUpConfirm = async () => {
-    const amt = parseFloat(topUpAmount) || 0;
-    if (amt <= 0) return;
-
-    try {
-      const account = await store.topUpWallet(amt, 'MoMo');
-      setTopUpModalOpen(false);
-      setSuccessMsg(
-        `Wallet topped up with ₵${amt.toFixed(2)} GHS. ` +
-        `New balance: ₵${(account.walletBalance ?? 0).toFixed(2)} GHS`
-      );
-    } catch (error) {
-      setTopUpPaystackError(
-        error instanceof ApiError
-          ? error.message
-          : 'Could not reach FreshFold. Your wallet is unchanged — try again in a moment.'
-      );
     }
   };
 

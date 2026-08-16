@@ -198,10 +198,11 @@ interface ClientState extends Mirror {
   reportIssue: (orderId: string, note: string, photoUri?: string) => void;
 
   /**
-   * Credits the wallet after a settled payment. The server writes the balance
-   * and the statement row; nothing is computed on the device.
+   * Credits the wallet against a settled Paystack payment, named by its
+   * reference. The server re-verifies the reference with Paystack and credits
+   * what was collected — the device proposes no amount, and cannot.
    */
-  topUpWallet: (amount: number, method: string) => Promise<void>;
+  topUpWallet: (method: string, reference: string) => Promise<void>;
   /**
    * Debits the wallet and earns the point-per-cedi that spend is worth.
    * Resolves false when the balance will not cover it.
@@ -713,11 +714,11 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
    * it was computed, is worse than a movement that failed and was retried.
    */
   const topUpWallet = useCallback<ClientState['topUpWallet']>(
-    async (amount, method) => {
+    async (method, reference) => {
       const bearer = tokenRef.current;
       if (!bearer) return;
 
-      const result = await api.topUpWallet({ amount, method }, bearer);
+      const result = await api.topUpWallet({ method, reference }, bearer);
       applyAccount(result.account);
       mergeTransaction(result.transaction);
     },

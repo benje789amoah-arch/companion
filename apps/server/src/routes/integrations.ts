@@ -136,37 +136,102 @@ paystackRouter.post(
   })
 );
 
+/**
+ * What Paystack says about a reference, in the shape callers actually need.
+ *
+ * `amount` is converted back out of the minor unit here, once, so nothing
+ * downstream has to remember that Paystack counts in pesewas. `email` is the
+ * customer the transaction was created for — the wallet route matches it
+ * against the session, so one customer cannot claim another's payment.
+ */
+export interface PaystackVerification {
+  /** Paystack's own transaction status: `success`, `failed`, `abandoned`… */
+  paid: boolean;
+  status: string;
+  /** Amount actually collected, in cedis. */
+  amount: number;
+  currency: string;
+  email: string;
+  metadata: Record<string, unknown>;
+  raw: Record<string, unknown>;
+}
+
+export type PaystackVerifyResult =
+  | { ok: true; verification: PaystackVerification }
+  | { ok: false; status: number; error: string; details?: unknown };
+
+/**
+ * Asks Paystack whether a reference was paid.
+ *
+ * Shared by the verify route below and by the wallet top-up, which must not
+ * take the client's word for it: the balance is credited from `amount` here,
+ * never from the amount in the request body.
+ */
+export async function verifyPaystackTransaction(
+  reference: string
+): Promise<PaystackVerifyResult> {
+  if (!reference?.trim()) {
+    return { ok: false, status: 400, error: 'Transaction reference is required.' };
+  }
+
+  const secret = process.env.PAYSTACK_SECRET_KEY;
+  if (!secret) {
+    return {
+      ok: false,
+      status: 503,
+      error:
+        'PAYSTACK_SECRET_KEY is not set on the dispatch server. Add it to apps/server/.env to enable online payments.',
+    };
+  }
+
+  const response = await fetch(
+    `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference.trim())}`,
+    { method: 'GET', headers: { Authorization: `Bearer ${secret.trim()}` } }
+  );
+
+  const body = (await response.json()) as {
+    status?: boolean;
+    message?: string;
+    data?: Record<string, unknown>;
+  };
+
+  if (!response.ok || !body.status || !body.data) {
+    return {
+      ok: false,
+      status: 400,
+      error: body.message || 'Paystack verification failed.',
+      details: body,
+    };
+  }
+
+  const data = body.data;
+  const status = typeof data.status === 'string' ? data.status : 'unknown';
+  const customer = (data.customer ?? {}) as { email?: unknown };
+
+  return {
+    ok: true,
+    verification: {
+      paid: status === 'success',
+      status,
+      amount: typeof data.amount === 'number' ? data.amount / 100 : 0,
+      currency: typeof data.currency === 'string' ? data.currency : 'GHS',
+      email: typeof customer.email === 'string' ? customer.email : '',
+      metadata: (data.metadata ?? {}) as Record<string, unknown>,
+      raw: data,
+    },
+  };
+}
+
 paystackRouter.get(
   '/verify/:reference',
   guard(async (req, res) => {
-    const { reference } = req.params;
-    if (!reference) {
-      res.status(400).json({ error: 'Transaction reference is required.' });
+    const result = await verifyPaystackTransaction(req.params.reference);
+
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error, details: result.details });
       return;
     }
 
-    const secret = process.env.PAYSTACK_SECRET_KEY;
-    if (!secret) {
-      res.status(500).json({ error: 'PAYSTACK_SECRET_KEY is not configured on the server.' });
-      return;
-    }
-
-    const response = await fetch(
-      `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
-      { method: 'GET', headers: { Authorization: `Bearer ${secret.trim()}` } }
-    );
-
-    const data = (await response.json()) as {
-      status?: boolean;
-      message?: string;
-      data?: Record<string, unknown>;
-    };
-
-    if (!response.ok || !data.status) {
-      res.status(400).json({ error: data.message || 'Paystack verification failed.', details: data });
-      return;
-    }
-
-    res.json({ status: true, data: data.data });
+    res.json({ status: true, data: result.verification.raw });
   })
 );

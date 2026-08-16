@@ -564,7 +564,8 @@ export default function HomeScreen() {
                     <Pressable
                       onPress={() => {
                         sendRiderMessage(
-                          'Hello, I am outside with your fresh laundry. Please read me the delivery code from your FreshFold app.'
+                          'Hello, I am outside with your fresh laundry. Please read me the delivery code from your FreshFold app.',
+                          'customer'
                         );
                         // Open the thread the message just went into. Sending
                         // silently from here looked like a dead button, and the

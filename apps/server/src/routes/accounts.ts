@@ -17,6 +17,7 @@ import { cancel, resume, settleAccountByEmail, subscribe } from '../membership';
 import { sanitize } from '../passwords';
 import { store, type StoredAccount } from '../store';
 import { charge, redeem, topUp, type WalletOutcome } from '../wallet';
+import { verifyPaystackTransaction } from './integrations';
 import { guard, notFound } from '../helpers';
 
 /**
@@ -203,13 +204,14 @@ function formatShortfall(amount: number | undefined): string {
  * to an email in the body. Three actions, all of which write the account and
  * its ledger entry in a single transaction:
  *
- *   topup   — credits the wallet. Earns no points; points are for laundry.
+ *   topup   — credits the wallet against a settled Paystack payment. Earns no
+ *             points; points are for laundry.
  *   charge  — debits it and awards a point per whole cedi.
  *   redeem  — spends care points on a reward from the shared catalogue.
  *
- * `reference` is optional and, when given, makes the movement idempotent: both
- * apps queue writes offline and replay them, and a replay must not move the
- * balance twice.
+ * `reference` makes a movement idempotent: both apps queue writes offline and
+ * replay them, and a replay must not move the balance twice. For `topup` it is
+ * also the proof of payment, and is required — see the case below.
  */
 accountsRouter.post(
   '/wallet',
@@ -232,14 +234,73 @@ accountsRouter.post(
     let outcome: WalletOutcome;
 
     switch (body.action) {
-      case 'topup':
+      case 'topup': {
+        /**
+         * A top-up is the one movement that creates money, so it is the one
+         * movement that cannot be taken on the caller's word.
+         *
+         * It used to be: the app posted an amount and the server credited it.
+         * Any holder of a session token could fund their own wallet with a
+         * single curl. Now the request carries only a Paystack reference, and
+         * the balance moves by what Paystack says was collected — `body.amount`
+         * is ignored entirely.
+         */
+        if (!reference?.trim()) {
+          res.status(400).json({
+            error: 'A top-up needs the Paystack reference for the payment that funded it.',
+            reason: 'reference-required',
+          });
+          return;
+        }
+
+        const verified = await verifyPaystackTransaction(reference);
+        if (!verified.ok) {
+          res.status(verified.status).json({ error: verified.error, reason: 'verify-failed' });
+          return;
+        }
+
+        const payment = verified.verification;
+
+        if (!payment.paid) {
+          res.status(402).json({
+            error: `Paystack says this payment is ${payment.status}. Complete the checkout and try again.`,
+            reason: 'payment-not-settled',
+            paystackStatus: payment.status,
+          });
+          return;
+        }
+
+        // The reference has to belong to the session asking to be credited.
+        // Paystack references are guessable enough in aggregate, and without
+        // this one customer could quote another's and be credited first — the
+        // ledger's idempotency would then quietly deny the payer their money.
+        if (payment.email.trim().toLowerCase() !== email.trim().toLowerCase()) {
+          res.status(403).json({
+            error: 'That payment was made by a different account.',
+            reason: 'reference-not-yours',
+          });
+          return;
+        }
+
+        // A booking's payment is for the booking. Without this, a customer
+        // could pay for a wash and then replay the same reference here to put
+        // its value in the wallet as well.
+        if (payment.metadata?.type !== 'wallet_topup') {
+          res.status(400).json({
+            error: 'That payment was not a wallet top-up.',
+            reason: 'not-a-topup',
+          });
+          return;
+        }
+
         outcome = await topUp({
           email,
-          amount,
-          method: typeof body.method === 'string' ? body.method : 'Wallet',
+          amount: payment.amount,
+          method: typeof body.method === 'string' ? body.method : 'Paystack',
           reference,
         });
         break;
+      }
 
       case 'charge':
         outcome = await charge({
@@ -319,6 +380,50 @@ accountsRouter.post(
 function patronView(account: StoredAccount): UserAccount {
   return { ...sanitize(account), blockedReason: account.blockedReason };
 }
+
+/**
+ * Awards or deducts care points. Supervisor only.
+ *
+ * The desk's adjuster used to write the new total through `PUT /accounts`,
+ * which any client could call with any number. Points are an entitlement now:
+ * customers earn them by spending, and the only other way they move is a
+ * supervisor granting them here, on a locked row, by a delta rather than an
+ * absolute — two supervisors crediting the same patron at once would otherwise
+ * lose one of the two grants.
+ *
+ * The reason is for the desk's own audit trail and is not stored on the
+ * account; the dashboard logs it alongside the supervisor who pressed the
+ * button.
+ */
+accountsRouter.patch(
+  '/:email/points',
+  requireSupervisor,
+  guard(async (req, res) => {
+    const { delta } = (req.body ?? {}) as { delta?: unknown; reason?: string };
+
+    if (typeof delta !== 'number' || !Number.isFinite(delta) || delta === 0) {
+      res.status(400).json({ error: 'A points adjustment needs a non-zero delta.' });
+      return;
+    }
+
+    const account = await store.tx(async (t) => {
+      const existing = await t.accounts.find(req.params.email, { lock: true });
+      if (!existing) return null;
+
+      // Clamped at zero: a deduction larger than the balance takes it to nothing
+      // rather than into a debt no part of the product knows how to collect.
+      const points = Math.max(0, Math.round((existing.points ?? 0) + delta));
+      return t.accounts.updateProfile(existing.email, { points });
+    });
+
+    if (!account) {
+      notFound(res, 'Account');
+      return;
+    }
+
+    res.json(sanitize(account));
+  })
+);
 
 accountsRouter.patch(
   '/:email/blocked',

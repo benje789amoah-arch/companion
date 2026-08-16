@@ -469,6 +469,23 @@ export function createClient(options: ClientOptions) {
       request<UserAccount>('/accounts', json('PUT', account)),
 
     /**
+     * Awards or deducts care points. Supervisor only.
+     *
+     * A delta, not a total: the server applies it to whatever the balance is
+     * when it gets there, so two grants made at once cannot lose one another.
+     * A deduction below zero clamps at zero.
+     */
+    adjustAccountPoints: (
+      email: string,
+      payload: { delta: number; reason?: string },
+      token: string
+    ) =>
+      request<UserAccount>(`/accounts/${encodeURIComponent(email)}/points`, {
+        ...json('PATCH', payload),
+        headers: bearer(token),
+      }),
+
+    /**
      * Suspends a customer, or lifts the suspension. Supervisor only.
      *
      * The reason is for the desk's record and comes back on this response; it
@@ -551,11 +568,14 @@ export function createClient(options: ClientOptions) {
     // `reference` is optional and makes the movement idempotent — pass one from
     // an offline queue so a replayed write does not move the balance twice.
 
-    /** Credits the wallet. Earns no points; points are for laundry. */
-    topUpWallet: (
-      payload: { amount: number; method: string; reference?: string },
-      token: string
-    ) =>
+    /**
+     * Credits the wallet against a settled Paystack payment. Earns no points.
+     *
+     * `reference` is Paystack's, and is required: the server re-verifies it and
+     * credits the amount Paystack reports collecting. There is deliberately no
+     * `amount` parameter — the caller does not get to name the figure.
+     */
+    topUpWallet: (payload: { method: string; reference: string }, token: string) =>
       request<WalletMovement>('/accounts/wallet', {
         ...json('POST', { action: 'topup', ...payload }),
         headers: bearer(token),

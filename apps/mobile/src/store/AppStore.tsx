@@ -91,6 +91,13 @@ export interface NavigationTarget {
   arrivalStatus: OrderStatus;
 }
 
+/**
+ * Who the courier meant a message for. The thread itself is shared — customer,
+ * dispatch and the hub all read one conversation per job — but the simulated
+ * dispatch desk only answers what was actually addressed to it.
+ */
+export type ChatTarget = 'dispatcher' | 'customer';
+
 interface AppState {
   hydrated: boolean;
   /** True while the dispatch server is answering. */
@@ -163,7 +170,11 @@ interface AppState {
     photo?: string,
     signature?: string
   ) => void;
-  sendRiderMessage: (text: string) => void;
+  /**
+   * Posts a message from the courier. `to` says who they were addressing;
+   * only dispatch answers back.
+   */
+  sendRiderMessage: (text: string, to?: ChatTarget) => void;
   markNotificationRead: (notifId: string) => void;
   /**
    * Fetches one job's proof-of-service photographs into the board.
@@ -1158,7 +1169,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
 
   const sendRiderMessage = useCallback(
-    (text: string) => {
+    (text: string, to: ChatTarget = 'dispatcher') => {
       const orderId = activeOrder?.id;
 
       postMessage({
@@ -1168,6 +1179,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         timestamp: nowLabel(),
         orderId,
       });
+
+      // Only dispatch answers. A message to the customer used to draw the same
+      // canned dispatcher reply, so asking someone for their delivery code got
+      // "Digital receipt ledger is open. Signature received successfully." back
+      // from a desk nobody had written to — and the courier at the door was
+      // told the handover had gone through before it had.
+      if (to !== 'dispatcher') return;
 
       // Dispatch "replies" a few seconds later so the console feels staffed.
       // The reply is posted to the server too, so the customer sees the same

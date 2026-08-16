@@ -290,7 +290,16 @@ export default function AdminDashboard({
     }
   };
 
-  const handleAdjustPoints = (email: string, action: 'add' | 'subtract') => {
+  /**
+   * Awards or deducts care points.
+   *
+   * Sent to the server as a delta and applied there, on a locked row. The desk
+   * used to work the new total out from its own copy of the account and PUT it
+   * back, which meant two supervisors adjusting at once lost one of the two
+   * grants — and meant points a customer earned between the page loading and
+   * the button being pressed were quietly overwritten.
+   */
+  const handleAdjustPoints = async (email: string, action: 'add' | 'subtract') => {
     try {
       const amount = parseInt(pointsChangeAmount, 10);
       if (isNaN(amount) || amount <= 0) {
@@ -298,33 +307,23 @@ export default function AdminDashboard({
         return;
       }
 
-      let patronName = email;
-      const updatedAccounts = accounts.map((acc) => {
-        if (acc.email.toLowerCase() === email.toLowerCase()) {
-          patronName = acc.name;
-          const currentPoints = acc.points || 0;
-          return {
-            ...acc,
-            points: action === 'add' ? currentPoints + amount : Math.max(0, currentPoints - amount),
-          };
-        }
-        return acc;
-      });
+      const patronName =
+        accounts.find((acc) => acc.email.toLowerCase() === email.toLowerCase())?.name || email;
 
-      store.writeAccounts(updatedAccounts);
-      setAccounts(updatedAccounts);
+      const updated = await store.adjustPatronPoints(
+        email,
+        action === 'add' ? amount : -amount,
+        pointsReason,
+      );
 
-      // Update matching entry in current user session if relevant
-      const parsedSession = store.readCurrentUser();
-      if (parsedSession && parsedSession.email.toLowerCase() === email.toLowerCase()) {
-        const currentPoints = parsedSession.points || 0;
-        parsedSession.points =
-          action === 'add' ? currentPoints + amount : Math.max(0, currentPoints - amount);
-        store.writeCurrentUser(parsedSession);
-      }
+      setAccounts((current) =>
+        current.map((acc) =>
+          acc.email.toLowerCase() === email.toLowerCase() ? { ...acc, ...updated } : acc,
+        ),
+      );
 
       triggerFlashNotification(
-        `${action === 'add' ? '+' : '−'}${amount} pts for ${patronName}`,
+        `${action === 'add' ? '+' : '−'}${amount} pts for ${patronName} — now ${updated.points ?? 0}`,
       );
 
       logAuditAction(
@@ -335,6 +334,9 @@ export default function AdminDashboard({
 
       setSelectedPatronEmail(null);
     } catch (e) {
+      triggerFlashNotification(
+        e instanceof Error ? e.message : 'Could not adjust points. Try again in a moment.',
+      );
       console.warn(e);
     }
   };
