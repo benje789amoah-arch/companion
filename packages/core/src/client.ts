@@ -257,6 +257,41 @@ export function createClient(options: ClientOptions) {
     resetPassword: (payload: { token: string; password: string }) =>
       request<{ ok: true }>('/auth/reset', json('POST', payload)),
 
+    /**
+     * The booking behind an emailed setup link.
+     *
+     * `token` is the one in the link and nothing else identifies the order, so
+     * a 400 here means the link is spent, expired or never existed — the server
+     * does not say which.
+     */
+    setupLinkBooking: (token: string) =>
+      request<{ booking: { id: string; name: string; email: string; phone: string } }>(
+        '/auth/claim',
+        { query: { token } }
+      ),
+
+    /**
+     * Spends a setup link: sets the first password on the booking's account and
+     * returns a session for it.
+     *
+     * The counterpart to `register` for somebody who booked as a guest. Which
+     * account it opens is decided by the token, never by the caller — there is
+     * deliberately no email or phone in this payload.
+     */
+    claimBooking: (payload: { token: string; password: string }) =>
+      request<AuthSession>('/auth/claim', json('POST', payload)),
+
+    /**
+     * Asks for the setup link to be sent again.
+     *
+     * For a customer who booked as a guest and lost the confirmation email —
+     * `requestPasswordReset` cannot help them, because there is no account to
+     * reset. Always resolves `{ ok: true }` for a well-formed request, whatever
+     * the server found: it will not confirm who has booked with FreshFold.
+     */
+    requestSetupLink: (identifier: string) =>
+      request<{ ok: true }>('/auth/resend-setup', json('POST', { identifier })),
+
     /** Does this contact already have a login? Returns booleans only. */
     authStatus: (identifier: string) =>
       request<{ exists: boolean; hasPassword: boolean }>('/auth/status', json('POST', { identifier })),
@@ -402,6 +437,35 @@ export function createClient(options: ClientOptions) {
 
     upsertAccount: (account: UserAccount) =>
       request<UserAccount>('/accounts', json('PUT', account)),
+
+    /**
+     * Suspends a customer, or lifts the suspension. Supervisor only.
+     *
+     * The reason is for the desk's record and comes back on this response; it
+     * is not published on the account list, and the customer is never shown it.
+     */
+    setAccountBlocked: (
+      email: string,
+      payload: { blocked: boolean; reason?: string },
+      token: string
+    ) =>
+      request<UserAccount>(`/accounts/${encodeURIComponent(email)}/blocked`, {
+        ...json('PATCH', payload),
+        headers: bearer(token),
+      }),
+
+    /**
+     * Erases a customer account. Supervisor only, and refused while they still
+     * have a job on the board — blocking is what stops somebody mid-flight.
+     *
+     * Their past orders stay in the ledger: a job carries its own copy of the
+     * customer's details and is not joined back to the account.
+     */
+    deleteAccount: (email: string, token: string) =>
+      request<{ ok: true }>(`/accounts/${encodeURIComponent(email)}`, {
+        method: 'DELETE',
+        headers: bearer(token),
+      }),
 
     // -- Membership --------------------------------------------------------
     //

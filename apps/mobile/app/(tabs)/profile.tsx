@@ -18,41 +18,46 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Avatar, Button, Card } from '../../src/components/ui';
+import { usePullToRefresh } from '../../src/hooks/usePullToRefresh';
 import { useApp } from '../../src/store/AppStore';
 import { useSession } from '../../src/store/SessionStore';
 import { DEFAULT_AVATAR, colors, radius } from '../../src/theme';
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const { rider, updateRider } = useApp();
+  const { rider, updateRider, profileComplete } = useApp();
   const { signOut, lock, biometricEnabled, setBiometricEnabled } = useSession();
+  const refreshControl = usePullToRefresh();
 
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(rider.name);
-  const [employeeId, setEmployeeId] = useState(rider.employeeId);
-  const [vehicle, setVehicle] = useState(rider.vehicle);
-  const [vehiclePlate, setVehiclePlate] = useState(rider.vehiclePlate);
   const [avatar, setAvatar] = useState(rider.avatar);
 
   useEffect(() => {
     setName(rider.name);
-    setEmployeeId(rider.employeeId);
-    setVehicle(rider.vehicle);
-    setVehiclePlate(rider.vehiclePlate);
     setAvatar(rider.avatar);
   }, [rider]);
 
   // A rider without a saved name has to complete the form before anything else.
-  const mustSetUp = !rider.name;
+  // The form stays open, with no way to dismiss it, until dispatch has
+  // everything it needs — same rule the accept gate uses.
+  const mustSetUp = !profileComplete;
   const showForm = editing || mustSetUp;
 
+  /**
+   * All this form can complete is the courier's own name. The employee ID and
+   * the vehicle were both set by a supervisor — dispatch still requires all
+   * three before a job can be accepted (`REQUIRED_PROFILE_FIELDS` in the
+   * store), but only one of them is this screen's to fill.
+   */
+  const formComplete = !!name.trim();
+  /** Nothing the courier can do about this one; the roster desk assigns it. */
+  const awaitingVehicle = !rider.vehicle.trim() || !rider.vehiclePlate.trim();
+
   const save = () => {
-    if (!name.trim() || !employeeId.trim()) return;
+    if (!formComplete) return;
     updateRider({
       name: name.trim(),
-      employeeId: employeeId.trim(),
-      vehicle: vehicle.trim(),
-      vehiclePlate: vehiclePlate.trim(),
       avatar: avatar.trim() || DEFAULT_AVATAR,
     });
     setEditing(false);
@@ -68,6 +73,7 @@ export default function ProfileScreen() {
           contentContainerStyle={styles.scroll}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          refreshControl={refreshControl}
         >
           {showForm ? (
             <Card style={{ gap: 12 }}>
@@ -75,25 +81,13 @@ export default function ProfileScreen() {
                 {mustSetUp ? 'Set up driver profile' : 'Edit driver profile'}
               </Text>
 
+              <ReadOnlyField label="Employee ID" value={rider.employeeId || '—'} />
+
               <Field label="Full name" value={name} onChange={setName} placeholder="e.g. Emmanuel Boateng" />
-              <Field
-                label="Employee ID"
-                value={employeeId}
-                onChange={setEmployeeId}
-                placeholder="e.g. RIDER-9051"
-              />
-              <Field
-                label="Vehicle type"
-                value={vehicle}
-                onChange={setVehicle}
-                placeholder="e.g. Electric delivery scooter"
-              />
-              <Field
-                label="Vehicle plate"
-                value={vehiclePlate}
-                onChange={setVehiclePlate}
-                placeholder="e.g. AS-3012-26"
-              />
+
+              <ReadOnlyField label="Vehicle type" value={rider.vehicle || 'Not assigned yet'} />
+              <ReadOnlyField label="Vehicle plate" value={rider.vehiclePlate || 'Not assigned yet'} />
+
               <Field
                 label="Avatar URL (optional)"
                 value={avatar}
@@ -114,10 +108,24 @@ export default function ProfileScreen() {
                 <Button
                   label="Save profile"
                   onPress={save}
-                  disabled={!name.trim() || !employeeId.trim()}
+                  disabled={!formComplete}
                   style={{ flex: 1.4 }}
                 />
               </View>
+
+              {!formComplete && (
+                <Text style={styles.formNote}>
+                  Your name is needed before you can accept jobs — customers are shown it when you
+                  are on the way.
+                </Text>
+              )}
+
+              {awaitingVehicle && (
+                <Text style={styles.formNote}>
+                  No vehicle is assigned to you yet. Dispatch assigns it from the roster desk, and
+                  jobs stay locked until they have — ask your supervisor.
+                </Text>
+              )}
             </Card>
           ) : (
             <Card style={styles.identityCard}>
@@ -231,6 +239,20 @@ function Field({
   );
 }
 
+/**
+ * A field the courier can read but not change. The employee ID is assigned by
+ * the supervisor's console when they are added to the roster — it is what they
+ * sign in with, so editing it here would only lock them out.
+ */
+function ReadOnlyField({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={{ gap: 5 }}>
+      <Text style={styles.fieldLabel}>{label} · assigned</Text>
+      <Text style={[styles.input, styles.inputLocked]}>{value}</Text>
+    </View>
+  );
+}
+
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.metric}>
@@ -294,7 +316,14 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     color: colors.textCharcoal,
   },
+  inputLocked: {
+    backgroundColor: colors.bgLinen,
+    color: colors.textSlate,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+  },
   formActions: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  formNote: { fontSize: 10, color: colors.textSlate, lineHeight: 14 },
 
   identityCard: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   name: { fontSize: 15, fontWeight: '800', color: colors.textCharcoal },

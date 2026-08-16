@@ -7,15 +7,19 @@ import { Redirect, Tabs } from 'expo-router';
 import { History, Home, Layers, Map, User } from 'lucide-react-native';
 import React from 'react';
 import { Platform, View } from 'react-native';
-import SimulationHub from '../../src/components/SimulationHub';
 import { useSession } from '../../src/store/SessionStore';
 import { colors } from '../../src/theme';
 
 export default function TabsLayout() {
-  const { isAuthenticated } = useSession();
+  const { isAuthenticated, rider } = useSession();
 
   // The console locks itself whenever the session is dropped.
   if (!isAuthenticated) return <Redirect href="/auth" />;
+
+  // A courier still on the PIN their supervisor issued gets no further. The
+  // gate is here rather than on the login screen so it also catches a session
+  // restored from storage — the flag comes back with `/riders/me`.
+  if (rider?.mustChangePin) return <Redirect href="/change-pin" />;
 
   return (
     <View style={{ flex: 1 }}>
@@ -71,9 +75,6 @@ export default function TabsLayout() {
           }}
         />
       </Tabs>
-
-      {/* Demo dispatcher controls, floating above every tab. */}
-      <SimulationHub />
     </View>
   );
 }

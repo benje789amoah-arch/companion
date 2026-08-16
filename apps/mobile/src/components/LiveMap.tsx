@@ -7,7 +7,11 @@ import { Activity, Minus, Navigation, Plus } from 'lucide-react-native';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import MapView, { Marker, Polyline, Region } from 'react-native-maps';
-import { LAUNDRY_HUB_COORDS } from '../data/mockData';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { routeEtaMinutes } from '@freshfold/core';
+import { MAP_PROVIDER } from '@freshfold/rn-maps';
+import { LAUNDRY_HUB_COORDS } from '../data/initialState';
+import { useRoadRoute } from '../hooks/useRoadRoute';
 import { NavigationTarget } from '../store/AppStore';
 import { colors, formatCedis, radius, shadow, tints } from '../theme';
 import { Coords, Order, RiderState } from '../types';
@@ -23,6 +27,12 @@ interface LiveMapProps {
   focusedOrderId?: string | null;
   onSelectOrder?: (order: Order) => void;
   onAcceptOrder?: (orderId: string) => void;
+  /**
+   * Extra room above the map's own top overlay, for screens that float their
+   * own chrome in the same corner. The safe-area inset is already accounted
+   * for — this is only the height of what sits above.
+   */
+  overlayTopOffset?: number;
 }
 
 const DEFAULT_DELTA = 0.012;
@@ -84,9 +94,15 @@ function NativeLiveMap({
   focusedOrderId,
   onSelectOrder,
   onAcceptOrder,
+  overlayTopOffset = 0,
 }: LiveMapProps) {
   const mapRef = useRef<MapView | null>(null);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+
+  // The map fills the screen, edge to edge and under the status bar, so its
+  // floating controls have to clear the inset themselves. Without this the GPS
+  // badge and the zoom buttons sit under a notch or Dynamic Island.
+  const insets = useSafeAreaInsets();
 
   // Custom marker views must stop re-rendering into the map texture once they
   // have painted, or Android drops frames on every rider tick.
@@ -116,63 +132,100 @@ function NativeLiveMap({
     ? `${navigationTarget.coords.lat},${navigationTarget.coords.lng}`
     : null;
 
+  /**
+   * Whether the camera is still following the courier.
+   *
+   * It stops the moment they drag the map. Without this the follow-cam below
+   * yanks the view back to the rider on every position report — and since the
+   * watch tightened to a fix every two seconds while navigating, a courier
+   * trying to look at the junction ahead got about a second and a half before
+   * the map snapped back. The recenter button is how they opt back in.
+   */
+  const [following, setFollowing] = useState(true);
+
+  /**
+   * The road to the destination, from the dispatch server.
+   *
+   * What used to be drawn here was a dogleg: rider → a corner → target, three
+   * points pretending to be a route. It crossed buildings, the botanical
+   * gardens and the Ayeduase gate wall indiscriminately, and on the hub run it
+   * was 60% shorter than the road it stood in for.
+   */
+  const route = useRoadRoute(navigationTarget ? rider.coords : null, navigationTarget?.coords ?? null);
+
+  const routeCoordinates = route
+    ? route.coordinates.map((point) => ({ latitude: point.lat, longitude: point.lng }))
+    : navigationTarget
+      ? // Until the road arrives, the straight line — one segment, not a
+        // dogleg, so it never looks like a route it is not.
+        [
+          { latitude: rider.coords.lat, longitude: rider.coords.lng },
+          { latitude: navigationTarget.coords.lat, longitude: navigationTarget.coords.lng },
+        ]
+      : [];
+
   useEffect(() => {
     if (!navigationTarget || !mapRef.current) return;
 
-    mapRef.current.fitToCoordinates(
-      [
-        { latitude: rider.coords.lat, longitude: rider.coords.lng },
-        { latitude: navigationTarget.coords.lat, longitude: navigationTarget.coords.lng },
-      ],
-      {
-        edgePadding: { top: 110, right: 60, bottom: 190, left: 60 },
-        animated: true,
-      }
-    );
-    // Re-framing on every rider tick would fight the follow-cam below.
+    // Frame the road, not the crow's flight: a route that loops out to a
+    // junction and back sits outside a box drawn around its two ends.
+    const frame =
+      routeCoordinates.length > 1
+        ? routeCoordinates
+        : [
+            { latitude: rider.coords.lat, longitude: rider.coords.lng },
+            { latitude: navigationTarget.coords.lat, longitude: navigationTarget.coords.lng },
+          ];
+
+    mapRef.current.fitToCoordinates(frame, {
+      edgePadding: { top: 110, right: 60, bottom: 190, left: 60 },
+      animated: true,
+    });
+    setFollowing(true);
+    // Re-framing on every rider tick would fight the follow-cam below, so this
+    // runs when the leg changes or when its road first arrives.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [legKey]);
+  }, [legKey, route?.source, route?.coordinates.length]);
 
   useEffect(() => {
-    if (!navigationTarget || selectedOrder) return;
+    if (!navigationTarget || selectedOrder || !following) return;
     mapRef.current?.animateCamera(
       { center: { latitude: rider.coords.lat, longitude: rider.coords.lng } },
       { duration: 800 }
     );
-  }, [rider.coords.lat, rider.coords.lng, navigationTarget, selectedOrder]);
-
-  const routeCoordinates = navigationTarget
-    ? [
-        { latitude: rider.coords.lat, longitude: rider.coords.lng },
-        { latitude: navigationTarget.coords.lat, longitude: rider.coords.lng },
-        { latitude: navigationTarget.coords.lat, longitude: navigationTarget.coords.lng },
-      ]
-    : [];
+  }, [rider.coords.lat, rider.coords.lng, navigationTarget, selectedOrder, following]);
 
   const routeColor = activeOrder?.priority === 'elite' ? colors.brandGold : colors.brandSage;
 
   const recenter = () => {
+    setFollowing(true);
     mapRef.current?.animateToRegion(toRegion(rider.coords, 0.006), 500);
   };
 
   const zoomBy = (factor: number) => {
-    mapRef.current?.getCamera().then((camera) => {
-      if (camera.zoom != null) {
-        mapRef.current?.animateCamera({ zoom: camera.zoom + factor }, { duration: 250 });
-      } else if (camera.altitude != null) {
-        // Apple Maps reports altitude instead of a zoom level.
-        mapRef.current?.animateCamera(
-          { altitude: camera.altitude / Math.pow(2, factor) },
-          { duration: 250 }
-        );
-      }
-    });
+    mapRef.current
+      ?.getCamera()
+      .then((camera) => {
+        if (camera.zoom != null) {
+          mapRef.current?.animateCamera({ zoom: camera.zoom + factor }, { duration: 250 });
+        } else if (camera.altitude != null) {
+          // Apple Maps reports altitude instead of a zoom level.
+          mapRef.current?.animateCamera(
+            { altitude: camera.altitude / Math.pow(2, factor) },
+            { duration: 250 }
+          );
+        }
+      })
+      .catch(() => {
+        // The map went away mid-gesture. Nothing to zoom, nothing to report.
+      });
   };
 
   return (
     <View style={styles.container}>
       <MapView
         ref={mapRef}
+        provider={MAP_PROVIDER}
         style={StyleSheet.absoluteFill}
         initialRegion={toRegion(rider.coords)}
         showsCompass={false}
@@ -180,6 +233,14 @@ function NativeLiveMap({
         toolbarEnabled={false}
         rotateEnabled={false}
         onPress={() => setSelectedOrder(null)}
+        // A touch is the courier saying "let me look" — the camera lets go
+        // until they ask for it back.
+        //
+        // `onTouchStart` rather than `onPanDrag`, because a pinch is not a
+        // drag: a courier zooming in on the junction ahead did not fire the
+        // pan gesture, so the follow-cam kept its grip and pulled the zoom
+        // straight back out on the next fix.
+        onTouchStart={() => setFollowing(false)}
       >
         {/* Central laundry hub */}
         <Marker
@@ -274,7 +335,12 @@ function NativeLiveMap({
       </MapView>
 
       {/* GPS quality + map controls */}
-      <View style={styles.topOverlay} pointerEvents="box-none">
+      <View
+        style={[
+          styles.topOverlay,
+          { top: insets.top + 12 + overlayTopOffset, pointerEvents: 'box-none' },
+        ]}
+      >
         <View style={styles.gpsBadge}>
           <Activity size={13} color={colors.statusSuccess} />
           <View>
@@ -284,12 +350,24 @@ function NativeLiveMap({
         </View>
 
         <View style={styles.mapControls}>
+          {/* Filled while the camera is following, hollow once the courier has
+              panned away — so the button says what tapping it will do. */}
           <Pressable
             onPress={recenter}
-            accessibilityLabel="Recenter map on rider"
-            style={({ pressed }) => [styles.controlButton, pressed && styles.controlPressed]}
+            accessibilityLabel={
+              following ? 'Recenter map on rider' : 'Follow the rider again'
+            }
+            style={({ pressed }) => [
+              styles.controlButton,
+              following && styles.controlActive,
+              pressed && styles.controlPressed,
+            ]}
           >
-            <Navigation size={16} color={colors.brandSage} />
+            <Navigation
+              size={16}
+              color={following ? '#FFFFFF' : colors.brandSage}
+              fill={following ? '#FFFFFF' : 'transparent'}
+            />
           </Pressable>
           <Pressable
             onPress={() => zoomBy(1)}
@@ -388,9 +466,21 @@ function NativeLiveMap({
               {navigationTarget.label}
             </Text>
           </View>
+          {/*
+            Distance and time for the leg being ridden right now, off the road
+            route. `activeOrder.distance` is the job's hub-to-pickup figure,
+            fixed when it was booked — it does not shrink as the courier gets
+            closer, and it was measured in a straight line anyway.
+          */}
           <View style={styles.navMetrics}>
-            <Text style={styles.navDistance}>{activeOrder.distance} km</Text>
-            <Text style={styles.navEta}>Est. {activeOrder.estDuration} min</Text>
+            <Text style={styles.navDistance}>
+              {route
+                ? `${(route.distanceMeters / 1000).toFixed(1)} km`
+                : `${activeOrder.distance} km`}
+            </Text>
+            <Text style={styles.navEta}>
+              Est. {route ? routeEtaMinutes(route) : activeOrder.estDuration} min
+            </Text>
           </View>
         </View>
       )}
@@ -506,7 +596,7 @@ const styles = StyleSheet.create({
   /* overlays */
   topOverlay: {
     position: 'absolute',
-    top: 12,
+    // `top` is applied inline — it depends on the device's safe-area inset.
     left: 14,
     right: 14,
     flexDirection: 'row',
@@ -546,6 +636,7 @@ const styles = StyleSheet.create({
     ...shadow.md,
   },
   controlSmall: { width: 32, height: 32, borderRadius: 16 },
+  controlActive: { backgroundColor: colors.brandSage, borderColor: colors.brandSage },
   controlPressed: { opacity: 0.7, transform: [{ scale: 0.95 }] },
 
   detailCard: {

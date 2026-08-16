@@ -19,6 +19,7 @@ import {
   toNotification,
   toRider,
   toSession,
+  toSetupToken,
   toSupervisor,
   toTransaction,
   type AccountRow,
@@ -28,9 +29,11 @@ import {
   type RiderRow,
   type SessionKind,
   type SessionRow,
+  type SetupTokenRow,
   type StoredAccount,
   type StoredRider,
   type StoredSession,
+  type StoredSetupToken,
   type StoredSupervisor,
   type SupervisorRow,
   type TransactionRow,
@@ -60,6 +63,7 @@ export type {
   StoredAccount,
   StoredRider,
   StoredSession,
+  StoredSetupToken,
   StoredSupervisor,
   SupervisorProfile,
 } from './rows';
@@ -637,6 +641,44 @@ function repositories(exec: Executor) {
         `;
         return rows[0] ? toAccount(rows[0]) : null;
       },
+
+      /**
+       * Suspends a customer, or lifts the suspension.
+       *
+       * Both columns move together, so lifting a block cannot leave last
+       * month's reason attached to an account in good standing. Not reachable
+       * from `updateProfile`, for the reason the plan is not: this is a
+       * supervisor's decision about a customer, never something a customer's
+       * own profile PUT can write about themselves.
+       */
+      async setBlocked(
+        email: string,
+        blocked: { at: string; reason: string } | null
+      ): Promise<StoredAccount | null> {
+        const rows = await exec<AccountRow[]>`
+          update accounts set
+            blocked_at     = ${blocked?.at ?? null},
+            blocked_reason = ${blocked?.reason || null}
+          where lower(email) = ${email.trim().toLowerCase()}
+          returning *
+        `;
+        return rows[0] ? toAccount(rows[0]) : null;
+      },
+
+      /**
+       * Erases the account.
+       *
+       * Their jobs stay. Nothing references this table — a job carries its own
+       * copy of the customer's name, phone and address inside `jobs.customer`,
+       * and `transactions.user_email` is a label rather than a foreign key — so
+       * the ledger reads exactly as it did, and the identity behind it is gone.
+       */
+      async remove(email: string): Promise<boolean> {
+        const result = await exec`
+          delete from accounts where lower(email) = ${email.trim().toLowerCase()}
+        `;
+        return result.count > 0;
+      },
     },
 
     // -----------------------------------------------------------------------
@@ -822,6 +864,84 @@ function repositories(exec: Executor) {
       /** Clears expired tokens. Called when a new one is issued. */
       async pruneExpired(): Promise<void> {
         await exec`delete from sessions where expires_at <= now()`;
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Setup links
+    // -----------------------------------------------------------------------
+    setupTokens: {
+      /**
+       * Issues the link for a booking, retiring any earlier one for it.
+       *
+       * One live link per booking: a customer who asks for another should not
+       * leave the first one working, and the newest mail in the inbox is the
+       * one they will open.
+       */
+      async issue(token: StoredSetupToken): Promise<StoredSetupToken> {
+        await exec`delete from booking_setup_tokens where booking_id = ${token.bookingId}`;
+
+        const rows = await exec<SetupTokenRow[]>`
+          insert into booking_setup_tokens (token_hash, booking_id, email, created_at, expires_at)
+          values (
+            ${token.tokenHash}, ${token.bookingId}, ${token.email},
+            ${token.createdAt}, ${token.expiresAt}
+          )
+          returning *
+        `;
+        return toSetupToken(rows[0]);
+      },
+
+      /**
+       * The outstanding link for a booking, if there is one.
+       *
+       * Only its clock is of any use to a caller — the digest cannot be turned
+       * back into the token in the email. It is what rate-limits "send me
+       * another one".
+       */
+      async findForBooking(bookingId: string): Promise<StoredSetupToken | null> {
+        const rows = await exec<SetupTokenRow[]>`
+          select * from booking_setup_tokens
+          where booking_id = ${bookingId} and expires_at > now()
+        `;
+        return rows[0] ? toSetupToken(rows[0]) : null;
+      },
+
+      /**
+       * The link behind a digest, if it is still good.
+       *
+       * A read, for the screen that draws the booking before anyone types a
+       * password. It does not spend the link — `spend` does, and that is the
+       * one the claim runs.
+       */
+      async findLive(tokenHash: string): Promise<StoredSetupToken | null> {
+        const rows = await exec<SetupTokenRow[]>`
+          select * from booking_setup_tokens
+          where token_hash = ${tokenHash} and expires_at > now()
+        `;
+        return rows[0] ? toSetupToken(rows[0]) : null;
+      },
+
+      /**
+       * Uses a link up, and says whether it was there to use.
+       *
+       * Delete-and-return in one statement on purpose: this is what makes a
+       * setup link single-use under concurrency. Two tabs submitting the same
+       * link both reach this, Postgres serialises them on the row, and the
+       * second gets nothing back rather than a second account.
+       */
+      async spend(tokenHash: string): Promise<StoredSetupToken | null> {
+        const rows = await exec<SetupTokenRow[]>`
+          delete from booking_setup_tokens
+          where token_hash = ${tokenHash} and expires_at > now()
+          returning *
+        `;
+        return rows[0] ? toSetupToken(rows[0]) : null;
+      },
+
+      /** Clears dead links. Called when a new one is issued. */
+      async pruneExpired(): Promise<void> {
+        await exec`delete from booking_setup_tokens where expires_at <= now()`;
       },
     },
   };

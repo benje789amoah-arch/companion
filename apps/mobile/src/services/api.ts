@@ -37,6 +37,3 @@ function resolveBaseUrl(): string {
 export const API_BASE_URL = resolveBaseUrl();
 
 export const api = createClient({ baseUrl: API_BASE_URL, timeoutMs: 6000 });
-
-/** The rider this device signs in as. */
-export const RIDER_ID = 'FF-R-204';

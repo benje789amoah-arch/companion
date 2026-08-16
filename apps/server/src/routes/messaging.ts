@@ -6,7 +6,7 @@
 import { Router } from 'express';
 import type { Message, Notification } from '@freshfold/core';
 import { store } from '../store';
-import { nowLabel, notFound } from '../helpers';
+import { guard, nowLabel, notFound } from '../helpers';
 
 /**
  * One conversation per job, visible from all three surfaces: the customer
@@ -16,64 +16,97 @@ import { nowLabel, notFound } from '../helpers';
  */
 export const messagesRouter = Router();
 
-messagesRouter.get('/', (req, res) => {
-  const orderId = typeof req.query.orderId === 'string' ? req.query.orderId : null;
-  const messages = store.read().messages.filter((m) => !orderId || m.orderId === orderId);
-  res.json(messages);
-});
+/**
+ * Both collections carry a foreign key to the job they belong to, so an id
+ * that names no job is rejected here rather than surfacing as a constraint
+ * violation and a 500. The key is what makes deleting a booking take its
+ * conversation with it instead of leaving messages addressed to nothing.
+ */
+async function unknownOrder(orderId: string | undefined): Promise<boolean> {
+  if (!orderId) return false;
+  return (await store.jobs.find(orderId)) === null;
+}
 
-messagesRouter.post('/', (req, res) => {
-  const incoming = req.body as Partial<Message>;
-  if (!incoming?.text || !incoming.sender) {
-    return res.status(400).json({ error: 'A message needs a sender and text.' });
-  }
+messagesRouter.get(
+  '/',
+  guard(async (req, res) => {
+    const orderId = typeof req.query.orderId === 'string' ? req.query.orderId : null;
+    res.json(await store.messages.list(orderId));
+  })
+);
 
-  const message: Message = {
-    id: incoming.id || `msg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-    sender: incoming.sender,
-    text: incoming.text,
-    timestamp: incoming.timestamp || nowLabel(),
-    orderId: incoming.orderId,
-  };
+messagesRouter.post(
+  '/',
+  guard(async (req, res) => {
+    const incoming = req.body as Partial<Message>;
+    if (!incoming?.text || !incoming.sender) {
+      res.status(400).json({ error: 'A message needs a sender and text.' });
+      return;
+    }
 
-  store.mutate((db) => db.messages.push(message));
-  res.status(201).json(message);
-});
+    if (await unknownOrder(incoming.orderId)) {
+      notFound(res, 'Order');
+      return;
+    }
+
+    const message: Message = {
+      id: incoming.id || `msg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      sender: incoming.sender,
+      text: incoming.text,
+      timestamp: incoming.timestamp || nowLabel(),
+      orderId: incoming.orderId,
+    };
+
+    res.status(201).json(await store.messages.insert(message));
+  })
+);
 
 export const notificationsRouter = Router();
 
-notificationsRouter.get('/', (_req, res) => {
-  res.json(store.read().notifications);
-});
+notificationsRouter.get(
+  '/',
+  guard(async (_req, res) => {
+    res.json(await store.notifications.list());
+  })
+);
 
-notificationsRouter.post('/', (req, res) => {
-  const incoming = req.body as Partial<Notification>;
-  if (!incoming?.title || !incoming.body) {
-    return res.status(400).json({ error: 'A notification needs a title and body.' });
-  }
+notificationsRouter.post(
+  '/',
+  guard(async (req, res) => {
+    const incoming = req.body as Partial<Notification>;
+    if (!incoming?.title || !incoming.body) {
+      res.status(400).json({ error: 'A notification needs a title and body.' });
+      return;
+    }
 
-  const notification: Notification = {
-    id: incoming.id || `notif-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-    title: incoming.title,
-    body: incoming.body,
-    timestamp: incoming.timestamp || nowLabel(),
-    type: incoming.type ?? 'system',
-    orderId: incoming.orderId,
-    read: incoming.read ?? false,
-  };
+    if (await unknownOrder(incoming.orderId)) {
+      notFound(res, 'Order');
+      return;
+    }
 
-  store.mutate((db) => db.notifications.unshift(notification));
-  res.status(201).json(notification);
-});
+    const notification: Notification = {
+      id: incoming.id || `notif-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      title: incoming.title,
+      body: incoming.body,
+      timestamp: incoming.timestamp || nowLabel(),
+      type: incoming.type ?? 'system',
+      orderId: incoming.orderId,
+      read: incoming.read ?? false,
+    };
 
-notificationsRouter.post('/:id/read', (req, res) => {
-  const notification = store.mutate((db) => {
-    const match = db.notifications.find((candidate) => candidate.id === req.params.id);
-    if (!match) return null;
-    match.read = true;
-    return match;
-  });
+    res.status(201).json(await store.notifications.insert(notification));
+  })
+);
 
-  if (!notification) return notFound(res, 'Notification');
-  res.json(notification);
-});
+notificationsRouter.post(
+  '/:id/read',
+  guard(async (req, res) => {
+    const notification = await store.notifications.markRead(req.params.id);
+
+    if (!notification) {
+      notFound(res, 'Notification');
+      return;
+    }
+    res.json(notification);
+  })
+);

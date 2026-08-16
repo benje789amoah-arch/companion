@@ -3,10 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import * as LocalAuthentication from 'expo-local-authentication';
 import { useRouter } from 'expo-router';
-import { AlertCircle, CheckCircle2, ScanFace } from 'lucide-react-native';
-import React, { useState } from 'react';
+import { AlertCircle, ScanFace } from 'lucide-react-native';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -19,75 +18,92 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { ApiError, PHONE_DIGITS, limitPhoneInput } from '@freshfold/core';
 import { Button } from '../src/components/ui';
-import { useApp } from '../src/store/AppStore';
+import { REQUIRED_PROFILE_FIELDS, useApp } from '../src/store/AppStore';
 import { useSession } from '../src/store/SessionStore';
 import { colors, radius, shadow, tints } from '../src/theme';
 
-/** Demo bypass codes, same as the original console. */
-const VALID_PINS = ['7801', '1234'];
+const PIN_DIGITS = 4;
 
 export default function AuthScreen() {
   const router = useRouter();
-  const { rider, updateRider } = useApp();
-  const { signIn, biometricEnabled } = useSession();
+  const { updateRider, profileComplete } = useApp();
+  const { signIn, biometricEnabled, promptBiometric, rider, phase } = useSession();
 
-  const [phoneNumber, setPhoneNumber] = useState('');
-  const [otpCode, setOtpCode] = useState('');
-  const [showOtpField, setShowOtpField] = useState(false);
+  /** Employee ID, or the phone number on the employment record. */
+  const [identifier, setIdentifier] = useState('');
+  const [pin, setPin] = useState('');
   const [authError, setAuthError] = useState('');
-  const [otpSent, setOtpSent] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [scanningFace, setScanningFace] = useState(false);
 
-  const completeLogin = () => {
-    signIn();
-    updateRider({ isOnline: true });
-    // A rider with no saved profile lands on Profile to fill it in first.
-    router.replace(rider.name ? '/(tabs)' : '/(tabs)/profile');
-  };
+  const landAfterLogin = useCallback(
+    (complete: boolean) => {
+      updateRider({ isOnline: true });
+      // Land on Profile whenever anything dispatch requires is still missing —
+      // otherwise the courier reaches the board only to find every accept
+      // refused with no explanation.
+      router.replace(complete ? '/(tabs)' : '/(tabs)/profile');
+    },
+    [router, updateRider]
+  );
 
-  const requestOtp = () => {
-    if (!phoneNumber.trim()) {
-      setAuthError('Please provide an employee registered phone number');
+  const submit = useCallback(async () => {
+    if (!identifier.trim() || pin.length !== PIN_DIGITS) {
+      setAuthError(`Enter your employee ID and your ${PIN_DIGITS}-digit PIN.`);
       return;
     }
+
     setAuthError('');
-    setOtpSent(true);
-    setShowOtpField(true);
-    setTimeout(() => setOtpSent(false), 3000);
-  };
+    setBusy(true);
 
-  const verifyOtp = () => {
-    if (VALID_PINS.includes(otpCode)) {
-      setAuthError('');
-      completeLogin();
-    } else {
-      setAuthError("Invalid access pin. Try entering '7801' or '1234'.");
+    try {
+      const signedIn = await signIn(identifier, pin);
+      setPin('');
+      // The roster record decides where to land, not the store's copy — the
+      // store has not seen this courier yet at this point in the render.
+      landAfterLogin(
+        REQUIRED_PROFILE_FIELDS.every((field) => String(signedIn[field] ?? '').trim())
+      );
+    } catch (error) {
+      if (error instanceof ApiError) {
+        setAuthError(
+          error.status === 401
+            ? 'That employee ID and PIN do not match.'
+            : error.status === 403
+              ? 'This courier is no longer on the roster. Speak to dispatch.'
+              : error.message
+        );
+      } else {
+        setAuthError('Could not reach dispatch. Check your connection and try again.');
+      }
+    } finally {
+      setBusy(false);
     }
-  };
+  }, [identifier, pin, signIn, landAfterLogin]);
 
+  /**
+   * Biometrics reopen a session; they do not create one.
+   *
+   * A face is not a credential the server can check, so this only works once a
+   * courier has signed in on this device and the token is still valid. Without
+   * that there is nobody to unlock as.
+   */
   const authenticateWithBiometrics = async () => {
+    if (!rider) {
+      setAuthError('Sign in with your employee ID once on this device first.');
+      return;
+    }
+
     setScanningFace(true);
     try {
-      const hasHardware = await LocalAuthentication.hasHardwareAsync();
-      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
-
-      if (hasHardware && isEnrolled) {
-        const result = await LocalAuthentication.authenticateAsync({
-          promptMessage: 'Unlock the FreshFold rider console',
-          fallbackLabel: 'Use access PIN',
-        });
-
-        if (!result.success) {
-          setAuthError('Biometric verification was not completed.');
-          return;
-        }
-      } else {
-        // No enrolled biometrics on this device — keep the demo walkable.
-        await new Promise((resolve) => setTimeout(resolve, 900));
+      const ok = await promptBiometric();
+      if (!ok) {
+        setAuthError('Biometric verification was not completed.');
+        return;
       }
-
-      completeLogin();
+      landAfterLogin(profileComplete);
     } finally {
       setScanningFace(false);
     }
@@ -121,60 +137,56 @@ export default function AuthScreen() {
               </View>
             )}
 
-            {otpSent && (
-              <View style={[styles.toast, styles.toastSuccess]}>
-                <CheckCircle2 size={14} color={colors.statusSuccess} />
-                <Text style={styles.toastSuccessText}>
-                  OTP code sent to the registered driver line
-                </Text>
-              </View>
-            )}
+            <View style={styles.field}>
+              <Text style={styles.label}>Employee ID or phone</Text>
+              <TextInput
+                value={identifier}
+                onChangeText={(text) => {
+                  // One field, two kinds of answer. An employee ID has letters
+                  // in it and is left alone; a number is a phone number, and a
+                  // phone number is ten digits, so the eleventh never lands.
+                  setIdentifier(/[a-z]/i.test(text) ? text : limitPhoneInput(text));
+                  setAuthError('');
+                }}
+                placeholder="e.g. RIDER-204"
+                placeholderTextColor={colors.textSlate}
+                autoCapitalize="characters"
+                autoCorrect={false}
+                style={styles.input}
+              />
+              <Text style={styles.hint}>
+                The {PHONE_DIGITS}-digit number on your employment record works too.
+              </Text>
+            </View>
 
-            {!showOtpField ? (
-              <>
-                <View style={styles.field}>
-                  <Text style={styles.label}>Mobile phone line</Text>
-                  <TextInput
-                    value={phoneNumber}
-                    onChangeText={(text) => setPhoneNumber(text.replace(/\D/g, ''))}
-                    placeholder="e.g. 0243456789"
-                    placeholderTextColor={colors.textSlate}
-                    keyboardType="phone-pad"
-                    style={styles.input}
-                  />
-                </View>
+            <View style={styles.field}>
+              <Text style={styles.label}>Access PIN</Text>
+              <TextInput
+                value={pin}
+                onChangeText={(text) => {
+                  setPin(text.replace(/\D/g, '').slice(0, PIN_DIGITS));
+                  setAuthError('');
+                }}
+                placeholder="••••"
+                placeholderTextColor={colors.textSlate}
+                keyboardType="number-pad"
+                secureTextEntry
+                maxLength={PIN_DIGITS}
+                style={[styles.input, styles.otpInput]}
+                onSubmitEditing={submit}
+                returnKeyType="go"
+              />
+              <Text style={[styles.hint, styles.counter]}>
+                {pin.length}/{PIN_DIGITS} digits
+              </Text>
+            </View>
 
-                <Button label="Request access OTP" onPress={requestOtp} />
-              </>
-            ) : (
-              <>
-                <View style={styles.field}>
-                  <Text style={styles.label}>Enter 4-digit security PIN</Text>
-                  <TextInput
-                    value={otpCode}
-                    onChangeText={setOtpCode}
-                    placeholder="e.g. 7801"
-                    placeholderTextColor={colors.textSlate}
-                    keyboardType="number-pad"
-                    maxLength={4}
-                    style={[styles.input, styles.otpInput]}
-                  />
-                  <Text style={styles.hint}>
-                    Mock security bypass code is <Text style={styles.hintCode}>7801</Text>
-                  </Text>
-                </View>
-
-                <View style={styles.row}>
-                  <Button
-                    label="Back"
-                    variant="ghost"
-                    onPress={() => setShowOtpField(false)}
-                    style={{ flex: 1 }}
-                  />
-                  <Button label="Verify & login" onPress={verifyOtp} style={{ flex: 2 }} />
-                </View>
-              </>
-            )}
+            <Button
+              label="Sign in"
+              onPress={submit}
+              loading={busy}
+              disabled={!identifier.trim() || pin.length !== PIN_DIGITS}
+            />
 
             {biometricEnabled && (
               <View style={styles.biometric}>
@@ -256,6 +268,7 @@ const styles = StyleSheet.create({
   },
   hint: { fontSize: 9.5, color: colors.textSlate },
   hintCode: { color: colors.brandGold, fontWeight: '700' },
+  counter: { textAlign: 'right' },
   row: { flexDirection: 'row', gap: 10 },
 
   toast: {

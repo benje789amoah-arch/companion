@@ -17,6 +17,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import type { MessageSender } from '@freshfold/core';
 import { useApp } from '../src/store/AppStore';
 import { colors, radius, shadow } from '../src/theme';
 
@@ -27,19 +28,39 @@ const QUICK_REPLIES = [
   'Please confirm the building entry buzzer number.',
 ];
 
-type ChatTarget = 'dispatcher' | 'customer';
+/** Who a message is from, in the courier's language. */
+const SENDER_LABELS: Record<MessageSender, string> = {
+  rider: 'Me',
+  customer: 'Customer',
+  dispatcher: 'Dispatch',
+  laundry_center: 'The hub',
+};
 
 export default function ChatScreen() {
   const router = useRouter();
-  const { messages, sendRiderMessage } = useApp();
+  const { messages, activeOrder, sendRiderMessage } = useApp();
 
-  const [target, setTarget] = useState<ChatTarget>('dispatcher');
+  // The job in hand is the conversation. Screens that open this one used to
+  // name a recipient, which is no longer a thing the thread has.
+  const orderId = activeOrder?.id;
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<ScrollView | null>(null);
 
+  /**
+   * The whole thread for this job — every sender, not just one.
+   *
+   * There is one conversation per order and the customer, dispatch and the hub
+   * all write into it. Splitting it by recipient meant a courier sitting on the
+   * default tab never saw the customer's messages at all, which is exactly the
+   * moment ("which buzzer?") the thread exists for.
+   *
+   * Scoping to the order matters too: the poll fetches every conversation, so
+   * without it a courier on their fourth pickup reads three earlier customers'
+   * notes as if they were about the bags they are holding.
+   */
   const thread = useMemo(
-    () => messages.filter((msg) => msg.sender === 'rider' || msg.sender === target),
-    [messages, target]
+    () => messages.filter((msg) => msg.orderId === orderId),
+    [messages, orderId]
   );
 
   // Keep the newest message in view as the conversation grows.
@@ -50,7 +71,7 @@ export default function ChatScreen() {
 
   const send = () => {
     const text = draft.trim();
-    if (!text) return;
+    if (!text || !orderId) return;
     sendRiderMessage(text);
     setDraft('');
   };
@@ -63,27 +84,17 @@ export default function ChatScreen() {
         </Pressable>
 
         <View style={styles.headerCenter}>
-          <Text style={styles.headerTitle}>Communication core</Text>
-          <Text style={styles.headerSubtitle}>Connected with {target}</Text>
+          <Text style={styles.headerTitle}>
+            {activeOrder ? activeOrder.customerName : 'Communication core'}
+          </Text>
+          <Text style={styles.headerSubtitle} numberOfLines={1}>
+            {activeOrder ? `${activeOrder.orderNumber} • customer & dispatch` : 'No active job'}
+          </Text>
         </View>
 
         <View style={styles.livePill}>
           <Activity size={14} color={colors.brandSage} />
         </View>
-      </View>
-
-      <View style={styles.targetToggle}>
-        {(['dispatcher', 'customer'] as ChatTarget[]).map((option) => (
-          <Pressable
-            key={option}
-            onPress={() => setTarget(option)}
-            style={[styles.targetButton, target === option && styles.targetButtonActive]}
-          >
-            <Text style={[styles.targetLabel, target === option && styles.targetLabelActive]}>
-              {option}
-            </Text>
-          </Pressable>
-        ))}
       </View>
 
       <KeyboardAvoidingView
@@ -97,9 +108,14 @@ export default function ChatScreen() {
           contentContainerStyle={styles.threadContent}
           keyboardShouldPersistTaps="handled"
         >
-          {thread.length === 0 ? (
+          {!orderId ? (
             <Text style={styles.emptyThread}>
-              No messages with {target} yet. Say hello below.
+              Accept a job to open its thread. Every message you send here reaches that
+              customer and the dispatch desk.
+            </Text>
+          ) : thread.length === 0 ? (
+            <Text style={styles.emptyThread}>
+              Nothing said yet on this job. Say hello below.
             </Text>
           ) : (
             thread.map((msg) => {
@@ -110,7 +126,7 @@ export default function ChatScreen() {
                   style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs]}
                 >
                   <Text style={[styles.bubbleMeta, mine && styles.bubbleMetaMine]}>
-                    {mine ? 'Me' : msg.sender} • {msg.timestamp}
+                    {SENDER_LABELS[msg.sender]} • {msg.timestamp}
                   </Text>
                   <Text style={[styles.bubbleText, mine && styles.bubbleTextMine]}>
                     {msg.text}
@@ -121,37 +137,45 @@ export default function ChatScreen() {
           )}
         </ScrollView>
 
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.quickRow}
-          style={styles.quickBar}
-        >
-          {QUICK_REPLIES.map((reply) => (
-            <Pressable
-              key={reply}
-              onPress={() => sendRiderMessage(reply)}
-              style={({ pressed }) => [styles.quickChip, pressed && { opacity: 0.8 }]}
-            >
-              <Text style={styles.quickLabel}>{reply}</Text>
-            </Pressable>
-          ))}
-        </ScrollView>
+        {!!orderId && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.quickRow}
+            style={styles.quickBar}
+          >
+            {QUICK_REPLIES.map((reply) => (
+              <Pressable
+                key={reply}
+                onPress={() => sendRiderMessage(reply)}
+                style={({ pressed }) => [styles.quickChip, pressed && { opacity: 0.8 }]}
+              >
+                <Text style={styles.quickLabel}>{reply}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        )}
 
         <View style={styles.composer}>
           <TextInput
             value={draft}
             onChangeText={setDraft}
-            placeholder={`Send a message to ${target}…`}
+            placeholder={orderId ? 'Write a message…' : 'Accept a job to start a thread'}
             placeholderTextColor={colors.textSlate}
             style={styles.input}
+            editable={!!orderId}
             onSubmitEditing={send}
             returnKeyType="send"
           />
           <Pressable
             onPress={send}
+            disabled={!orderId}
             accessibilityLabel="Send message"
-            style={({ pressed }) => [styles.sendButton, pressed && { opacity: 0.85 }]}
+            style={({ pressed }) => [
+              styles.sendButton,
+              !orderId && { opacity: 0.4 },
+              pressed && { opacity: 0.85 },
+            ]}
           >
             <Send size={16} color="#FFFFFF" />
           </Pressable>
@@ -193,24 +217,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-
-  targetToggle: {
-    flexDirection: 'row',
-    gap: 4,
-    margin: 14,
-    padding: 3,
-    borderRadius: radius.md,
-    backgroundColor: colors.bgLinen,
-  },
-  targetButton: { flex: 1, alignItems: 'center', paddingVertical: 8, borderRadius: radius.sm },
-  targetButtonActive: { backgroundColor: colors.cardPure, ...shadow.xs },
-  targetLabel: {
-    fontSize: 10.5,
-    fontWeight: '700',
-    color: colors.textSlate,
-    textTransform: 'capitalize',
-  },
-  targetLabelActive: { color: colors.textCharcoal },
 
   thread: { flex: 1 },
   threadContent: { padding: 16, gap: 10, paddingBottom: 8 },

@@ -1,0 +1,135 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dispatch-server",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev:server"
+      ],
+      "port": 4000
+    },
+    {
+      "name": "dispatch-server-alt",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev:server"
+      ],
+      "autoPort": true,
+      "port": 4001
+    },
+    {
+      "name": "admin-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev:web"
+      ],
+      "port": 3000
+    },
+    {
+      "name": "admin-web-alt",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--workspace",
+        "@freshfold/web",
+        "--",
+        "--port",
+        "3100",
+        "--strictPort"
+      ],
+      "port": 3100
+    },
+    {
+      "name": "admin-web-3200",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--workspace",
+        "@freshfold/web",
+        "--",
+        "--port",
+        "3200",
+        "--strictPort"
+      ],
+      "port": 3200
+    },
+    {
+      "name": "admin-web-3300",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--workspace",
+        "@freshfold/web",
+        "--",
+        "--port",
+        "3300",
+        "--strictPort"
+      ],
+      "port": 3300
+    },
+    {
+      "name": "admin-web-3400",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--workspace",
+        "@freshfold/web",
+        "--",
+        "--port",
+        "3400",
+        "--strictPort"
+      ],
+      "port": 3400
+    },
+    {
+      "name": "client-app",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "web",
+        "--workspace",
+        "@freshfold/client",
+        "--",
+        "--port",
+        "8082"
+      ],
+      "port": 8082
+    },
+    {
+      "name": "client-app-alt",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "web",
+        "--workspace",
+        "@freshfold/client",
+        "--",
+        "--port",
+        "8084"
+      ],
+      "port": 8084
+    },
+    {
+      "name": "rider-app",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "web",
+        "--workspace",
+        "@freshfold/mobile",
+        "--",
+        "--port",
+        "8083"
+      ],
+      "port": 8083
+    }
+  ]
+}

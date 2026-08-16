@@ -90,16 +90,10 @@ export default function Header({ onOpenBooking, onOpenPortal, onScrollToSection,
             >
               Client Portal
             </button>
-            <button
-              onClick={() => {
-                window.location.hash = '#admin';
-              }}
-              className="px-3 py-1.5 border border-brand-gold/40 text-brand-gold hover:bg-brand-gold hover:text-black text-[9.5px] font-bold uppercase tracking-widest rounded-lg transition-all duration-350 cursor-pointer flex items-center gap-1 font-mono"
-              id="cta-admin-desktop"
-            >
-              <span className="w-1.5 h-1.5 bg-brand-gold rounded-full animate-pulse"></span>
-              Supervisor Desk
-            </button>
+            {/* The supervisor desk is staff-only, so it is not advertised in
+                the customer-facing nav. Its way in is the discreet link in the
+                footer — see Footer.tsx — and it is gated on a real login
+                either way. */}
             <button
               onClick={onOpenBooking}
               className="px-4 py-2 bg-white text-black hover:bg-brand-sage hover:text-white text-[10px] font-bold uppercase tracking-widest rounded-lg transition-all duration-350 cursor-pointer"
@@ -148,17 +142,6 @@ export default function Header({ onOpenBooking, onOpenPortal, onScrollToSection,
             </button>
           ))}
           <div className="pt-6 space-y-2.5">
-            <button
-               onClick={() => {
-                 setMobileMenuOpen(false);
-                 window.location.hash = '#admin';
-               }}
-               className="w-full py-3 bg-brand-gold/10 text-brand-gold border border-brand-gold/30 text-center text-[11px] font-bold tracking-widest uppercase rounded-xl hover:bg-brand-gold hover:text-black transition-all cursor-pointer flex items-center justify-center space-x-2 font-mono"
-               id="cta-admin-mobile"
-             >
-               <Shield className="w-3.5 h-3.5 text-brand-gold" />
-               <span>Supervisor Desk</span>
-             </button>
             <button
                onClick={() => {
                  setMobileMenuOpen(false);

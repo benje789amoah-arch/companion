@@ -15,6 +15,8 @@
  * The server stores `Job`. Everything else is a view.
  */
 
+import type { ActivePlan } from './membership';
+
 export interface Coords {
   lat: number;
   lng: number;
@@ -55,6 +57,7 @@ export type BookingStatus =
   | 'In Care'
   | 'Ironing & Folding'
   | 'Quality Check'
+  | 'Delivering'
   | 'Delivered'
   | 'Cancelled';
 
@@ -109,7 +112,14 @@ export interface JobLocation {
   suburb: string;
   city?: string;
   pickupCoords: Coords;
-  /** Where the rider takes the bags. Normally the hub; see `./geo`. */
+  /**
+   * Where the clean laundry goes back to — the customer's own door.
+   *
+   * This used to hold the hub, which is where the bags go *first*. That leg
+   * has its own destination in the rider console (`LAUNDRY_HUB_COORDS`), so
+   * naming the hub here meant the final delivery leg pointed the courier back
+   * to the laundry with the customer's clean clothes on the seat.
+   */
   deliveryAddress: string;
   deliveryCoords: Coords;
 }
@@ -119,6 +129,23 @@ export interface JobProof {
   pickupSignature?: string;
   deliveryPhoto?: string;
   deliverySignature?: string;
+  /**
+   * Set when a delivery completed without the customer's code — nobody in, a
+   * neighbour took it, the concierge desk signed for it. The courier has to
+   * say which, and the job carries that sentence for the rest of its life:
+   * it is the difference between a documented exception and a courier
+   * marking their own homework.
+   */
+  deliveryOverrideReason?: string;
+  deliveryOverrideAt?: string;
+  /**
+   * The same escape hatch one leg earlier: bags left at a hub whose desk was
+   * unattended, or whose screen nobody could get to. Recorded for the same
+   * reason — the alternative is a courier deciding on their own that the
+   * handover happened.
+   */
+  dropoffOverrideReason?: string;
+  dropoffOverrideAt?: string;
 }
 
 export interface JobDispatch {
@@ -131,6 +158,23 @@ export interface JobDispatch {
   assignedAt?: string;
   pickedUpAt?: string;
   deliveredAt?: string;
+  /**
+   * The code the customer shows — as digits or a QR — for the courier to check
+   * before taking the bags. Minted once when the job is created and never
+   * regenerated, so the code the customer is looking at stays the one the
+   * courier will accept.
+   */
+  pickupOtp?: string;
+  /**
+   * The hub's code, shown on the dispatch desk's screen when the courier
+   * arrives with the bags.
+   *
+   * The middle leg used to have no check at all: the courier tapped through a
+   * bag manifest their own phone had generated and the job moved to
+   * `dropped_off` on nobody's word but theirs. This is the hub asserting it
+   * actually received the load, which is the only party in a position to.
+   */
+  dropoffOtp?: string;
   deliveryOtp?: string;
   proof: JobProof;
 }
@@ -196,9 +240,17 @@ export interface Booking {
   transactionRef?: string;
   paidAt?: string;
   /**
-   * The pin the rider is actually navigating to. Derived server-side from the
-   * address, and surfaced here so the customer's map and the rider's map show
-   * the same point rather than each geocoding the address their own way.
+   * The pin the rider is actually navigating to.
+   *
+   * Sent by the customer when they placed one themselves — the app asks for
+   * the doorstep rather than guessing at it, because "Evandy Hostel, Room 12"
+   * is not a coordinate and the courier has to end up somewhere real. Omitted,
+   * the server derives a pin from the address so a booking made anywhere else
+   * still lands on the map.
+   *
+   * Either way it comes back on every read, so the customer's map and the
+   * rider's map show the same point rather than each resolving the address
+   * their own way.
    */
   pickupCoords?: Coords;
   /**
@@ -206,6 +258,32 @@ export interface Booking {
    * the web app's point of view — the rider app owns these.
    */
   rider?: BookingRiderView;
+  /**
+   * Proof-of-service captured during the job. Read-only here for the same
+   * reason as `rider`: the handover surfaces write it, the customer's screens
+   * only display it. `applyBookingPatch` ignores it, so echoing a booking back
+   * in a PATCH cannot overwrite what was actually captured at the door.
+   */
+  proof?: JobProof;
+  /**
+   * The collection code, so the customer's screens can render it as digits and
+   * a QR. Read-only here as well — the server mints it.
+   */
+  pickupOtp?: string;
+  /**
+   * The delivery code, to read out to the courier at the door before taking
+   * the clean laundry back. The courier's own app never receives this one:
+   * they type what they are told and the server checks it.
+   */
+  deliveryOtp?: string;
+  /**
+   * The hub's drop-off code. Rendered on the dispatch desk's pipeline row, not
+   * on any customer screen — the customer is not at the hub and this is not
+   * their handover. It rides on `Booking` because that is the projection the
+   * admin dashboard reads; `Order` deliberately has no equivalent, so the
+   * courier's phone cannot answer its own challenge.
+   */
+  dropoffOtp?: string;
 }
 
 /** The slice of rider telemetry the customer is allowed to see. */
@@ -239,6 +317,17 @@ export interface Order {
   bags: LaundryBag[];
   priority: OrderPriority;
   status: JobStatus;
+  /**
+   * The courier who holds this job, absent while nobody does.
+   *
+   * The board a phone is sent is *its own jobs plus the open pool*, so without
+   * this the app could not tell the two apart — and it did not: the workflow
+   * sheet took the first non-`unassigned` job it found, which on a board with
+   * more than one job in flight is somebody else's. It is only ever this
+   * courier's id or nothing, because the server never sends a job that belongs
+   * to a third party.
+   */
+  riderId?: string;
   /** in km */
   distance: number;
   /** in mins */
@@ -250,7 +339,12 @@ export interface Order {
   pickupSignature?: string;
   deliveryPhoto?: string;
   deliverySignature?: string;
-  deliveryOtp?: string;
+  /**
+   * Checked against what the customer shows before the bags change hands.
+   * There is no `deliveryOtp` or `dropoffOtp` here on purpose — see
+   * `jobToOrder`.
+   */
+  pickupOtp?: string;
   assignedAt?: string;
   pickedUpAt?: string;
   deliveredAt?: string;
@@ -269,8 +363,25 @@ export type OrderStatus = JobStatus;
 export interface RiderState {
   id: string;
   name: string;
+  /**
+   * Assigned by the server when a supervisor adds the courier, and fixed from
+   * then on. It is a sign-in identifier, so neither the supervisor nor the
+   * courier gets to type it.
+   */
   employeeId: string;
+  /**
+   * Contact number on the employment record. Doubles as an alternative
+   * sign-in identifier — a courier who has forgotten their employee ID has
+   * not forgotten their own number.
+   */
+  phone: string;
   avatar: string;
+  /**
+   * The vehicle this courier rides and the plate on it. Company property, so
+   * both are assigned by a supervisor from the roster console rather than
+   * typed in by the courier — the customer is shown them at the door, and a
+   * plate nobody checked is worth nothing there.
+   */
   vehicle: string;
   vehiclePlate: string;
   rating: number;
@@ -289,16 +400,26 @@ export interface RiderState {
   onTimeRate: number;
   acceptanceRate: number;
   completionRate: number;
+  /**
+   * True while the courier is still on the temporary PIN a supervisor issued.
+   * The console blocks everything until it is replaced. Not a credential —
+   * just the fact that one is still provisional.
+   */
+  mustChangePin?: boolean;
 }
 
-/** Telemetry the rider app pushes to the server on a timer. */
+/**
+ * Telemetry the rider app pushes to the server on a timer.
+ *
+ * Only what the phone can honestly claim about itself: where it is, how fast,
+ * whose name is on it. The vehicle and its plate are company property assigned
+ * by a supervisor, and the employee ID is a sign-in identifier — none of those
+ * are a courier's to declare, so none of them are in here.
+ */
 export type RiderTelemetry = Partial<
   Pick<
     RiderState,
     | 'name'
-    | 'employeeId'
-    | 'vehicle'
-    | 'vehiclePlate'
     | 'isOnline'
     | 'coords'
     | 'speed'
@@ -354,12 +475,72 @@ export interface UserAccount {
   walletBalance?: number;
   /** Whether a password has been set, so the UI can offer setup vs. sign-in. */
   hasPassword?: boolean;
+  /**
+   * Whether the address has been confirmed by clicking the emailed link.
+   *
+   * Customers only. Couriers and supervisors are provisioned rather than
+   * self-registered, never pass through `/api/auth`, and have no equivalent
+   * field. A booking made from a signed-in but unconfirmed account is refused
+   * by the server, so the portal reads this to explain that up front rather
+   * than letting the customer fill in a whole form first.
+   */
+  emailVerified?: boolean;
+  /**
+   * The membership this account holds, settled as of the moment it was read.
+   *
+   * Server-owned: it is a paid entitlement, and `/api/accounts` will not write
+   * it. Subscribing and cancelling go through `/api/accounts/plan`, which is
+   * the only path that can move the wallet and the plan together.
+   */
+  plan?: ActivePlan | null;
+  /**
+   * When a supervisor suspended this account, or absent while it is in good
+   * standing.
+   *
+   * Supervisor-owned, like the plan: only `/api/accounts/:email/blocked` writes
+   * it. A blocked account cannot sign in, cannot book, and resolves to nobody
+   * on every request — so a token issued before the block stops working at once
+   * rather than at the end of its week.
+   */
+  blockedAt?: string;
+  /**
+   * Why, in the supervisor's words.
+   *
+   * Present only on the response to the request that set it, which is behind a
+   * supervisor session. `sanitize` strips it everywhere else — `GET /accounts`
+   * answers anyone, and a private note about a customer is not for publishing.
+   */
+  blockedReason?: string;
 }
 
 /** A signed-in session: the account plus the bearer token that proves it. */
 export interface AuthSession {
   token: string;
   account: UserAccount;
+}
+
+/**
+ * A signed-in courier. The rider equivalent of {@link AuthSession}.
+ *
+ * `RiderState` carries no credential field for the same reason `UserAccount`
+ * does not: the PIN is hashed on the server and never leaves it.
+ */
+export interface RiderSession {
+  token: string;
+  rider: RiderState;
+}
+
+/** A supervisor as the dashboard sees them. No credentials, by construction. */
+export interface SupervisorProfile {
+  id: string;
+  name: string;
+  email: string;
+}
+
+/** A signed-in supervisor. */
+export interface AdminSession {
+  token: string;
+  supervisor: SupervisorProfile;
 }
 
 export interface PaymentTransaction {

@@ -26,6 +26,43 @@
   
   --color-brand-text-muted: #8E9299;
   --color-brand-text-light: #F5F5F4;
+
+  /* ---------------------------------------------------------------------
+     Admin surface.
+
+     The supervisor desk is an internal tool, not a shopfront, and it is sized
+     for someone watching thirty live orders at once. Its *layout* is its own —
+     a rail, cards, pill controls — but the colours are the web app's: brand
+     charcoal ground, `#161616` cards, champagne gold as the accent, olive sage
+     for primary actions. Semantic green/amber/red mean paid, pending, wrong,
+     and nothing else on the desk is coloured for decoration.
+
+     Marketing components keep `brand-*`; nothing here touches them.
+     --------------------------------------------------------------------- */
+  --color-admin-bg: #0D0D0D;
+  --color-admin-panel: #161616;
+  --color-admin-raised: #1E1E1E;
+  --color-admin-hover: #242424;
+  --color-admin-line: #262626;
+  --color-admin-line-strong: #3A3A38;
+
+  --color-admin-fg: #F5F5F4;
+  --color-admin-fg-2: #A8A8A2;
+  --color-admin-fg-3: #77776F;
+
+  /* The rail. Sits above the ground rather than beside it, so the active pill
+     can be cut out of it in the page colour. */
+  --color-admin-rail: #161616;
+  --color-admin-primary: #5A5A40;
+  --color-admin-primary-soft: rgba(90, 90, 64, 0.18);
+
+  --color-admin-accent: #C5A880;
+  --color-admin-accent-soft: rgba(197, 168, 128, 0.12);
+
+  --color-admin-ok: #34D399;
+  --color-admin-warn: #FBBF24;
+  --color-admin-danger: #F87171;
+  --color-admin-info: #7DA6E8;
 }
 
 @layer utilities {
@@ -41,6 +78,64 @@
     transform: translateY(-4px);
     border-color: rgba(90, 90, 64, 0.4);
     box-shadow: 0 16px 36px -12px rgba(0, 0, 0, 0.82);
+  }
+
+  /* Thin scrollbars for the dense admin panes — the default 15px gutter is a
+     column of data on a table this tight. */
+  .admin-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: #3A3A38 transparent;
+  }
+  .admin-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .admin-scroll::-webkit-scrollbar-thumb {
+    background: #2E2E2C;
+    border-radius: 8px;
+  }
+  .admin-scroll::-webkit-scrollbar-thumb:hover {
+    background: #45453F;
+  }
+  .admin-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  /* The soft, wide lift every card on the desk shares. A single shadow used
+     everywhere is what makes a panel grid read as one plane. */
+  .admin-card {
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.4),
+      0 10px 30px -14px rgba(0, 0, 0, 0.7);
+  }
+
+  /*
+    The inverted corners on the active rail item.
+
+    The selected nav row is a light pill that runs to the rail's right edge and
+    joins the content area, so the purple has to curve *away* from it above and
+    below. That is not a border-radius — it is two radial cut-outs, drawn here
+    as pseudo-elements rather than as four extra divs at every call site.
+  */
+  .admin-rail-active::before,
+  .admin-rail-active::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    width: 14px;
+    height: 14px;
+    background: var(--color-admin-bg);
+    pointer-events: none;
+  }
+  .admin-rail-active::before {
+    top: -14px;
+    border-bottom-right-radius: 14px;
+    box-shadow: 0 7px 0 0 var(--color-admin-rail);
+  }
+  .admin-rail-active::after {
+    bottom: -14px;
+    border-top-right-radius: 14px;
+    box-shadow: 0 -7px 0 0 var(--color-admin-rail);
   }
 }
 

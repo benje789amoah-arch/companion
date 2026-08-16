@@ -34,6 +34,30 @@ export const SUBURB_COORDS: Record<string, Coords> = {
 
 export const SERVICE_SUBURBS = Object.keys(SUBURB_COORDS);
 
+/**
+ * The anchor pin for a suburb named in free text.
+ *
+ * The customer app offers a fixed list, but the website's booking form is a
+ * text box — "ayeduase", "Ayeduase Newsite", "KNUST campus" all mean a suburb
+ * we serve, and none of them is a key in the table. Loose on purpose, and
+ * falling back to the middle of campus rather than to nothing, because this
+ * only ever decides where a map opens.
+ */
+export function anchorForSuburb(suburb: string): Coords {
+  const exact = SUBURB_COORDS[suburb];
+  if (exact) return { ...exact };
+
+  const needle = (suburb || '').trim().toLowerCase();
+  if (needle) {
+    const match = Object.keys(SUBURB_COORDS).find(
+      (key) => needle.includes(key.toLowerCase()) || key.toLowerCase().includes(needle)
+    );
+    if (match) return { ...SUBURB_COORDS[match] };
+  }
+
+  return { ...SUBURB_COORDS['KNUST Campus'] };
+}
+
 export interface Landmark {
   name: string;
   lat: number;
@@ -62,13 +86,35 @@ export const LANDMARKS: Landmark[] = [
 ];
 
 /**
- * Bounding box for the service area. Coordinates outside it are stale or
- * corrupt — both apps use this to decide whether persisted state is worth
- * keeping after an upgrade.
+ * Bounding box for the service area.
+ *
+ * Coordinates outside it are stale, corrupt, or not ours: the apps use it to
+ * decide whether persisted state survives an upgrade, the booking route uses it
+ * to refuse a pickup pin, and the directions proxy uses it as the only thing
+ * standing between a billed Google endpoint and the open internet.
+ *
+ * That last caller is why this is drawn tightly. It used to be a whole degree
+ * square — roughly 110 km on a side, from north of Mampong to past Obuasi —
+ * which let anybody walk arbitrary routes through the proxy and call it Kumasi.
+ * These bounds are Greater Kumasi with room to grow: every landmark, suburb
+ * anchor and hub below sits well inside them, as does the city centre and the
+ * airport, while the box is about a sixteenth of the area.
  */
+export const SERVICE_AREA_BOUNDS = {
+  minLat: 6.55,
+  maxLat: 6.8,
+  minLng: -1.75,
+  maxLng: -1.45,
+} as const;
+
 export function isOutsideServiceArea(coords?: Coords): boolean {
   if (!coords) return true;
-  return coords.lat > 7 || coords.lat < 6 || coords.lng > -1 || coords.lng < -2;
+  return (
+    coords.lat > SERVICE_AREA_BOUNDS.maxLat ||
+    coords.lat < SERVICE_AREA_BOUNDS.minLat ||
+    coords.lng > SERVICE_AREA_BOUNDS.maxLng ||
+    coords.lng < SERVICE_AREA_BOUNDS.minLng
+  );
 }
 
 /**
@@ -121,10 +167,57 @@ export function bearingBetween(from: Coords, to: Coords): number {
   return (((Math.atan2(y, x) * 180) / Math.PI) + 360) % 360;
 }
 
-/** Raw degree separation — the simulation's arrival test. */
-export function degreeGap(from: Coords, to: Coords): number {
-  return Math.hypot(to.lat - from.lat, to.lng - from.lng);
+/** Straight-line separation in metres. */
+export function metresBetween(from: Coords, to: Coords): number {
+  return distanceKm(from, to) * 1000;
 }
+
+/**
+ * Arrival.
+ *
+ * Reaching a destination is what flips an order from `navigating_*` to
+ * `arrived_*`, which is a real claim: the customer is told their courier is at
+ * the door, and the pickup checklist opens. So it is a test against metres on
+ * the ground, and against how much the device's own fix can be trusted.
+ *
+ * `ARRIVAL_RADIUS_M` is a doorway rather than a street — close enough that
+ * "arrived" is true from anywhere inside it, tight enough that the building
+ * next door is outside it.
+ */
+export const ARRIVAL_RADIUS_M = 35;
+
+/**
+ * The worst fix worth acting on.
+ *
+ * A phone reporting ±120 m has no idea which side of the road it is on, and a
+ * position that vague cannot confirm a 35 m arrival — it would fire from
+ * halfway down the street, or refuse to fire while the courier stands at the
+ * door. Such a fix is still fine for drawing the courier on a map, which is
+ * why this is a threshold for acting rather than for believing at all.
+ */
+export const MAX_ACTIONABLE_ACCURACY_M = 50;
+
+/** Whether a fix is precise enough to base a status change on. */
+export function isActionableFix(accuracyM?: number | null): boolean {
+  return typeof accuracyM === 'number' && accuracyM > 0 && accuracyM <= MAX_ACTIONABLE_ACCURACY_M;
+}
+
+/**
+ * Whether a reported position is close enough, and sure enough of itself, to
+ * count as arrived. A fix the device cannot vouch for never arrives anywhere —
+ * the courier confirms by hand instead, which is a button they already have.
+ */
+export function hasArrivedAt(position: Coords, target: Coords, accuracyM?: number | null): boolean {
+  if (!isActionableFix(accuracyM)) return false;
+  return metresBetween(position, target) <= ARRIVAL_RADIUS_M;
+}
+
+/**
+ * A heading is only meaningful above walking pace. Standing still, the compass
+ * derived from consecutive fixes is noise, and feeding it to a map turns the
+ * courier's arrow into a spinner.
+ */
+export const MIN_HEADING_SPEED_KMH = 4;
 
 /** Average scooter speed on campus roads, used for every ETA in the system. */
 export const AVERAGE_SPEED_KMH = 18;

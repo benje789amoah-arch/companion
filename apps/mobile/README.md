@@ -35,8 +35,9 @@ The server address is derived from the Expo dev server's own host, so a phone on
 Wi-Fi finds it with no configuration. Override it with `EXPO_PUBLIC_API_URL` if the server
 lives somewhere else — note that `localhost` will never work from a physical phone.
 
-With no server reachable the app runs entirely on local seed data and AsyncStorage, exactly as
-it did before there was a backend. `useApp().connected` says which mode it is in.
+With no server reachable the app runs on whatever it last cached in AsyncStorage — no invented
+jobs, so a console that has never connected shows an empty board and says so.
+`useApp().connected` says which mode it is in.
 
 `npx expo start --web` also works for a quick browser look at the flows, with a coordinate
 readout standing in for the map — `react-native-maps` is iOS/Android only.
@@ -46,37 +47,62 @@ readout standing in for the map — `react-native-maps` is iOS/Android only.
 > to launch. Check the SDK your Expo Go supports on its home screen, and either match it here or
 > install the matching Expo Go.
 
-## Demo walkthrough
+## Walkthrough
 
-1. **Splash → Auth.** Tap *Request access OTP* with any phone number, then enter `7801`.
-   Or use the Face ID button — real biometrics if the device has them enrolled, a simulated
-   scan if not.
-2. **Profile.** A rider with no saved profile lands here first. Fill in name and employee ID.
-3. **Home.** Toggle *Go online* — this is what starts publishing your position to the server,
-   so it is also what makes the courier appear on the customer's tracking map. The floating
-   **SIM** handle on the right edge opens the simulation hub, which stands in for the
-   dispatcher: generate orders, dispatch them, fire alerts, or reset all state. Orders
-   generated here are pushed to the server and are indistinguishable from real bookings.
-4. **Accept a job**, then step through the workflow in the bottom sheet: start navigation
-   (the GPS position animates along the route), confirm arrival, scan the bag QR codes, take a
-   condition photo, and capture a signature.
-5. **Drop off at the hub**, wait for processing, then deliver. The delivery OTP is `7809`
-   (`4019` and `1234` also pass).
+Everything here runs against the dispatch server. There is no simulator: the
+board shows the jobs that exist, and the only way a job appears is that someone
+booked it — on the website or in the customer app.
+
+1. **Splash → Sign in.** Employee ID and PIN, checked against the roster on the
+   dispatch server — `RIDER-204` / `7801`, `RIDER-118` / `4019`, or `RIDER-337` /
+   `1234`. The ten-digit phone number on the record works in place of the
+   employee ID — `0244567801`, `0209114402`, `0553370915`.
+   Face ID reopens a session on a device that has already signed in; it cannot
+   create one, because a face is not something the server can check.
+2. **Profile.** A rider without a complete profile lands here and stays until name,
+   vehicle and plate are all on the record. Jobs cannot be accepted before that —
+   the customer is shown those details at the door. Only the name is the
+   courier's to enter: the employee ID and the vehicle were both assigned from
+   the supervisor's console, so the app shows them read-only and says who to ask
+   when a vehicle is missing.
+3. **Home.** Toggle *Go online*. This starts the location watch and publishes your
+   position, which is what puts the courier on the customer's tracking map.
+4. **Accept a job** from the offer card or the Tasks board, then work the bottom sheet:
+   start navigation, check the customer's collection code, scan the bag labels,
+   photograph the garments, capture a signature.
+5. **Drop off at the hub**, wait for processing, then deliver. The delivery code is
+   `7809` (`4019` and `1234` also pass).
+
+> **You have to move.** Position is the device's real GPS fix, so the courier only
+> travels on the map when the phone does.
+>
+> **Arrival** is confirmed when two consecutive fixes land within 35 m of the
+> destination *and* the device reports its own accuracy as 50 m or better. One
+> reading is not enough — a single GPS jump used to be, which meant an order could
+> reach `arrived_at_pickup` while the courier was still two streets away and the
+> customer was told to come down. A fix the phone cannot vouch for never confirms
+> anything, and neither does the hub fallback used when a fix lands outside the
+> Kumasi service area. The *Confirm arrival* button is the answer whenever the fix
+> disagrees with where you actually are, and the transit card says so when the
+> current fix is too rough to decide on its own.
+>
+> While a leg is in progress the watch tightens to `BestForNavigation` and a fix
+> every 5 m; off a leg it relaxes to save the battery.
 
 ## Architecture
 
 | Path | Purpose |
 | --- | --- |
 | `app/` | expo-router routes — splash, auth, chat modal, and the five-tab console |
-| `src/store/AppStore.tsx` | Domain state, server sync, AsyncStorage offline cache, and the GPS simulation loop |
+| `src/store/AppStore.tsx` | Domain state, server sync, AsyncStorage offline cache, and the device location watch |
 | `src/store/SessionStore.tsx` | Auth/lock state for the console |
 | `src/services/api.ts` | Dispatch server address resolution + the shared `@freshfold/core` client |
 | `src/components/` | `LiveMap` (`.web.tsx` fallback for browsers), `QRScanner`, `CameraCapture`, `SignaturePad`, plus shared UI primitives |
 | `src/theme.ts` | Brand tokens for the native surfaces |
-| `src/data/mockData.ts` | Offline seed data, replaced by the server on the first successful poll |
+| `src/data/initialState.ts` | The empty board the app holds before it has heard from the server — no invented jobs |
 | `src/types.ts` | Re-export of the shared domain model from `@freshfold/core` |
 
-State lives in one provider so the simulation ticks exactly once regardless of how many
+State lives in one provider so the device is watched exactly once regardless of how many
 screens are showing a map, and so an order keeps ripening while the rider browses other tabs.
 
 Reads come from a poll every 4 seconds; writes are applied locally first and sent in the

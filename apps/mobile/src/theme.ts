@@ -48,6 +48,8 @@ export const tints = {
   gold30: 'rgba(197, 164, 109, 0.30)',
   success10: 'rgba(79, 138, 91, 0.10)',
   success30: 'rgba(79, 138, 91, 0.30)',
+  warning10: 'rgba(200, 155, 74, 0.10)',
+  warning30: 'rgba(200, 155, 74, 0.30)',
   error05: 'rgba(184, 92, 92, 0.05)',
   error20: 'rgba(184, 92, 92, 0.20)',
   error30: 'rgba(184, 92, 92, 0.30)',

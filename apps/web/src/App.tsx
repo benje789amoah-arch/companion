@@ -12,6 +12,7 @@ import Footer from './components/Footer';
 import BookingModal from './components/BookingModal';
 import ClientPortal from './components/ClientPortal';
 import AdminDashboard from './components/AdminDashboard';
+import AdminLogin from './components/AdminLogin';
 import ChatbotWidget from './components/ChatbotWidget';
 import { Booking } from './types';
 import * as store from './services/store';
@@ -27,10 +28,51 @@ export default function App() {
   // Portal routing states
   const [isPortalOpen, setIsPortalOpen] = useState(false);
   const [portalBookingId, setPortalBookingId] = useState<string | null>(null);
-  const [portalSetupMode, setPortalSetupMode] = useState(false);
+  /**
+   * The token from an emailed setup link, when the portal was opened by one.
+   *
+   * A token rather than the `setup=true` flag this used to be. The flag paired
+   * with a booking id, and a booking id is six digits: anyone could walk them
+   * against the public booking route and claim a stranger's account, which is
+   * the whole reason the password screen now asks the server what this token
+   * opens instead of trusting the URL.
+   */
+  const [portalSetupToken, setPortalSetupToken] = useState<string | null>(null);
 
   // Manager admin routing state
   const [isAdminOpen, setIsAdminOpen] = useState(false);
+  /**
+   * Whether the desk session has been checked with the server yet.
+   *
+   * Three states, and the distinction matters: `null` means we have not asked,
+   * so the dashboard must not render even for a moment; `false` means asked and
+   * refused, so show the login. Rendering the dashboard first and hiding it
+   * afterwards would put the whole ledger on screen for a frame.
+   */
+  const [isSupervisor, setIsSupervisor] = useState<boolean | null>(null);
+
+  // Re-validate the stored desk token whenever the admin route is entered. It
+  // is checked against the server every time rather than trusted from storage —
+  // a revoked supervisor should not keep a working dashboard.
+  useEffect(() => {
+    if (!isAdminOpen) return;
+
+    let cancelled = false;
+    setIsSupervisor(null);
+
+    store
+      .restoreAdminSession()
+      .then((supervisor) => {
+        if (!cancelled) setIsSupervisor(Boolean(supervisor));
+      })
+      .catch(() => {
+        if (!cancelled) setIsSupervisor(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdminOpen]);
 
   // The booking ledger lives on the dispatch server. Read the cached mirror
   // immediately so the first paint has data, then subscribe: every poll that
@@ -58,21 +100,21 @@ export default function App() {
         if (queryIdx !== -1) {
           const urlParams = new URLSearchParams(hash.substring(queryIdx));
           setPortalBookingId(urlParams.get('bookingId'));
-          setPortalSetupMode(urlParams.get('setup') === 'true');
+          setPortalSetupToken(urlParams.get('setup'));
         } else {
           setPortalBookingId(null);
-          setPortalSetupMode(false);
+          setPortalSetupToken(null);
         }
       } else if (hash.startsWith('#admin')) {
         setIsAdminOpen(true);
         setIsPortalOpen(false);
         setPortalBookingId(null);
-        setPortalSetupMode(false);
+        setPortalSetupToken(null);
       } else {
         setIsPortalOpen(false);
         setIsAdminOpen(false);
         setPortalBookingId(null);
-        setPortalSetupMode(false);
+        setPortalSetupToken(null);
       }
     };
     
@@ -163,8 +205,8 @@ export default function App() {
         {/* Subscription pricing structures */}
         <Pricing onSelectPlan={handleOpenBookingWithService} />
 
-        {/* Interactive Luxury Loyalty and tracking */}
-        <Membership activeBookings={activeBookings} />
+        {/* Interactive Luxury Loyalty */}
+        <Membership />
 
         {/* Philosophy Core guidelines */}
         <WhyChooseUs />
@@ -202,7 +244,7 @@ export default function App() {
             window.location.hash = '';
           }}
           bookingIdParam={portalBookingId}
-          setupModeParam={portalSetupMode}
+          setupTokenParam={portalSetupToken}
           activeBookings={activeBookings}
           onUpdateBookings={(updated) => {
             setActiveBookings(updated);
@@ -214,13 +256,27 @@ export default function App() {
         />
       )}
 
-      {/* Authorized Manager Admin Dashboard */}
-      {isAdminOpen && (
+      {/* Supervisor desk — behind a real login, not a URL fragment. */}
+      {isAdminOpen && isSupervisor === false && (
+        <AdminLogin
+          onAuthenticated={() => setIsSupervisor(true)}
+          onClose={() => {
+            setIsAdminOpen(false);
+            window.location.hash = '';
+          }}
+        />
+      )}
+
+      {isAdminOpen && isSupervisor === true && (
         <AdminDashboard
           isOpen={isAdminOpen}
           onClose={() => {
             setIsAdminOpen(false);
             window.location.hash = '';
+          }}
+          onSignOut={() => {
+            void store.adminLogout();
+            setIsSupervisor(false);
           }}
           activeBookings={activeBookings}
           onUpdateBookings={(updated) => {

@@ -1,9 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Calendar, MapPin, Sparkles, MessageSquare, Clock, ShieldCheck, CheckCircle, Smartphone, CreditCard, Wallet, Banknote, Lock, CheckCircle2, QrCode } from 'lucide-react';
+import {
+  PHONE_DIGITS,
+  PHONE_LENGTH_MESSAGE,
+  isCompletePhone,
+  limitPhoneInput,
+  samePhone,
+  type Coords,
+} from '@freshfold/core';
 import { Booking } from '../types';
 import * as store from '../services/store';
 import { SERVICES } from '../data';
+import PickupPinField from './PickupPinField';
 
 interface BookingModalProps {
   isOpen: boolean;
@@ -19,6 +28,12 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
   const [address, setAddress] = useState('');
   const [suburb, setSuburb] = useState('');
   const [city, setCity] = useState('');
+  /**
+   * The doorstep, when the customer places one. Left null the dispatch server
+   * derives a pin from the typed address, which lands in the right suburb and
+   * the wrong street.
+   */
+  const [pickupPin, setPickupPin] = useState<Coords | null>(null);
   const [service, setService] = useState(SERVICES[0]?.name || 'Washing (Machine & Hand Wash)');
   const [pickupDate, setPickupDate] = useState('');
   const [pickupTimeSlot, setPickupTimeSlot] = useState('08:00 AM - 11:00 AM (Morning Concierge)');
@@ -28,16 +43,10 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
   const [riderNote, setRiderNote] = useState('');
 
   // Payment states
-  const [paymentMethod, setPaymentMethod] = useState<'Paystack' | 'MTN MoMo' | 'Telecel Cash' | 'AT Money' | 'Card' | 'Wallet' | 'Pay on Pickup'>('Paystack');
-  const [momoNumber, setMomoNumber] = useState('');
-  const [cardNumber, setCardNumber] = useState('');
-  const [cardExpiry, setCardExpiry] = useState('');
-  const [cardCvv, setCardCvv] = useState('');
-  const [momoPromptActive, setMomoPromptActive] = useState(false);
-  const [momoPin, setMomoPin] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState<'Paystack' | 'Wallet' | 'Pay on Pickup'>('Paystack');
   const [isPaid, setIsPaid] = useState(false);
   const [transactionRef, setTransactionRef] = useState('');
-  const [walletBalance, setWalletBalance] = useState(150); // GHS wallet balance demo
+  const [walletBalance, setWalletBalance] = useState(0);
 
   // Paystack states
   const [paystackLoading, setPaystackLoading] = useState(false);
@@ -56,6 +65,10 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
         body: JSON.stringify({
           email: userEmail,
           amount: estimatedPrice,
+          // Where Paystack sends the customer back to. This page knows its own
+          // origin; the server's APP_URL is a single fixed guess that is wrong
+          // for everyone not running the site on the machine it names.
+          callback_url: `${window.location.origin}/#paystack-success`,
           metadata: {
             customer_name: name || 'Patron',
             phone: phone,
@@ -126,7 +139,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
           const matched = allBookings.filter(
             b => 
               (b.email && user.email && b.email.toLowerCase() === user.email.toLowerCase()) || 
-              (b.phone && user.phone && b.phone.replace(/[\s-+]/g, '') === user.phone.replace(/[\s-+]/g, ''))
+              samePhone(b.phone, user.phone)
           );
           if (matched.length > 0) {
             // Sort by createdAt descending to get the most recent one
@@ -135,6 +148,11 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
             if (latest.address) setAddress(latest.address);
             if (latest.suburb) setSuburb(latest.suburb);
             if (latest.city) setCity(latest.city);
+            // The pin travels with the address it was placed for. A patron
+            // booking the same pickup again should not have to aim it twice.
+            setPickupPin(latest.pickupCoords ?? null);
+          } else {
+            setPickupPin(null);
           }
         } else {
           setLoggedInUser(null);
@@ -144,6 +162,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
           setAddress('');
           setSuburb('');
           setCity('');
+          setPickupPin(null);
         }
       } catch (e) {
         console.warn('Could not read existing session state for booking prefill', e);
@@ -194,6 +213,21 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
       return;
     }
 
+    // The confirmation — and with it the link that sets the portal password —
+    // is emailed, so a booking without an address to send it to leaves the
+    // patron with no way into their own tracking terminal.
+    if (!email.trim()) {
+      alert('Please add your email address. Your booking receipt and portal setup link are sent there.');
+      return;
+    }
+
+    // The courier rings this number from the doorstep, so a partial one is
+    // worse than none: it looks like a contact and reaches nobody.
+    if (!isCompletePhone(phone)) {
+      alert(PHONE_LENGTH_MESSAGE);
+      return;
+    }
+
     if (paymentMethod === 'Wallet' && walletBalance < estimatedPrice) {
       alert(`Insufficient wallet balance (₵${walletBalance}.00 GHS). Please select Mobile Money or Card to complete your booking.`);
       return;
@@ -212,7 +246,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
     const newBooking: Booking = {
       id: 'FFC-' + Math.floor(100000 + Math.random() * 900000),
       name,
-      email: email || 'patron@freshfold.com',
+      email: email.trim(),
       phone,
       serviceType: service,
       pickupDate,
@@ -223,13 +257,14 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
       address,
       city: city || 'Boutique Care District',
       suburb,
+      // Optional by design. The server falls back to a pin derived from the
+      // address when there is none, and refuses one outside the service area.
+      pickupCoords: pickupPin ?? undefined,
       status: 'Scheduled',
       createdAt: new Date().toISOString(),
       paymentStatus: isNowPaid ? 'Paid' : (paymentMethod === 'Pay on Pickup' ? 'Pay on Pickup' : 'Pending'),
       paymentMethod,
       amount: estimatedPrice,
-      momoNumber: (paymentMethod.includes('MoMo') || paymentMethod.includes('Cash') || paymentMethod.includes('AT')) ? (momoNumber || phone) : undefined,
-      momoNetwork: paymentMethod === 'MTN MoMo' ? 'MTN' : paymentMethod === 'Telecel Cash' ? 'Telecel' : paymentMethod === 'AT Money' ? 'AT' : undefined,
       transactionRef: finalTxnRef,
       paidAt: isNowPaid ? new Date().toISOString() : undefined
     };
@@ -249,10 +284,13 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
     setIsSuccess(true);
   };
 
-  // Compile WhatsApp redirect URL based on form data
+  // Compile WhatsApp redirect URL based on form data.
+  //
+  // A note to the desk about the order, and nothing more. The portal setup link
+  // used to ride along in this message; it is emailed now, so it no longer sits
+  // in a chat thread that anyone holding the phone can scroll back through.
   const triggerWhatsAppRedirect = () => {
     if (!createdBooking) return;
-    const trackingLink = `${window.location.origin}${window.location.pathname}#portal?bookingId=${createdBooking.id}&setup=true`;
     const formatMsg = `Hi FreshFold Laundry Co.! I would like to confirm my premium clothing pickup:
 • Booking ID: ${createdBooking.id}
 • Patron: ${createdBooking.name}
@@ -261,8 +299,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
 • Scent: ${specialScent}
 • Delivery: ${createdBooking.deliveryDate}
 • Surcharges Estimate: ₵${estimatedPrice}.00 GHS
-• Address: ${createdBooking.address}, ${createdBooking.suburb}${createdBooking.riderNote ? `\n• Note for Rider: ${createdBooking.riderNote}` : ''}
-• Access Patron Portal to Setup password & Track live: ${trackingLink}`;
+• Address: ${createdBooking.address}, ${createdBooking.suburb}${createdBooking.riderNote ? `\n• Note for Rider: ${createdBooking.riderNote}` : ''}`;
     
     const encoded = encodeURIComponent(formatMsg);
     window.open(`https://wa.me/233257880675?text=${encoded}`, '_blank');
@@ -365,19 +402,22 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                         <input
                           type="tel"
                           required
+                          inputMode="numeric"
+                          maxLength={PHONE_DIGITS}
                           value={phone}
-                          onChange={(e) => setPhone(e.target.value)}
-                          placeholder="e.g. +233 000 000 000"
+                          onChange={(e) => setPhone(limitPhoneInput(e.target.value))}
+                          placeholder={`${PHONE_DIGITS} digits — e.g. 0244000000`}
                           className="w-full bg-[#161616] text-white placeholder-[#8E9299]/50 rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors"
                         />
                       </div>
                     </div>
                     <div>
                       <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
-                        Email Address
+                        Email Address (for Receipt & Portal Password Link) *
                       </label>
                       <input
                         type="email"
+                        required
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
                         placeholder="e.g. PCobbold@yahoo.com"
@@ -433,6 +473,11 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                     />
                   </div>
                 </div>
+
+                {/* The doorstep itself, which the typed address above cannot
+                    give us: a hostel block and room number is something no
+                    geocoder knows. */}
+                <PickupPinField value={pickupPin} onChange={setPickupPin} suburb={suburb} />
 
                 {/* Short note for the rider */}
                 <div>
@@ -573,7 +618,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                 </div>
 
                 {/* Payment Option Selector Grid */}
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                   <button
                     type="button"
                     onClick={() => { setPaymentMethod('Paystack'); setIsPaid(false); }}
@@ -590,38 +635,6 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                     <div>
                       <p className="font-bold text-[11px] leading-tight text-emerald-400">Paystack</p>
                       <p className="text-[8.5px] text-stone-400 font-mono">MoMo & Cards</p>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => { setPaymentMethod('MTN MoMo'); setIsPaid(false); }}
-                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                      paymentMethod === 'MTN MoMo' || paymentMethod === 'Telecel Cash' || paymentMethod === 'AT Money'
-                        ? 'bg-brand-sage/15 border-brand-sage text-white'
-                        : 'bg-[#161616] border-white/10 text-stone-400 hover:text-white'
-                    }`}
-                  >
-                    <Smartphone className="w-4 h-4 text-brand-sage mb-1.5" />
-                    <div>
-                      <p className="font-bold text-[11px] leading-tight">Mobile Money</p>
-                      <p className="text-[8.5px] text-stone-400 font-mono">Direct MoMo</p>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => { setPaymentMethod('Card'); setIsPaid(false); }}
-                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                      paymentMethod === 'Card'
-                        ? 'bg-brand-sage/15 border-brand-sage text-white'
-                        : 'bg-[#161616] border-white/10 text-stone-400 hover:text-white'
-                    }`}
-                  >
-                    <CreditCard className="w-4 h-4 text-brand-sage mb-1.5" />
-                    <div>
-                      <p className="font-bold text-[11px] leading-tight">Bank Card</p>
-                      <p className="text-[8.5px] text-stone-400 font-mono">Visa / Mastercard</p>
                     </div>
                   </button>
 
@@ -739,127 +752,6 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
 
 
                 {/* Sub-Panel for Mobile Money Details */}
-                {(paymentMethod === 'MTN MoMo' || paymentMethod === 'Telecel Cash' || paymentMethod === 'AT Money') && (
-                  <div className="bg-[#161616] p-4 rounded-xl border border-white/10 space-y-3">
-                    <div className="flex justify-between items-center">
-                      <span className="text-[11px] font-semibold text-stone-300 uppercase tracking-wider">
-                        Select MoMo Provider Network:
-                      </span>
-                      <div className="flex gap-1.5">
-                        {(['MTN MoMo', 'Telecel Cash', 'AT Money'] as const).map(net => (
-                          <button
-                            key={net}
-                            type="button"
-                            onClick={() => setPaymentMethod(net)}
-                            className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold transition-all border ${
-                              paymentMethod === net
-                                ? 'bg-brand-gold text-black border-brand-gold'
-                                : 'bg-black/50 text-stone-400 border-white/10 hover:text-white'
-                            }`}
-                          >
-                            {net.split(' ')[0]}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        value={momoNumber || phone}
-                        onChange={(e) => setMomoNumber(e.target.value)}
-                        placeholder="e.g. 0244 123 456"
-                        className="flex-1 bg-black text-white text-xs p-3 rounded-xl border border-white/10 focus:border-brand-sage focus:outline-none font-mono"
-                      />
-                      {!isPaid ? (
-                        <button
-                          type="button"
-                          onClick={() => setMomoPromptActive(true)}
-                          className="px-4 py-3 bg-brand-gold text-black rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-yellow-400 transition-all flex items-center gap-1.5 shrink-0"
-                        >
-                          <Smartphone className="w-3.5 h-3.5" />
-                          <span>Trigger USSD Prompt</span>
-                        </button>
-                      ) : (
-                        <div className="px-4 py-3 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 shrink-0">
-                          <CheckCircle2 className="w-4 h-4" />
-                          <span>Payment Approved</span>
-                        </div>
-                      )}
-                    </div>
-                    <p className="text-[10px] text-stone-400 font-sans">
-                      Click <strong className="text-brand-gold">Trigger USSD Prompt</strong> to simulate receiving the Mobile Money authorization pop-up on your phone.
-                    </p>
-                  </div>
-                )}
-
-                {/* Sub-Panel for Card Details */}
-                {paymentMethod === 'Card' && (
-                  <div className="bg-[#161616] p-4 rounded-xl border border-white/10 space-y-3">
-                    <div className="space-y-2">
-                      <label className="block text-[10px] font-semibold uppercase text-stone-400 tracking-wider">
-                        Card Number (Visa / Mastercard)
-                      </label>
-                      <div className="relative">
-                        <input
-                          type="text"
-                          value={cardNumber}
-                          onChange={(e) => setCardNumber(e.target.value)}
-                          placeholder="4532 •••• •••• 8892"
-                          className="w-full bg-black text-white text-xs p-3 pl-9 rounded-xl border border-white/10 focus:border-brand-sage focus:outline-none font-mono"
-                        />
-                        <CreditCard className="w-4 h-4 text-stone-500 absolute left-3 top-3.5" />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-[10px] font-semibold uppercase text-stone-400 tracking-wider mb-1">
-                          Expiry
-                        </label>
-                        <input
-                          type="text"
-                          value={cardExpiry}
-                          onChange={(e) => setCardExpiry(e.target.value)}
-                          placeholder="MM/YY"
-                          className="w-full bg-black text-white text-xs p-3 rounded-xl border border-white/10 focus:border-brand-sage focus:outline-none font-mono"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-semibold uppercase text-stone-400 tracking-wider mb-1">
-                          CVV Security
-                        </label>
-                        <input
-                          type="password"
-                          maxLength={3}
-                          value={cardCvv}
-                          onChange={(e) => setCardCvv(e.target.value)}
-                          placeholder="•••"
-                          className="w-full bg-black text-white text-xs p-3 rounded-xl border border-white/10 focus:border-brand-sage focus:outline-none font-mono"
-                        />
-                      </div>
-                    </div>
-                    {!isPaid ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsPaid(true);
-                          setTransactionRef('TXN-CARD-' + Math.floor(100000 + Math.random() * 900000));
-                        }}
-                        className="w-full py-2.5 bg-brand-sage text-white rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-brand-sage-light transition-all flex items-center justify-center gap-1.5"
-                      >
-                        <Lock className="w-3.5 h-3.5" />
-                        <span>Authorize Card Payment ₵{estimatedPrice}.00 GHS</span>
-                      </button>
-                    ) : (
-                      <div className="p-2.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-xl text-xs font-bold uppercase tracking-wider text-center flex items-center justify-center gap-1.5">
-                        <CheckCircle2 className="w-4 h-4" />
-                        <span>Card Payment Authorized ({transactionRef})</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Sub-Panel for Wallet */}
                 {paymentMethod === 'Wallet' && (
                   <div className="bg-[#161616] p-4 rounded-xl border border-brand-gold/30 space-y-2 text-left">
                     <div className="flex justify-between items-center text-xs">
@@ -877,75 +769,6 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                 )}
               </div>
 
-              {/* Interactive MoMo USSD Prompt Modal Overlay */}
-              <AnimatePresence>
-                {momoPromptActive && (
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.9 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.9 }}
-                    className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-md flex items-center justify-center p-4"
-                  >
-                    <div className="bg-[#1c1c1c] border-2 border-brand-gold rounded-2xl max-w-sm w-full p-6 text-left space-y-4 shadow-2xl relative">
-                      <div className="flex items-center gap-3 border-b border-white/10 pb-3">
-                        <div className="w-10 h-10 rounded-full bg-brand-gold/20 flex items-center justify-center text-brand-gold font-bold">
-                          📲
-                        </div>
-                        <div>
-                          <p className="font-mono text-[10px] text-brand-gold uppercase tracking-wider font-extrabold">Simulated USSD Prompt (*170#)</p>
-                          <p className="font-bold text-white text-sm">{paymentMethod} Payment Request</p>
-                        </div>
-                      </div>
-
-                      <div className="bg-black/80 p-3 rounded-xl border border-white/10 text-xs font-mono text-stone-300 space-y-1.5">
-                        <p className="text-brand-sage font-bold">FreshFold Garment Concierge</p>
-                        <p>Merchant ID: 882910</p>
-                        <p>Amount: <strong className="text-brand-gold">₵{estimatedPrice}.00 GHS</strong></p>
-                        <p>Subscriber: {momoNumber || phone || '0244123456'}</p>
-                      </div>
-
-                      <div className="space-y-1.5">
-                        <label className="block text-[11px] text-stone-400 font-semibold">
-                          Enter 4-Digit Mobile Money PIN to Approve:
-                        </label>
-                        <input
-                          type="password"
-                          maxLength={4}
-                          value={momoPin}
-                          onChange={(e) => setMomoPin(e.target.value)}
-                          placeholder="••••"
-                          className="w-full bg-black text-brand-gold text-center text-lg tracking-widest p-2.5 rounded-xl border border-brand-gold/40 focus:outline-none font-mono"
-                        />
-                      </div>
-
-                      <div className="flex gap-2 pt-2">
-                        <button
-                          type="button"
-                          onClick={() => setMomoPromptActive(false)}
-                          className="flex-1 py-2.5 bg-white/10 text-stone-300 rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-white/20"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (!momoPin || momoPin.length < 4) {
-                              alert('Please enter your 4-digit MoMo PIN to simulate approval.');
-                              return;
-                            }
-                            setIsPaid(true);
-                            setTransactionRef('TXN-MOMO-' + Math.floor(100000 + Math.random() * 900000));
-                            setMomoPromptActive(false);
-                          }}
-                          className="flex-1 py-2.5 bg-brand-gold text-black rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-yellow-400 font-mono"
-                        >
-                          Approve & Pay
-                        </button>
-                      </div>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
 
               {/* Cost Preview estimation panel */}
               <div className="p-4 bg-[#161616] rounded-xl border border-white/10 text-left flex justify-between items-center">
@@ -1011,7 +834,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                 </p>
               </div>
 
-              {/* Booking receipt simulation box - Curved and styled */}
+              {/* Booking receipt */}
               <div className="max-w-md mx-auto bg-[#161616] p-5 rounded-2xl border border-white/10 text-left text-xs space-y-2.5">
                 <div className="flex justify-between border-b border-white/10 pb-2 text-[10px] text-stone-500 font-mono">
                   <span>ORDER LEDGER REPORT</span>
@@ -1064,20 +887,29 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                 <span className="font-mono text-[9px] text-brand-gold uppercase tracking-widest block font-bold">DIGITAL CLIENT PORTAL DISPATCH</span>
                 <div className="text-[#8E9299] font-light leading-relaxed text-[11px]">
                   {loggedInUser ? (
-                    <p>This pickup order has been saved directly under your linked patron profile. You can view, track, or simulate courier dispatch telemetry instantly:</p>
+                    <p>This pickup order is saved under your patron profile. You can view and track it here:</p>
                   ) : (
-                    <p>A secure, personalized tracking URL has been formulated for your phone or email. Tap below to head directly to the portal setup screen and establish your logging password:</p>
+                    /* No shortcut into the password screen from here: the link
+                       in the email carries a single-use token, and it is the
+                       only thing that opens one. A button on this panel could
+                       only be a booking id in a URL, which is what anybody
+                       could have typed. */
+                    <p>
+                      Your receipt and a secure link for setting your portal password are on their way to{' '}
+                      <strong className="text-brand-sage font-mono">{createdBooking?.email}</strong>. Open it from
+                      your inbox to choose a password and follow your courier live.
+                    </p>
                   )}
                 </div>
                 <button
                   onClick={() => {
                     setIsSuccess(false);
                     onClose();
-                    window.location.hash = loggedInUser ? '#portal' : `#portal?bookingId=${createdBooking?.id}&setup=true`;
+                    window.location.hash = '#portal';
                   }}
                   className="w-full mt-1 px-4 py-2.5 bg-brand-sage hover:bg-brand-sage-light text-white text-[10px] font-bold uppercase tracking-widest rounded-xl flex items-center justify-center space-x-1 transition-all cursor-pointer border border-white/5"
                 >
-                  <span>{loggedInUser ? 'Go directly to active portal' : 'Activate Portal & Choose Password'}</span>
+                  <span>{loggedInUser ? 'Go directly to active portal' : 'Open the patron portal'}</span>
                 </button>
               </div>
 

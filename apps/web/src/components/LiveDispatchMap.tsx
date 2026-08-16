@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   APIProvider,
   Map,
@@ -14,8 +14,10 @@ import {
   coordsForAddress,
   type BookingRiderView,
   type Coords,
-  type Landmark
+  type Landmark,
+  type RouteLeg
 } from '@freshfold/core';
+import * as store from '../services/store';
 
 interface LiveDispatchMapProps {
   clientSuburb: string;
@@ -30,9 +32,8 @@ interface LiveDispatchMapProps {
    */
   clientCoords?: Coords;
   /**
-   * Live telemetry from the rider's phone. When present the courier marker is
-   * the real courier; without it the marker falls back to the scripted
-   * animation, which is what the demo shows when nobody is on the road.
+   * Live telemetry from the rider's phone. Without it there is no courier
+   * marker, because there is no courier on the road.
    */
   rider?: BookingRiderView;
 }
@@ -44,6 +45,21 @@ const API_KEY =
   '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
 
+/**
+ * The cloud Map ID.
+ *
+ * `AdvancedMarker` — every pin on this map — requires one. `DEMO_MAP_ID` is
+ * Google's sandbox value: it renders, and it warns in the console on every
+ * load, is explicitly not for production, and carries none of the styling a
+ * real Map ID configured in the cloud console would. Set
+ * `VITE_GOOGLE_MAPS_MAP_ID` and the map uses yours; leave it and the demo
+ * still works, which is what a fresh checkout needs.
+ */
+const MAP_ID =
+  (import.meta as any).env?.VITE_GOOGLE_MAPS_MAP_ID ||
+  process.env.GOOGLE_MAPS_MAP_ID ||
+  'DEMO_MAP_ID';
+
 // The landmark table, suburb anchors and hub all come from @freshfold/core, so
 // the pin the customer watches and the pin the rider navigates to are the same
 // point derived the same way.
@@ -51,75 +67,90 @@ const landmarks = LANDMARKS;
 const suburbCoords = SUBURB_COORDS;
 const laundryHub = LAUNDRY_HUB;
 
-// Define road route path coordinates from Bomso HQ to each suburb
-const getRoadRoutePath = (suburbName: string): { lat: number; lng: number }[] => {
-  const start = { lat: 6.6852, lng: -1.5815 }; // Bomso HQ
-  const gate = { lat: 6.6811, lng: -1.5744 }; // KNUST Main Gate
-  const commercialArea = { lat: 6.6782, lng: -1.5711 }; // Commercial Area
-  const adminRoundabout = { lat: 6.6728, lng: -1.5662 }; // Admin Roundabout
-  const ayeduaseGate = { lat: 6.6695, lng: -1.5585 }; // Ayeduase Gate Junction
-  const ayeduaseCenter = { lat: 6.6685, lng: -1.5524 }; // Ayeduase (Evandy)
+/** Dash pattern for a line that is an estimate rather than a road. */
+const DASH_SYMBOL: google.maps.IconSequence[] = [
+  {
+    icon: { path: 'M 0,-1 0,1', strokeOpacity: 0.9, scale: 3 },
+    offset: '0',
+    repeat: '12px',
+  },
+];
 
-  const normalized = (suburbName || '').toLowerCase();
-
-  if (normalized.includes('bomso')) {
-    return [start, { lat: 6.6845, lng: -1.5802 }];
-  }
-  if (normalized.includes('ayeduase')) {
-    return [start, gate, commercialArea, adminRoundabout, ayeduaseGate, ayeduaseCenter];
-  }
-  if (normalized.includes('kotei')) {
-    return [start, gate, commercialArea, adminRoundabout, ayeduaseGate, ayeduaseCenter, { lat: 6.6625, lng: -1.5518 }, { lat: 6.6565, lng: -1.5515 }];
-  }
-  if (normalized.includes('deduako')) {
-    return [start, gate, commercialArea, adminRoundabout, ayeduaseGate, ayeduaseCenter, { lat: 6.6625, lng: -1.5518 }, { lat: 6.6565, lng: -1.5515 }, { lat: 6.6515, lng: -1.5621 }];
-  }
-  if (normalized.includes('boadi')) {
-    return [start, gate, { lat: 6.6805, lng: -1.5482 }, { lat: 6.6815, lng: -1.5412 }];
-  }
-  if (normalized.includes('campus') || normalized.includes('brunei') || normalized.includes('unity') || normalized.includes('katanga') || normalized.includes('queens')) {
-    return [start, gate, commercialArea, adminRoundabout];
-  }
-
-  return [start, gate, commercialArea, adminRoundabout, ayeduaseGate, ayeduaseCenter];
-};
-
-// Route Polyline Helper Component using Google Maps API
-function RoutePolyline({ path }: { path: { lat: number; lng: number }[] }) {
+/**
+ * The route line.
+ *
+ * One `Polyline` for the life of the map, with its path and its styling swapped
+ * on it. What this did before was list the path array in its dependencies — and
+ * that array was rebuilt on every render, so every five-second poll tore the
+ * line off the map and constructed a new one. Visible as a flicker, and a
+ * steady drip of garbage on a dashboard that is left open all day.
+ *
+ * `dashed` is the same distinction the two phone apps already draw: a solid
+ * line is a claim about which way the courier is coming, and until the routing
+ * engine has answered there is no such claim to make.
+ */
+function RoutePolyline({
+  path,
+  dashed,
+}: {
+  path: { lat: number; lng: number }[];
+  dashed: boolean;
+}) {
   const map = useMap();
   const mapsLib = useMapsLibrary('maps');
   const polylineRef = useRef<google.maps.Polyline | null>(null);
 
   useEffect(() => {
-    if (!map || !mapsLib || path.length < 2) return;
-
-    if (polylineRef.current) {
-      polylineRef.current.setMap(null);
-    }
+    if (!map || !mapsLib) return;
 
     const polyline = new mapsLib.Polyline({
-      path: path,
       geodesic: true,
       strokeColor: '#c5a880',
-      strokeOpacity: 0.85,
-      strokeWeight: 3,
-      map: map,
+      map,
     });
-
     polylineRef.current = polyline;
 
     return () => {
-      if (polylineRef.current) {
-        polylineRef.current.setMap(null);
-      }
+      polyline.setMap(null);
+      polylineRef.current = null;
     };
-  }, [map, mapsLib, path]);
+  }, [map, mapsLib]);
+
+  useEffect(() => {
+    if (path.length < 2) return;
+    polylineRef.current?.setPath(path);
+  }, [path]);
+
+  useEffect(() => {
+    // A dashed line in the Maps JS API is a transparent stroke wearing a
+    // repeating symbol; there is no dash array.
+    polylineRef.current?.setOptions(
+      dashed
+        ? { strokeOpacity: 0, strokeWeight: 3, icons: DASH_SYMBOL }
+        : { strokeOpacity: 0.85, strokeWeight: 3, icons: null }
+    );
+  }, [dashed]);
 
   return null;
 }
 
-// Map Auto Fit Bounds Helper Component
-function MapFitBounds({ bounds }: { bounds: { lat: number; lng: number }[] }) {
+/**
+ * Frames the job once, then gets out of the way.
+ *
+ * `fitKey` changes when the map is showing a different job, or when the real
+ * road arrives to replace the stand-in — the two moments where re-framing is
+ * what the viewer wants. It deliberately does not change as the courier moves.
+ * This used to depend on the bounds array itself, which was a fresh array on
+ * every render, so `fitBounds` ran on every poll and threw away whatever the
+ * supervisor had just zoomed into.
+ */
+function MapFitBounds({
+  bounds,
+  fitKey,
+}: {
+  bounds: { lat: number; lng: number }[];
+  fitKey: string;
+}) {
   const map = useMap();
 
   useEffect(() => {
@@ -131,7 +162,9 @@ function MapFitBounds({ bounds }: { bounds: { lat: number; lng: number }[] }) {
     } catch (e) {
       // ignore fit bounds error on initialization
     }
-  }, [map, bounds]);
+    // `bounds` is read on purpose without being a trigger — see above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, fitKey]);
 
   return null;
 }
@@ -190,75 +223,100 @@ export default function LiveDispatchMap({
     return coordsForAddress(clientAddress, matchedKey ?? 'Ayeduase');
   };
 
-  const clientPos = getClientPosition();
-  const rawPath = getRoadRoutePath(clientSuburb);
-  
-  // Ensure path ends at exact clientPos
-  const pathPoints = [...rawPath];
-  const lastPoint = pathPoints[pathPoints.length - 1];
-  if (!lastPoint || lastPoint.lat !== clientPos.lat || lastPoint.lng !== clientPos.lng) {
-    pathPoints.push(clientPos);
-  }
+  // Memoised on what it is derived from, so the pin is one object for as long
+  // as the job is one job. Everything below keys off its identity.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const clientPos = useMemo(getClientPosition, [
+    clientCoords?.lat,
+    clientCoords?.lng,
+    clientAddress,
+    clientSuburb,
+  ]);
 
-  // Courier location state for live animation
-  const [courierPos, setCourierPos] = useState<{ lat: number; lng: number }>(laundryHub);
+  /**
+   * The road, from the dispatch server.
+   *
+   * What stood here was `getRoadRoutePath`: a hand-written list of waypoints
+   * per suburb — HQ, KNUST Main Gate, Commercial Area, Admin Roundabout — that
+   * bent like a road but knew nothing about the actual pickup pin, and had to
+   * be extended by hand for every new suburb. The server now asks Google for
+   * the real geometry and gives the same answer to the courier's console and
+   * the customer's tracking map, so all three draw one line.
+   */
+  const [route, setRoute] = useState<RouteLeg | null>(null);
 
-  // Live Courier Animation along path.
-  //
-  // Only runs when there is no real rider on the job. Once the companion app
-  // starts reporting position, `rider.coords` is the truth and interpolating
-  // along a guessed route would only fight it.
+  // Stable identity, for the same reason `clientPos` has one: `rider` is a new
+  // object on every poll.
+  const routeOrigin = useMemo(
+    () => rider?.coords ?? laundryHub,
+    [rider?.coords?.lat, rider?.coords?.lng]
+  );
+
   useEffect(() => {
-    if (rider?.coords) {
-      setCourierPos(rider.coords);
-      return;
+    let cancelled = false;
+
+    store.api
+      .getDirections(routeOrigin, clientPos)
+      .then((next) => {
+        if (!cancelled) setRoute(next);
+      })
+      .catch(() => {
+        /* Falls back to the straight line below. */
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // Re-routes when the job moves or the courier does, rounded so a metre of
+    // GPS jitter is not a new request.
+  }, [
+    clientPos.lat.toFixed(4),
+    clientPos.lng.toFixed(4),
+    routeOrigin.lat.toFixed(3),
+    routeOrigin.lng.toFixed(3),
+  ]);
+
+  /**
+   * Whether the line on screen is a road or a guess.
+   *
+   * The server flags its own straight-line fallback, and until the first answer
+   * arrives there is nothing but a guess. Both are drawn dashed — the same
+   * distinction the rider console and the customer's phone already make.
+   */
+  const isRoad = route?.source === 'roads';
+
+  const pathPoints = useMemo(() => {
+    const raw = route
+      ? route.coordinates.map((point) => ({ lat: point.lat, lng: point.lng }))
+      : // The straight line from wherever the courier actually is. The canned
+        // waypoint table that used to fill this gap always began at Bomso HQ,
+        // so a courier already halfway to Kotei was drawn setting off from the
+        // hub — a route bending convincingly through junctions nobody was at.
+        [routeOrigin];
+
+    // Ensure path ends at exact clientPos
+    const last = raw[raw.length - 1];
+    if (!last || last.lat !== clientPos.lat || last.lng !== clientPos.lng) {
+      return [...raw, clientPos];
     }
+    return raw;
+  }, [route, routeOrigin, clientPos]);
 
-    let progress = 0;
-    switch (bookingStatus) {
-      case 'Scheduled':
-        progress = 0.05;
-        break;
-      case 'Collecting':
-        progress = 0.45;
-        break;
-      case 'In Care':
-        progress = 0.90;
-        break;
-      case 'Delivered':
-        progress = 1.0;
-        break;
-      default:
-        progress = 0.5;
-    }
+  /**
+   * When re-framing is welcome: a different job on screen, or the real road
+   * landing in place of the stand-in. Not every time the courier moves.
+   */
+  const fitKey = `${bookingId}:${clientPos.lat},${clientPos.lng}:${route ? 'road' : 'pending'}`;
 
-    let step = 0;
-    const interval = setInterval(() => {
-      const wiggleLat = Math.sin(step) * 0.00015;
-      const wiggleLng = Math.cos(step) * 0.00015;
-
-      if (pathPoints.length < 2) {
-        setCourierPos(laundryHub);
-        return;
-      }
-
-      const segmentCount = pathPoints.length - 1;
-      const rawIndex = progress * segmentCount;
-      const segmentIndex = Math.min(Math.floor(rawIndex), segmentCount - 1);
-      const segmentProgress = rawIndex - segmentIndex;
-
-      const p1 = pathPoints[segmentIndex];
-      const p2 = pathPoints[segmentIndex + 1];
-
-      const interpolatedLat = p1.lat + (p2.lat - p1.lat) * segmentProgress + wiggleLat;
-      const interpolatedLng = p1.lng + (p2.lng - p1.lng) * segmentProgress + wiggleLng;
-
-      setCourierPos({ lat: interpolatedLat, lng: interpolatedLng });
-      step += 0.2;
-    }, 2000);
-
-    return () => clearInterval(interval);
-  }, [bookingStatus, clientSuburb, rider?.coords?.lat, rider?.coords?.lng]);
+  /**
+   * Where the courier is.
+   *
+   * Only ever their reported position. What stood here interpolated a marker
+   * along the guessed route with a sine wiggle on it whenever no rider was
+   * on the job — a courier riding up the road on a map, with nobody assigned
+   * and nobody moving.
+   */
+  const courierPos = rider?.coords ?? null;
 
   // If Google Maps API Key is missing, render Splash Screen
   if (!hasValidKey) {
@@ -351,16 +409,15 @@ export default function LiveDispatchMap({
           <Map
             defaultCenter={{ lat: 6.6710, lng: -1.5620 }}
             defaultZoom={14}
-            mapId="DEMO_MAP_ID"
-            internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
+            mapId={MAP_ID}
             style={{ width: '100%', height: '100%' }}
             colorScheme={mapTheme === 'dark' ? 'DARK' : 'LIGHT'}
             gestureHandling="greedy"
             disableDefaultUI={true}
           >
             {/* Draw Route Polyline */}
-            <RoutePolyline path={pathPoints} />
-            <MapFitBounds bounds={pathPoints} />
+            <RoutePolyline path={pathPoints} dashed={!isRoad} />
+            <MapFitBounds bounds={pathPoints} fitKey={fitKey} />
 
             {/* FreshFold HQ Marker */}
             <AdvancedMarker position={laundryHub} title={laundryHub.name}>
@@ -397,8 +454,27 @@ export default function LiveDispatchMap({
               </div>
             </AdvancedMarker>
 
-            {/* Live Courier Runner Marker */}
-            <AdvancedMarker position={courierPos} title="FreshFold Courier Runner">
+            {/* Live Courier Runner Marker. Named, when there is a courier to
+                name — the other two apps both label this pin with the person
+                riding it, and "FreshFold Courier Runner" told the customer
+                nothing they could check at the door. */}
+            {!!courierPos && (
+            <AdvancedMarker
+              position={courierPos}
+              title={
+                rider
+                  ? [
+                      rider.name?.trim() || 'Your courier',
+                      [rider.vehicle?.trim(), rider.vehiclePlate?.trim()]
+                        .filter(Boolean)
+                        .join(' · '),
+                      rider.etaMinutes !== undefined ? `${rider.etaMinutes} min away` : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' — ')
+                  : 'Courier not yet assigned'
+              }
+            >
               <div className="relative flex items-center justify-center">
                 <div className="absolute w-10 h-10 rounded-full bg-[#c5a880]/30 animate-ping"></div>
                 <div className="w-8 h-8 bg-[#c5a880] border-2 border-[#161616] rounded-full flex items-center justify-center shadow-2xl text-black">
@@ -406,6 +482,7 @@ export default function LiveDispatchMap({
                 </div>
               </div>
             </AdvancedMarker>
+            )}
 
             {/* Interactive Student Hostels & Landmarks */}
             {landmarks.map((mark, i) => {
@@ -471,9 +548,14 @@ export default function LiveDispatchMap({
               </div>
               <span className="text-stone-300 font-light">Hostels (Evandy, Brunei, etc)</span>
             </div>
+            {/* Says what is actually on screen. The old caption promised a
+                dashed line for a polyline that was always solid, whether the
+                routing engine had answered or not. */}
             <div className="flex items-center gap-2">
-              <span className="text-xs text-[#c5a880]">✦</span>
-              <span className="text-[9px] text-[#8E9299] font-mono">Dashed Line = Dispatch Route</span>
+              <span className="text-xs text-[#c5a880]">{isRoad ? '━' : '┄'}</span>
+              <span className="text-[9px] text-[#8E9299] font-mono">
+                {isRoad ? 'Solid Line = Road Route' : 'Dashed Line = Direct Estimate'}
+              </span>
             </div>
           </div>
         </div>

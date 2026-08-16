@@ -6,6 +6,7 @@
 import { MapPin, Navigation } from 'lucide-react-native';
 import React from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NavigationTarget } from '../store/AppStore';
 import { colors, formatCedis, radius, shadow, tints } from '../theme';
 import { Order, RiderState } from '../types';
@@ -41,12 +42,16 @@ export default function MapFallback({
   onAcceptOrder,
   notice,
 }: MapFallbackProps) {
+  // This panel stands in for a full-bleed map, so it owns the same edge-to-edge
+  // area and has to clear the notch itself.
+  const insets = useSafeAreaInsets();
+
   const visibleOrders = orders.filter(
     (o) => o.status !== 'delivered' && o.status !== 'cancelled'
   );
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: insets.top + 14 }]}>
       <View style={styles.notice}>
         <Text style={styles.noticeTitle}>Map preview</Text>
         <Text style={styles.noticeBody}>
@@ -126,7 +131,8 @@ export default function MapFallback({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.bgLinen, padding: 14, gap: 10, paddingTop: 64 },
+  // `paddingTop` is applied inline — it depends on the device's safe-area inset.
+  container: { flex: 1, backgroundColor: colors.bgLinen, padding: 14, gap: 10 },
   notice: {
     backgroundColor: colors.cardPure,
     borderRadius: radius.lg,

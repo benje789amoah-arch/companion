@@ -32,7 +32,16 @@ export default function Contact() {
       alert('Please fill out your name and the inquiry text.');
       return;
     }
-    // Simulate email dispatch
+    // Hands the enquiry to the visitor's own mail client. It used to do
+    // nothing at all and then say it had been "routed to our Senior Artisan".
+    const subject = encodeURIComponent(`Enquiry from ${inquiryName}`);
+    const body = encodeURIComponent(
+      `${inquiryMsg}
+
+— ${inquiryName}${inquiryEmail ? ` (${inquiryEmail})` : ''}`
+    );
+    window.location.href = `mailto:concierge@freshfold.com?subject=${subject}&body=${body}`;
+
     setFormSent(true);
     setTimeout(() => {
       setInquiryName('');
@@ -214,7 +223,7 @@ export default function Contact() {
                 {formSent ? (
                   <div className="flex items-center space-x-2 text-brand-sage text-xs">
                     <CheckCircle className="w-4 h-4" />
-                    <span>Inquiry logged and routed to our Senior Artisan!</span>
+                    <span>Your mail app is open with the enquiry ready to send.</span>
                   </div>
                 ) : (
                   <button

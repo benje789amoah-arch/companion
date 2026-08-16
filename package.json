@@ -11,7 +11,11 @@
     "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "npm run dev --workspace @freshfold/server",
     "dev:web": "npm run dev --workspace @freshfold/web",
+    "web": "npm run dev:web",
+    "server": "npm run dev:server",
     "mobile": "npm run start --workspace @freshfold/mobile",
+    "client": "npm run start --workspace @freshfold/client -- --port 8082",
+    "reset": "curl -X POST http://localhost:4000/api/reset",
     "build": "npm run build --workspace @freshfold/web && npm run build --workspace @freshfold/server",
     "start": "npm run start --workspace @freshfold/server",
     "lint": "npm run lint --workspaces --if-present"

@@ -5,13 +5,20 @@
 
 import { Router } from 'express';
 import {
+  PHONE_LENGTH_MESSAGE,
   applyBookingPatch,
   bookingToJob,
+  isCompletePhone,
+  isOutsideServiceArea,
   newJobId,
+  phoneDigits,
   type Booking,
 } from '@freshfold/core';
+import { accountForToken, bearerToken } from '../auth';
+import { consumeIncludedPickup, settleAccountByEmail } from '../membership';
+import { mailBookingConfirmation } from '../setup-links';
 import { store } from '../store';
-import { bookingView, findJob, notFound } from '../helpers';
+import { accountBlocked, bookingView, bookingViews, guard, notFound } from '../helpers';
 
 /**
  * The customer-facing half of the API — what the website reads and writes.
@@ -23,83 +30,215 @@ import { bookingView, findJob, notFound } from '../helpers';
  */
 export const bookingsRouter = Router();
 
-bookingsRouter.get('/', (req, res) => {
-  const email = typeof req.query.email === 'string' ? req.query.email.toLowerCase() : null;
+bookingsRouter.get(
+  '/',
+  guard(async (req, res) => {
+    const email = typeof req.query.email === 'string' ? req.query.email : null;
+    const jobs = await store.jobs.list({ email });
+    res.json(await bookingViews(jobs));
+  })
+);
 
-  const jobs = store
-    .read()
-    .jobs.filter((job) => !email || job.customer.email.toLowerCase() === email)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+bookingsRouter.get(
+  '/:id',
+  guard(async (req, res) => {
+    const job = await store.jobs.find(req.params.id);
+    if (!job) {
+      notFound(res, 'Booking');
+      return;
+    }
+    res.json(await bookingView(job));
+  })
+);
 
-  res.json(jobs.map(bookingView));
-});
+bookingsRouter.post(
+  '/',
+  guard(async (req, res) => {
+    const incoming = req.body as Booking;
+    if (!incoming || !incoming.name || !incoming.phone) {
+      res.status(400).json({ error: 'A booking needs at least a name and a phone number.' });
+      return;
+    }
 
-bookingsRouter.get('/:id', (req, res) => {
-  const job = findJob(req.params.id);
-  if (!job) return notFound(res, 'Booking');
-  res.json(bookingView(job));
-});
+    // The courier calls this number from the doorstep, so a short one is worse
+    // than no booking at all.
+    if (!isCompletePhone(incoming.phone)) {
+      res.status(400).json({ error: PHONE_LENGTH_MESSAGE });
+      return;
+    }
 
-bookingsRouter.post('/', (req, res) => {
-  const incoming = req.body as Booking;
-  if (!incoming || !incoming.name || !incoming.phone) {
-    return res.status(400).json({ error: 'A booking needs at least a name and a phone number.' });
-  }
+    // A pin the customer placed is what the courier navigates to, so one that
+    // lands outside Kumasi is refused rather than quietly swapped for a derived
+    // point the customer never saw — they placed it, they should be told.
+    if (incoming.pickupCoords && isOutsideServiceArea(incoming.pickupCoords)) {
+      res.status(400).json({ error: 'That pickup pin is outside the FreshFold service area.' });
+      return;
+    }
 
-  const booking: Booking = { ...incoming, id: incoming.id || newJobId() };
+    /**
+     * A suspended customer cannot book.
+     *
+     * Matched on the contact details in the form rather than on the session,
+     * which is the only thing that works: a blocked account's token resolves to
+     * nobody, so checking `holder` below would leave "sign out and book as a
+     * guest" as the whole of the bypass. Email or phone, because a new address
+     * on the same number is the other obvious way round.
+     *
+     * Somebody determined can still book under a number FreshFold has never
+     * seen — as any stranger can, that being what a booking form is. What this
+     * stops is a blocked account walking back in with its history, its saved
+     * details and its dispatch priority attached.
+     */
+    const contact = await store.accounts.findByEmailOrPhone(incoming.email ?? '', incoming.phone);
 
-  const job = store.mutate((db) => {
-    const existingIndex = db.jobs.findIndex((candidate) => candidate.id === booking.id);
-    const created = bookingToJob(booking);
+    if (contact?.blockedAt) {
+      accountBlocked(res);
+      return;
+    }
 
-    // POSTing an id that already exists is an upsert rather than an error:
-    // the web app replays its offline queue on reconnect.
-    if (existingIndex >= 0) db.jobs[existingIndex] = created;
-    else db.jobs.unshift(created);
+    // The membership is read off the session, never off the body.
+    //
+    // `planId` used to arrive from the client and go straight into the job,
+    // where `priorityForBooking` turns any non-empty value into `elite`. That
+    // made the top dispatch priority free for anyone who could edit a request —
+    // and a paying member who booked from a signed-out device got nothing. The
+    // token decides, and an unauthenticated booking simply has no plan.
+    const holder = await accountForToken(bearerToken(req));
 
-    db.notifications.unshift({
-      id: `notif-${created.id}`,
-      title: 'New Pickup Request',
-      body: `${created.customer.name} booked ${created.service.type} in ${created.location.suburb}.`,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      type: 'order',
-      orderId: created.id,
-      read: false,
+    /**
+     * A signed-in customer must have confirmed their address.
+     *
+     * Scoped to `holder` on purpose. Booking is open to guests — the website's
+     * whole funnel is a stranger filling in a form — so there is no account to
+     * check when no token arrives, and requiring one here would turn a
+     * verification feature into a registration wall.
+     *
+     * The consequence is worth stating plainly: an unconfirmed customer can
+     * still book by signing out first. What this actually buys is that the
+     * benefits attached to an account — the membership priority resolved just
+     * below, the order history, the saved addresses — cannot be reached from an
+     * address nobody has proven they own.
+     */
+    if (holder && !holder.emailVerified) {
+      res.status(403).json({
+        error:
+          'Confirm your email address before booking. Check your inbox for the link, ' +
+          'or request a new one from your account.',
+        code: 'EMAIL_UNVERIFIED',
+      });
+      return;
+    }
+
+    const member = holder ? await settleAccountByEmail(holder.email) : null;
+
+    const booking: Booking = {
+      ...incoming,
+      id: incoming.id || newJobId(),
+      phone: phoneDigits(incoming.phone),
+      momoNumber: incoming.momoNumber ? phoneDigits(incoming.momoNumber) : incoming.momoNumber,
+      planId: member?.plan?.planId,
+    };
+
+    const { job, replayed } = await store.tx(async (t) => {
+      // POSTing an id that already exists is an upsert rather than an error:
+      // the web app replays its offline queue on reconnect.
+      const existing = await t.jobs.find(booking.id, { lock: true });
+      const created = bookingToJob(booking);
+
+      // `bookingToJob` mints fresh hand-off codes every time it runs. On a
+      // replay that would invalidate the code the customer is already looking
+      // at — and which the courier is about to be shown — so the originals
+      // stand. The job's identity owns the codes, not the request that
+      // happened to arrive last.
+      //
+      // All three, not just the collection one: a replayed offline write used
+      // to roll the delivery code out from under a customer who had the order
+      // screen open, and the hub code has exactly the same problem.
+      if (existing) {
+        created.dispatch.pickupOtp = existing.dispatch.pickupOtp;
+        created.dispatch.dropoffOtp = existing.dispatch.dropoffOtp;
+        created.dispatch.deliveryOtp = existing.dispatch.deliveryOtp;
+      }
+
+      const saved = await t.jobs.upsert(created);
+
+      // A new booking under a membership spends one of the period's included
+      // pickups. Guarded by `existing` so a replayed offline write does not
+      // spend the allowance twice for one job.
+      if (!existing && member?.plan) {
+        await consumeIncludedPickup(t, member);
+      }
+
+      // After the job, never before: the notification carries a foreign key
+      // back to it.
+      await t.notifications.insert({
+        id: `notif-${saved.id}`,
+        title: 'New Pickup Request',
+        body: `${saved.customer.name} booked ${saved.service.type} in ${saved.location.suburb}.`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        type: 'order',
+        orderId: saved.id,
+        read: false,
+      });
+
+      return { job: saved, replayed: Boolean(existing) };
     });
 
-    return created;
-  });
+    const view = await bookingView(job);
+    res.status(201).json(view);
 
-  res.status(201).json(bookingView(job));
-});
+    // After the response, and never on a replay.
+    //
+    // Sent afterwards for the reason `/auth/register` sends its confirmation
+    // there: the booking is already saved and dispatchable, and putting
+    // Resend's ten-second budget in front of the 201 would risk a customer
+    // being told their pickup failed when it is on the board. Skipped on a
+    // replay because the offline queue re-POSTs a booking the customer has
+    // already been mailed about, and a second copy of the same confirmation
+    // reads like a second pickup.
+    if (!replayed) void mailBookingConfirmation(view);
+  })
+);
 
-bookingsRouter.patch('/:id', (req, res) => {
-  const patch = req.body as Partial<Booking>;
+bookingsRouter.patch(
+  '/:id',
+  guard(async (req, res) => {
+    // `planId` is dropped for the same reason POST derives it rather than
+    // accepting it: `applyBookingPatch` would write it onto the job, and a job
+    // with a plan is dispatched at elite priority. Membership is granted by
+    // /api/accounts/plan and nowhere else, so editing a booking cannot confer
+    // one on an order that was not booked under it.
+    const { planId: _ignored, ...patch } = req.body as Partial<Booking>;
 
-  const job = store.mutate((db) => {
-    const index = db.jobs.findIndex((candidate) => candidate.id === req.params.id);
-    if (index < 0) return null;
+    const job = await store.tx(async (t) => {
+      const existing = await t.jobs.find(req.params.id, { lock: true });
+      if (!existing) return null;
+      return t.jobs.upsert(applyBookingPatch(existing, patch));
+    });
 
-    const updated = applyBookingPatch(db.jobs[index], patch);
-    db.jobs[index] = updated;
-    return updated;
-  });
+    if (!job) {
+      notFound(res, 'Booking');
+      return;
+    }
+    res.json(await bookingView(job));
+  })
+);
 
-  if (!job) return notFound(res, 'Booking');
-  res.json(bookingView(job));
-});
+bookingsRouter.delete(
+  '/:id',
+  guard(async (req, res) => {
+    // The conversation and the desk notifications hang off the job by foreign
+    // key, so Postgres takes them with it rather than leaving messages
+    // addressed to an order that no longer exists.
+    const removed = await store.jobs.remove(req.params.id);
 
-bookingsRouter.delete('/:id', (req, res) => {
-  const removed = store.mutate((db) => {
-    const index = db.jobs.findIndex((candidate) => candidate.id === req.params.id);
-    if (index < 0) return false;
-    db.jobs.splice(index, 1);
-    return true;
-  });
-
-  if (!removed) return notFound(res, 'Booking');
-  res.json({ ok: true });
-});
+    if (!removed) {
+      notFound(res, 'Booking');
+      return;
+    }
+    res.json({ ok: true });
+  })
+);
 
 /**
  * There is deliberately no bulk-replace route. The admin dashboard edits the

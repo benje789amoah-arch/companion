@@ -4,11 +4,14 @@
  */
 
 import { useRouter } from 'expo-router';
-import { Activity, CheckCircle2, Layers2, MapPin } from 'lucide-react-native';
+import { Activity, CheckCircle2, CloudOff, Layers2, MapPin } from 'lucide-react-native';
 import React, { useMemo, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Badge, Card, EmptyState } from '../../src/components/ui';
+import CustomerStage from '../../src/components/CustomerStage';
+import ProfileGate from '../../src/components/ProfileGate';
+import { Badge, Card, ConnectionPill, EmptyState } from '../../src/components/ui';
+import { usePullToRefresh } from '../../src/hooks/usePullToRefresh';
 import { useApp } from '../../src/store/AppStore';
 import { colors, formatCedis, humanizeStatus, radius, shadow } from '../../src/theme';
 import { Order } from '../../src/types';
@@ -24,7 +27,8 @@ const FILTERS: { id: Filter; label: string }[] = [
 
 export default function AssignmentsScreen() {
   const router = useRouter();
-  const { orders, acceptOrder } = useApp();
+  const { orders, acceptOrder, connected, profileComplete } = useApp();
+  const refreshControl = usePullToRefresh();
 
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
@@ -66,9 +70,14 @@ export default function AssignmentsScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <Text style={styles.title}>My active jobs</Text>
+        <View style={styles.titleRow}>
+          <Text style={styles.title}>My active jobs</Text>
+          <ConnectionPill online={connected} />
+        </View>
         <Text style={styles.subtitle}>
-          Manage, dispatch and review active laundry contracts.
+          {connected
+            ? 'Manage, dispatch and review active laundry contracts.'
+            : 'Showing the last board this device cached — new requests will not arrive until dispatch is reachable.'}
         </Text>
       </View>
 
@@ -107,12 +116,25 @@ export default function AssignmentsScreen() {
         contentContainerStyle={styles.list}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        refreshControl={refreshControl}
       >
+        <ProfileGate />
+
         {filtered.length === 0 ? (
           <EmptyState
-            icon={<Activity size={34} color={colors.brandStone} />}
-            title="No assignments"
-            body="You're all caught up. New pickup requests will appear here."
+            icon={
+              connected ? (
+                <Activity size={34} color={colors.brandStone} />
+              ) : (
+                <CloudOff size={34} color={colors.statusWarning} />
+              )
+            }
+            title={connected ? 'No assignments' : 'Not connected to dispatch'}
+            body={
+              connected
+                ? "You're all caught up. New pickup requests will appear here."
+                : 'This console cannot reach the dispatch server, so jobs booked on the website or in the customer app will not show up. Check the server is running and that this device is on the same network.'
+            }
           />
         ) : (
           filtered.map((order) => (
@@ -129,6 +151,9 @@ export default function AssignmentsScreen() {
                     />
                   </View>
                   <Text style={styles.orderNumber}>{order.orderNumber}</Text>
+                  <View style={{ marginTop: 5 }}>
+                    <CustomerStage status={order.status} compact />
+                  </View>
                 </View>
 
                 <Badge label={humanizeStatus(order.status)} tone={statusTone(order)} />
@@ -170,13 +195,26 @@ export default function AssignmentsScreen() {
 
                 {order.status === 'unassigned' ? (
                   <Pressable
+                    accessibilityRole="button"
+                    disabled={!profileComplete}
                     onPress={() => {
                       acceptOrder(order.id);
                       router.push('/(tabs)');
                     }}
-                    style={({ pressed }) => [styles.actionChip, pressed && { opacity: 0.85 }]}
+                    style={({ pressed }) => [
+                      styles.actionChip,
+                      !profileComplete && styles.actionChipDisabled,
+                      pressed && profileComplete && { opacity: 0.85 },
+                    ]}
                   >
-                    <Text style={styles.actionChipLabel}>Accept payout</Text>
+                    <Text
+                      style={[
+                        styles.actionChipLabel,
+                        !profileComplete && styles.actionChipLabelDisabled,
+                      ]}
+                    >
+                      Accept payout
+                    </Text>
                   </Pressable>
                 ) : order.status !== 'delivered' ? (
                   <Pressable
@@ -207,6 +245,7 @@ export default function AssignmentsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bgIvory },
   header: { paddingHorizontal: 18, paddingTop: 12, gap: 3 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 9 },
   title: { fontSize: 19, fontWeight: '800', color: colors.textCharcoal },
   subtitle: { fontSize: 10.5, color: colors.textSlate },
 
@@ -285,6 +324,8 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   actionChipGold: { backgroundColor: colors.brandGold },
+  actionChipDisabled: { backgroundColor: colors.borderSoft },
+  actionChipLabelDisabled: { color: colors.textSlate },
   actionChipLabel: {
     fontSize: 10,
     fontWeight: '800',

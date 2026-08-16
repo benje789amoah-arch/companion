@@ -5,13 +5,14 @@
 
 import type { BookingStatus, JobStatus } from './types';
 
-/** The six forward stages a customer sees, in order. */
+/** The seven forward stages a customer sees, in order. */
 export const BOOKING_STAGE_SEQUENCE: BookingStatus[] = [
   'Scheduled',
   'Collecting',
   'In Care',
   'Ironing & Folding',
   'Quality Check',
+  'Delivering',
   'Delivered',
 ];
 
@@ -20,9 +21,13 @@ export const BOOKING_STAGE_SEQUENCE: BookingStatus[] = [
  *
  * Many-to-one by design: the customer does not need to know the difference
  * between "arrived at pickup" and "bags scanned", only that collection is
- * under way. The one lossy edge is the delivery leg — the customer bar has no
- * "out for delivery" stage, so the final approach reads as Quality Check (90%)
- * until the handover completes.
+ * under way.
+ *
+ * The delivery leg used to be the lossy edge — a courier riding to the door
+ * still read as Quality Check, so the bar sat at 90% while somebody was
+ * actually outside. `Delivering` is that leg, and it covers the ride and the
+ * arrival; Quality Check now means what it says, garments finished and waiting
+ * for a courier.
  */
 const TO_BOOKING_STATUS: Record<JobStatus, BookingStatus> = {
   unassigned: 'Scheduled',
@@ -36,8 +41,8 @@ const TO_BOOKING_STATUS: Record<JobStatus, BookingStatus> = {
   dropped_off: 'In Care',
   processing: 'Ironing & Folding',
   ready_for_delivery: 'Quality Check',
-  navigating_to_delivery: 'Quality Check',
-  arrived_at_delivery: 'Quality Check',
+  navigating_to_delivery: 'Delivering',
+  arrived_at_delivery: 'Delivering',
   delivered: 'Delivered',
   cancelled: 'Cancelled',
 };
@@ -60,6 +65,7 @@ const FROM_BOOKING_STATUS: Record<BookingStatus, JobStatus> = {
   'In Care': 'dropped_off',
   'Ironing & Folding': 'processing',
   'Quality Check': 'ready_for_delivery',
+  Delivering: 'navigating_to_delivery',
   Delivered: 'delivered',
   Cancelled: 'cancelled',
 };
@@ -88,9 +94,11 @@ export function bookingProgressPercent(stage: BookingStatus): number {
     case 'In Care':
       return 55;
     case 'Ironing & Folding':
-      return 75;
+      return 70;
     case 'Quality Check':
-      return 90;
+      return 82;
+    case 'Delivering':
+      return 93;
     case 'Delivered':
       return 100;
     case 'Cancelled':

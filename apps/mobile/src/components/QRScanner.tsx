@@ -5,8 +5,9 @@
 
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
-import { ArrowRight, ClipboardCheck, Layers, QrCode, ShieldCheck } from 'lucide-react-native';
-import React, { useCallback, useRef, useState } from 'react';
+import { parseHandoffPayload } from '@freshfold/core';
+import { ClipboardCheck, Layers, QrCode, ShieldCheck } from 'lucide-react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { colors, radius, tints } from '../theme';
 import { LaundryBag, Order } from '../types';
@@ -18,12 +19,17 @@ interface QRScannerProps {
   onCancel?: () => void;
 }
 
-type ScannerMode = 'simulated' | 'camera';
+type ScannerMode = 'camera' | 'manual';
 
 export default function QRScanner({ order, onScanComplete, onCancel }: QRScannerProps) {
   const [bags, setBags] = useState<LaundryBag[]>(() => order.bags.map((bag) => ({ ...bag })));
-  const [mode, setMode] = useState<ScannerMode>('simulated');
-  const [status, setStatus] = useState('Align barcode or QR code inside the bounding frame');
+  // Opens on the checklist, not the camera. The bag manifest is derived from
+  // the order — `bagsForJob` in the shared package — so `FF-BAG-…-A` exists as
+  // a record, not as a sticker on a bag. Defaulting to the camera left riders
+  // pointing at nothing and scanning the customer's collection QR instead.
+  // The camera stays a tap away for when labels are actually printed.
+  const [mode, setMode] = useState<ScannerMode>('manual');
+  const [status, setStatus] = useState('Check each bag against the list, then confirm.');
   const [permission, requestPermission] = useCameraPermissions();
 
   // The camera fires continuously; ignore repeats of a code we just handled.
@@ -35,17 +41,22 @@ export default function QRScanner({ order, onScanComplete, onCancel }: QRScanner
     setBags((prev) => prev.map((b) => (b.id === bagId ? { ...b, scanned: true } : b)));
   }, []);
 
-  const handleSimulateScan = (bag: LaundryBag) => {
+  // One bag at a time, deliberately: there is no control that clears the whole
+  // manifest, so a rider has to look at every bag to get through this.
+  const markByHand = (bag: LaundryBag) => {
     markScanned(bag.id);
-    setStatus(`Scanned ${bag.qrCode} — code registered.`);
+    setStatus(`${bag.qrCode} accounted for.`);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
   };
 
-  const handleScanAll = () => {
-    setBags((prev) => prev.map((b) => ({ ...b, scanned: true })));
-    setStatus('All bags scanned and verified successfully.');
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-  };
+  // Ask for the camera as soon as the sheet opens: it is the intended path,
+  // and a rider should not have to find a toggle to get to it.
+  useEffect(() => {
+    if (permission && !permission.granted && permission.canAskAgain) {
+      void requestPermission();
+    }
+  }, [permission, requestPermission]);
+
 
   const handleBarcodeScanned = useCallback(
     ({ data }: { data: string }) => {
@@ -61,19 +72,36 @@ export default function QRScanner({ order, onScanComplete, onCancel }: QRScanner
         markScanned(match.id);
         setStatus(`Verified ${match.qrCode} — ${match.type}.`);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      } else {
-        setStatus(`Unrecognised label "${data}". Not part of ${order.orderNumber}.`);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+        return;
       }
+
+      // The customer's collection QR is the other code in the room, and it is
+      // the easiest thing to point at by mistake. Saying "unrecognised label"
+      // to a rider who has just scanned the right customer reads like a
+      // failure, so name what they actually scanned.
+      const handoff = parseHandoffPayload(data);
+      if (handoff) {
+        setStatus(
+          handoff.jobId === order.id
+            ? `That is the collection code for this order, not a bag label. Tick the bags off below.`
+            : `That is order ${handoff.jobId}'s collection code, not a bag on ${order.orderNumber}.`
+        );
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+        return;
+      }
+
+      setStatus(`Unrecognised label "${data}". Not part of ${order.orderNumber}.`);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
     },
-    [bags, markScanned, order.orderNumber]
+    [bags, markScanned, order.id, order.orderNumber]
   );
 
   const enterCameraMode = async () => {
     if (!permission?.granted) {
       const result = await requestPermission();
       if (!result.granted) {
-        setStatus('Camera access declined. Digital scanner remains available.');
+        setMode('manual');
+        setStatus('Camera access declined. Mark each bag by hand instead.');
         return;
       }
     }
@@ -95,11 +123,14 @@ export default function QRScanner({ order, onScanComplete, onCancel }: QRScanner
 
       <View style={styles.modeToggle}>
         <Pressable
-          onPress={() => setMode('simulated')}
-          style={[styles.modeButton, mode === 'simulated' && styles.modeButtonActive]}
+          onPress={() => {
+            setMode('manual');
+            setStatus('Check each bag against the list, then confirm.');
+          }}
+          style={[styles.modeButton, mode === 'manual' && styles.modeButtonActive]}
         >
-          <Text style={[styles.modeLabel, mode === 'simulated' && styles.modeLabelActive]}>
-            Digital scanner
+          <Text style={[styles.modeLabel, mode === 'manual' && styles.modeLabelActive]}>
+            Check the list
           </Text>
         </Pressable>
         <Pressable
@@ -107,7 +138,7 @@ export default function QRScanner({ order, onScanComplete, onCancel }: QRScanner
           style={[styles.modeButton, mode === 'camera' && styles.modeButtonActive]}
         >
           <Text style={[styles.modeLabel, mode === 'camera' && styles.modeLabelActive]}>
-            Live camera
+            Scan a label
           </Text>
         </Pressable>
       </View>
@@ -124,9 +155,13 @@ export default function QRScanner({ order, onScanComplete, onCancel }: QRScanner
         ) : (
           <View style={styles.viewfinderPlaceholder}>
             <QrCode size={44} color={tints.sage30} />
-            <Text style={styles.viewfinderTitle}>Virtual laser alignment active</Text>
+            <Text style={styles.viewfinderTitle}>
+              {mode === 'manual' ? 'Checking the manifest' : 'Camera not enabled'}
+            </Text>
             <Text style={styles.viewfinderBody}>
-              Automatic recognition of FreshFold luxury canvas bag QR labels
+              {mode === 'manual'
+                ? 'Count the bags against the list below, then tick each one off.'
+                : 'Grant camera access to scan printed bag labels.'}
             </Text>
           </View>
         )}
@@ -149,12 +184,6 @@ export default function QRScanner({ order, onScanComplete, onCancel }: QRScanner
         <Text style={styles.checklistTitle}>
           Required bag checks ({scannedCount}/{bags.length})
         </Text>
-        {!allScanned && mode === 'simulated' && (
-          <Pressable onPress={handleScanAll} style={styles.scanAll} hitSlop={6}>
-            <Text style={styles.scanAllLabel}>Auto-scan all bags</Text>
-            <ArrowRight size={12} color={colors.brandSage} />
-          </Pressable>
-        )}
       </View>
 
       <ScrollView style={styles.bagList} contentContainerStyle={{ gap: 8 }}>
@@ -185,12 +214,16 @@ export default function QRScanner({ order, onScanComplete, onCancel }: QRScanner
                 <Text style={styles.verifiedLabel}>Verified</Text>
               </View>
             ) : (
-              <Pressable
-                onPress={() => handleSimulateScan(bag)}
-                style={({ pressed }) => [styles.scanChip, pressed && { opacity: 0.8 }]}
-              >
-                <Text style={styles.scanChipLabel}>Scan QR</Text>
-              </Pressable>
+              // Only offered while marking by hand. Showing it beside a live
+              // camera would turn scanning into the slower of two options.
+              mode === 'manual' && (
+                <Pressable
+                  onPress={() => markByHand(bag)}
+                  style={({ pressed }) => [styles.scanChip, pressed && { opacity: 0.8 }]}
+                >
+                  <Text style={styles.scanChipLabel}>Mark</Text>
+                </Pressable>
+              )
             )}
           </View>
         ))}
@@ -320,8 +353,6 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     color: colors.textSlate,
   },
-  scanAll: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  scanAllLabel: { fontSize: 11, fontWeight: '700', color: colors.brandSage },
 
   bagList: { maxHeight: 150 },
   bagRow: {

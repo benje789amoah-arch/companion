@@ -15,7 +15,8 @@ import { colors, radius, shadow } from '../../src/theme';
 export default function MapScreen() {
   // Tapping "Pin" on an assignment card routes here with the order to frame.
   const { focus } = useLocalSearchParams<{ focus?: string }>();
-  const { rider, orders, activeOrder, navigationTarget, acceptOrder } = useApp();
+  const { rider, orders, activeOrder, navigationTarget, acceptOrder, profileComplete } =
+    useApp();
 
   return (
     <View style={styles.container}>
@@ -25,10 +26,12 @@ export default function MapScreen() {
         activeOrder={activeOrder}
         navigationTarget={navigationTarget}
         focusedOrderId={focus ?? null}
-        onAcceptOrder={acceptOrder}
+        // See the note on the home screen's map: no accept control at all
+        // until the profile is complete.
+        onAcceptOrder={profileComplete ? acceptOrder : undefined}
       />
 
-      <SafeAreaView style={styles.overlay} edges={['top']} pointerEvents="box-none">
+      <SafeAreaView style={[styles.overlay, { pointerEvents: 'box-none' }]} edges={['top']}>
         <View style={styles.compassChip}>
           <Compass size={15} color={colors.brandSage} />
           <Text style={styles.compassLabel}>Compass overlay</Text>
@@ -51,7 +54,10 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     paddingHorizontal: 13,
     paddingVertical: 7,
-    marginTop: 58,
+    // Sits below the map's own GPS badge, which starts 12 below the safe-area
+    // inset and stands about 38 tall. This chip is already inside a top
+    // SafeAreaView, so the inset is not counted twice.
+    marginTop: 60,
     ...shadow.md,
   },
   compassLabel: {

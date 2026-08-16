@@ -7,8 +7,10 @@
   "main": "src/index.ts",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --sourcemap --outfile=dist/server.mjs --external:express --external:cors --external:dotenv --external:@google/genai",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --sourcemap --outfile=dist/server.mjs --external:express --external:cors --external:dotenv --external:postgres --external:@google/genai",
     "start": "node dist/server.mjs",
+    "db:migrate": "tsx src/migrate.ts",
+    "import:json": "tsx src/import-json.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -16,7 +18,8 @@
     "@google/genai": "^2.4.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "postgres": "^3.4.9"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

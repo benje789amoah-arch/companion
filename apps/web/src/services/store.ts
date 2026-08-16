@@ -8,6 +8,8 @@ import {
   createClient,
   type AuthSession,
   type Booking,
+  type Message,
+  type SupervisorProfile,
   type UserAccount,
 } from '@freshfold/core';
 
@@ -35,9 +37,12 @@ import {
 const KEYS = {
   bookings: 'freshfold_bookings',
   accounts: 'freshfold_accounts',
+  messages: 'freshfold_messages',
   auditLogs: 'freshfold_audit_logs',
   currentUser: 'freshfold_current_user',
   authToken: 'freshfold_auth_token',
+  adminToken: 'freshfold_admin_token',
+  adminSupervisor: 'freshfold_admin_supervisor',
   queue: 'freshfold_pending_writes',
 } as const;
 
@@ -62,6 +67,7 @@ type Listener = () => void;
 interface Mirror {
   bookings: Booking[];
   accounts: UserAccount[];
+  messages: Message[];
   auditLogs: AuditLog[];
 }
 
@@ -86,6 +92,7 @@ function writeLocal(key: string, value: unknown): void {
 const mirror: Mirror = {
   bookings: readLocal<Booking[]>(KEYS.bookings, []),
   accounts: readLocal<UserAccount[]>(KEYS.accounts, []),
+  messages: readLocal<Message[]>(KEYS.messages, []),
   auditLogs: readLocal<AuditLog[]>(KEYS.auditLogs, []),
 };
 
@@ -115,7 +122,8 @@ type PendingWrite =
   | { kind: 'booking:create'; booking: Booking }
   | { kind: 'booking:patch'; id: string; patch: Partial<Booking> }
   | { kind: 'booking:delete'; id: string }
-  | { kind: 'account:upsert'; account: UserAccount };
+  | { kind: 'account:upsert'; account: UserAccount }
+  | { kind: 'message:send'; message: Message };
 
 let queue: PendingWrite[] = readLocal<PendingWrite[]>(KEYS.queue, []);
 /** Non-zero while a write is in flight, so a poll can't clobber a fresh edit. */
@@ -141,7 +149,24 @@ async function send(write: PendingWrite): Promise<void> {
     case 'account:upsert':
       await api.upsertAccount(write.account);
       return;
+    case 'message:send':
+      await api.postMessage(write.message);
+      return;
   }
+}
+
+/**
+ * Whether a failed write is worth retrying.
+ *
+ * A dropped connection is temporary and the write should wait. A rejection is
+ * not: the commonest case is a booking deleted from the supervisor ledger while
+ * an edit for it sat in the queue, and that write can never succeed. Timeouts
+ * and rate limits are the two 4xx codes that *do* clear on their own.
+ */
+function isPermanentFailure(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  if (error.status === 408 || error.status === 429) return false;
+  return error.status >= 400 && error.status < 500;
 }
 
 let draining = false;
@@ -156,9 +181,21 @@ async function drain(): Promise<void> {
       const [next] = queue;
       try {
         await send(next);
-      } catch {
-        // Server unreachable or rejecting. Keep the write for the next attempt
-        // and stop draining — order matters, so we don't skip ahead.
+      } catch (error) {
+        if (isPermanentFailure(error)) {
+          // The server will never accept this one — most often because the
+          // order was deleted from the supervisor ledger while this write sat
+          // in the queue. Retrying forever would wedge the queue and block
+          // every later write from this browser, so it is dropped and we carry
+          // on. We are still online; this was a rejection, not a timeout.
+          online = true;
+          queue.shift();
+          writeLocal(KEYS.queue, queue);
+          continue;
+        }
+
+        // Server unreachable. Keep the write for the next attempt and stop
+        // draining — order matters, so we don't skip ahead.
         online = false;
         return;
       }
@@ -273,6 +310,65 @@ export function writeAccounts(next: UserAccount[]): void {
   notify();
 }
 
+/**
+ * Suspends a customer, or lifts the suspension. Supervisor desk only.
+ *
+ * Unlike the writes above this one is not queued: it carries the desk's token,
+ * which the offline queue has no way to attach, and a block replayed out of
+ * order hours later is not something anybody asked for. It goes to the server
+ * or it fails in front of the supervisor who pressed the button — the mirror is
+ * only updated once the server has agreed.
+ */
+export async function setAccountBlocked(
+  email: string,
+  blocked: boolean,
+  reason?: string
+): Promise<UserAccount> {
+  const token = readAdminToken();
+  if (!token) throw new Error('Sign in to the supervisor desk to change an account.');
+
+  const updated = await api.setAccountBlocked(email, { blocked, reason }, token);
+
+  mirror.accounts = mirror.accounts.map((account) =>
+    account.email.toLowerCase() === email.toLowerCase()
+      ? // The reason stays on the desk that set it and out of the mirror, which
+        // is written to localStorage and shared with every other pane.
+        { ...account, ...updated, blockedReason: undefined }
+      : account
+  );
+  writeLocal(KEYS.accounts, mirror.accounts);
+  notify();
+
+  return updated;
+}
+
+/**
+ * Erases a customer account. Supervisor desk only.
+ *
+ * Any queued write for that address is dropped first. Without that, an upsert
+ * still sitting in the queue — a points adjustment made a moment earlier, say —
+ * would drain afterwards and recreate the row that was just deleted.
+ */
+export async function deleteAccount(email: string): Promise<void> {
+  const token = readAdminToken();
+  if (!token) throw new Error('Sign in to the supervisor desk to delete an account.');
+
+  await api.deleteAccount(email, token);
+
+  queue = queue.filter(
+    (write) =>
+      write.kind !== 'account:upsert' ||
+      write.account.email.toLowerCase() !== email.toLowerCase()
+  );
+  writeLocal(KEYS.queue, queue);
+
+  mirror.accounts = mirror.accounts.filter(
+    (account) => account.email.toLowerCase() !== email.toLowerCase()
+  );
+  writeLocal(KEYS.accounts, mirror.accounts);
+  notify();
+}
+
 export function upsertAccount(account: UserAccount): void {
   const index = mirror.accounts.findIndex(
     (candidate) => candidate.email.toLowerCase() === account.email.toLowerCase()
@@ -285,6 +381,52 @@ export function upsertAccount(account: UserAccount): void {
   writeLocal(KEYS.accounts, mirror.accounts);
   enqueue({ kind: 'account:upsert', account });
   notify();
+}
+
+// ---------------------------------------------------------------------------
+// Messaging
+// ---------------------------------------------------------------------------
+
+/**
+ * The order thread, as this browser knows it.
+ *
+ * One conversation per job, shared with the rider app and the dispatch desk.
+ * Reads are synchronous off the mirror like everything else here; the poll in
+ * `pull()` is what brings the rider's side of it in.
+ */
+export function readMessages(orderId?: string): Message[] {
+  if (!orderId) return mirror.messages;
+  return mirror.messages.filter((message) => message.orderId === orderId);
+}
+
+/**
+ * Post to a job's thread as the customer.
+ *
+ * The id is minted here rather than by the server so the bubble can appear the
+ * instant it is typed. The server's insert is `on conflict do nothing`, so a
+ * queued resend after a dropped connection lands as the same message rather
+ * than a duplicate.
+ */
+export function sendMessage(text: string, orderId: string): Message {
+  const message: Message = {
+    id: `msg-customer-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    sender: 'customer',
+    text,
+    timestamp: nowLabel(),
+    orderId,
+  };
+
+  mirror.messages = [...mirror.messages, message];
+  writeLocal(KEYS.messages, mirror.messages);
+  enqueue({ kind: 'message:send', message });
+  notify();
+
+  return message;
+}
+
+/** Same clock label the rider app and the server stamp messages with. */
+function nowLabel(): string {
+  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
 // ---------------------------------------------------------------------------
@@ -373,11 +515,66 @@ export async function login(identifier: string, password: string): Promise<UserA
   return writeSession(await api.login({ identifier, password }));
 }
 
+/**
+ * The booking an emailed setup link belongs to.
+ *
+ * Read from the server rather than from the local mirror, and not by booking
+ * id: the token is what names the order, and it is also the only thing that
+ * proves the person holding it is the customer the confirmation went to.
+ * Throws on a link that is spent, expired or invented.
+ */
+export async function readSetupLink(
+  token: string
+): Promise<{ id: string; name: string; email: string; phone: string }> {
+  return (await api.setupLinkBooking(token)).booking;
+}
+
+/** Spends a setup link, setting the account's first password and signing in. */
+export async function claimBooking(token: string, password: string): Promise<UserAccount> {
+  return writeSession(await api.claimBooking({ token, password }));
+}
+
+/**
+ * Mails the setup link again to the address on a booking.
+ *
+ * Unable to report whether it found anything, for the reason
+ * `requestPasswordReset` is: the server answers a contact it has never seen
+ * exactly as it answers a real one. Throws only when the request could not be
+ * made at all.
+ */
+export async function requestSetupLink(identifier: string): Promise<void> {
+  await api.requestSetupLink(identifier);
+}
+
 /** Whether a contact already has a login, so the UI can offer the right path. */
 export async function authStatus(
   identifier: string
 ): Promise<{ exists: boolean; hasPassword: boolean }> {
   return api.authStatus(identifier);
+}
+
+/**
+ * Asks for another email-confirmation link.
+ *
+ * Throws when there is no session, when the address is already confirmed, or
+ * when pressed inside the server's cooldown — the caller shows the message.
+ */
+export async function resendVerification(): Promise<void> {
+  const token = readAuthToken();
+  if (!token) throw new Error('Sign in to request a new link.');
+  await api.resendVerification(token);
+}
+
+/**
+ * Mails a password-reset link to whatever address is on the account.
+ *
+ * Deliberately not authenticated, and deliberately unable to report whether it
+ * found anything: somebody who cannot sign in is the only caller, and the
+ * server answers a contact it has never seen exactly as it answers a real one.
+ * Throws only when the request could not be made at all.
+ */
+export async function requestPasswordReset(identifier: string): Promise<void> {
+  await api.requestPasswordReset(identifier);
 }
 
 export async function logout(): Promise<void> {
@@ -423,6 +620,78 @@ export function clearCurrentUser(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Supervisor desk
+// ---------------------------------------------------------------------------
+
+/**
+ * The dashboard's own session, kept apart from the customer one.
+ *
+ * A browser can legitimately be both — a supervisor who is also a customer —
+ * so the two tokens live under different keys rather than overwriting each
+ * other. `kind` on the server keeps them from being used interchangeably.
+ */
+export function readAdminToken(): string | null {
+  return localStorage.getItem(KEYS.adminToken);
+}
+
+export function readAdminSupervisor(): SupervisorProfile | null {
+  return readLocal<SupervisorProfile | null>(KEYS.adminSupervisor, null);
+}
+
+export async function adminLogin(
+  email: string,
+  password: string
+): Promise<SupervisorProfile> {
+  const session = await api.adminLogin({ email, password });
+
+  try {
+    localStorage.setItem(KEYS.adminToken, session.token);
+  } catch {
+    /* see writeLocal */
+  }
+  writeLocal(KEYS.adminSupervisor, session.supervisor);
+
+  return session.supervisor;
+}
+
+/**
+ * Re-validates the stored desk token on load. A token the server no longer
+ * honours means the dashboard must not open, so unlike the customer session
+ * this does *not* fall back to the cached profile when the server is
+ * unreachable — an unverifiable supervisor is not a supervisor.
+ */
+export async function restoreAdminSession(): Promise<SupervisorProfile | null> {
+  const token = readAdminToken();
+  if (!token) return null;
+
+  try {
+    const supervisor = await api.adminMe(token);
+    writeLocal(KEYS.adminSupervisor, supervisor);
+    return supervisor;
+  } catch {
+    clearAdminSession();
+    return null;
+  }
+}
+
+export async function adminLogout(): Promise<void> {
+  const token = readAdminToken();
+  clearAdminSession();
+  if (token) {
+    try {
+      await api.adminLogout(token);
+    } catch {
+      /* Already signed out locally; the token expires on its own. */
+    }
+  }
+}
+
+export function clearAdminSession(): void {
+  localStorage.removeItem(KEYS.adminToken);
+  localStorage.removeItem(KEYS.adminSupervisor);
+}
+
+// ---------------------------------------------------------------------------
 // Audit log — deliberately local
 // ---------------------------------------------------------------------------
 
@@ -449,15 +718,21 @@ export async function pull(): Promise<void> {
   if (inFlight > 0) return;
 
   try {
-    const [bookings, accounts] = await Promise.all([api.listBookings(), api.listAccounts()]);
+    const [bookings, accounts, messages] = await Promise.all([
+      api.listBookings(),
+      api.listAccounts(),
+      api.listMessages(),
+    ]);
     online = true;
 
     if (inFlight > 0) return;
 
     mirror.bookings = bookings;
     mirror.accounts = accounts;
+    mirror.messages = messages;
     writeLocal(KEYS.bookings, bookings);
     writeLocal(KEYS.accounts, accounts);
+    writeLocal(KEYS.messages, messages);
     notify();
   } catch {
     // The server is down or we're offline. The mirror stands.

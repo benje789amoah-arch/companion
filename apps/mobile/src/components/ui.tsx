@@ -72,8 +72,14 @@ export function Button({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ disabled: !!isDisabled }}
-      onPress={isDisabled ? undefined : onPress}
+      // `Pressable`'s own `disabled` prop is what does the work: it blocks the
+      // press, sets `accessibilityState.disabled` on native, and is the only
+      // route by which react-native-web emits `aria-disabled` and drops the
+      // element out of the tab order. Setting `accessibilityState` by hand and
+      // withholding `onPress` — as this did — makes the button inert but still
+      // announces it as enabled and leaves it keyboard-focusable.
+      disabled={isDisabled}
+      onPress={onPress}
       style={({ pressed }) => [
         styles.button,
         buttonVariants[variant].container,
@@ -142,6 +148,49 @@ export function Avatar({
         style,
       ]}
     />
+  );
+}
+
+/* --------------------------------------------------------------- presence */
+
+/**
+ * Whether the console is talking to the dispatch server.
+ *
+ * The store has always tracked this, but nothing rendered it, so a console that
+ * could not reach the server looked identical to one that could — it just kept
+ * showing the last board it had cached. A job booked on the website or in the
+ * customer app would simply never appear, with nothing on screen to say why.
+ */
+export function ConnectionPill({
+  online,
+  style,
+}: {
+  online: boolean;
+  style?: StyleProp<ViewStyle>;
+}) {
+  return (
+    <View
+      accessibilityRole="text"
+      accessibilityLabel={
+        online ? 'Connected to dispatch' : 'Offline — showing the last cached board'
+      }
+      style={[styles.connPill, online ? styles.connPillOnline : styles.connPillOffline, style]}
+    >
+      <View
+        style={[
+          styles.connDot,
+          { backgroundColor: online ? colors.statusSuccess : colors.statusWarning },
+        ]}
+      />
+      <Text
+        style={[
+          styles.connLabel,
+          { color: online ? colors.statusSuccess : colors.statusWarning },
+        ]}
+      >
+        {online ? 'Live' : 'Offline'}
+      </Text>
+    </View>
   );
 }
 
@@ -219,6 +268,24 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '700',
     letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  connPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+  },
+  connPillOnline: { backgroundColor: tints.success10, borderColor: tints.success30 },
+  connPillOffline: { backgroundColor: tints.warning10, borderColor: tints.warning30 },
+  connDot: { width: 6, height: 6, borderRadius: 3 },
+  connLabel: {
+    fontSize: 8.5,
+    fontWeight: '800',
+    letterSpacing: 0.6,
     textTransform: 'uppercase',
   },
   emptyState: {

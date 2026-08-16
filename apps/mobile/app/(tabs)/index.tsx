@@ -8,9 +8,11 @@ import {
   Bell,
   Camera as CameraIcon,
   CheckCircle2,
+  IdCard,
   MapPin,
   MessageSquare,
   QrCode,
+  ScanLine,
   Sparkles,
   UserCheck,
 } from 'lucide-react-native';
@@ -26,18 +28,28 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import CameraCapture from '../../src/components/CameraCapture';
+import CustomerStage from '../../src/components/CustomerStage';
+import DropoffVerify from '../../src/components/DropoffVerify';
+import HandoffVerify from '../../src/components/HandoffVerify';
 import LiveMap from '../../src/components/LiveMap';
 import NotificationsSheet from '../../src/components/NotificationsSheet';
 import QRScanner from '../../src/components/QRScanner';
 import SignaturePad from '../../src/components/SignaturePad';
-import { Avatar, Badge, Button } from '../../src/components/ui';
+import { Avatar, Badge, Button, ConnectionPill } from '../../src/components/ui';
 import { useApp } from '../../src/store/AppStore';
 import { colors, formatCedis, humanizeStatus, radius, shadow, tints } from '../../src/theme';
 
-/** Delivery OTPs the mock customers hand over. */
-const VALID_DELIVERY_OTPS = ['7809', '4019', '1234'];
+type ActiveModal =
+  | 'handoff'
+  | 'dropoff'
+  | 'scanner'
+  | 'pickup-camera'
+  | 'delivery-camera'
+  | 'signature'
+  | null;
 
-type ActiveModal = 'scanner' | 'pickup-camera' | 'delivery-camera' | 'signature' | null;
+/** Avatar (32) + vertical padding (5 × 2) + border (1 × 2). */
+const IDENTITY_CHIP_HEIGHT = 44;
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -47,9 +59,15 @@ export default function HomeScreen() {
     notifications,
     activeOrder,
     backlogOrders,
+    connected,
+    locationDenied,
+    arrivalAutoConfirms,
+    profileComplete,
     unreadCount,
     navigationTarget,
     arriveAtDestination,
+    completeDelivery,
+    completeDropoff,
     updateRider,
     acceptOrder,
     updateOrderStatus,
@@ -59,22 +77,46 @@ export default function HomeScreen() {
 
   const [activeModal, setActiveModal] = useState<ActiveModal>(null);
   const [showNotifications, setShowNotifications] = useState(false);
+  /** Order whose collection code this courier has checked, this session. */
+  const [handoffVerifiedFor, setHandoffVerifiedFor] = useState<string | null>(null);
+  /**
+   * Order whose bags this courier has counted off at the hub, this session.
+   *
+   * Local on purpose. The manifest check is the courier satisfying themselves
+   * that what came off the bike is what went on it; the transition itself is
+   * the hub's code, and that is dispatch's call, not this flag's.
+   */
+  const [dropoffBagsCheckedFor, setDropoffBagsCheckedFor] = useState<string | null>(null);
   const [focusedOrderId, setFocusedOrderId] = useState<string | null>(null);
 
-  // Delivery hand-off gate.
+  // Delivery hand-off gate. The code is never on this device — it is typed
+  // from what the customer says and checked by the server, so what is held
+  // here is the attempt and whatever dispatch said about it.
   const [otpInput, setOtpInput] = useState('');
-  const [otpVerified, setOtpVerified] = useState(false);
-  const [otpError, setOtpError] = useState(false);
+  const [otpError, setOtpError] = useState('');
+  const [handoverBusy, setHandoverBusy] = useState(false);
+  /** True once the courier has said they cannot get a code at all. */
+  const [overrideMode, setOverrideMode] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
 
   // Offers the rider waved away this session.
   const [dismissedOfferIds, setDismissedOfferIds] = useState<string[]>([]);
 
-  // A fresh order starts its delivery gate closed again.
+  // A fresh order starts its gates closed again.
   useEffect(() => {
     setOtpInput('');
-    setOtpVerified(false);
-    setOtpError(false);
+    setOtpError('');
+    setOverrideMode(false);
+    setOverrideReason('');
+    setDropoffBagsCheckedFor(null);
   }, [activeOrder?.id]);
+
+  /**
+   * Enough to attempt the handover: four digits from the customer, or a
+   * written reason for not having them. Whether the digits are *right* is
+   * dispatch's call, not this console's.
+   */
+  const handoverReady = overrideMode ? overrideReason.trim().length >= 8 : otpInput.length === 4;
 
   const offer = useMemo(
     () =>
@@ -84,6 +126,16 @@ export default function HomeScreen() {
     [rider.isOnline, activeOrder, backlogOrders, dismissedOfferIds]
   );
 
+  /**
+   * Whether the courier may proceed to the bags.
+   *
+   * A job carrying no `pickupOtp` predates this check — anything already in
+   * the ledger before collection codes existed. Those are let through rather
+   * than stranded at a gate they can never satisfy.
+   */
+  const handoffCleared =
+    !activeOrder?.pickupOtp || handoffVerifiedFor === activeOrder?.id;
+
   const handleQrVerified = () => {
     if (!activeOrder) return;
     setActiveModal(null);
@@ -91,7 +143,10 @@ export default function HomeScreen() {
     if (activeOrder.status === 'arrived_at_pickup') {
       updateOrderStatus(activeOrder.id, 'pickup_scanned');
     } else if (activeOrder.status === 'arrived_at_laundry') {
-      updateOrderStatus(activeOrder.id, 'dropped_off');
+      // Counting the bags off no longer moves the job. It used to, which meant
+      // the middle hand-off completed on nothing but a manifest this phone had
+      // generated for itself — the hub's code is what checks the load in now.
+      setDropoffBagsCheckedFor(activeOrder.id);
     }
   };
 
@@ -110,22 +165,43 @@ export default function HomeScreen() {
       updateOrderStatus(activeOrder.id, 'picked_up', undefined, signature);
       updateRider({ todayDistance: rider.todayDistance + 2.1 });
     } else if (activeOrder.status === 'arrived_at_delivery') {
-      updateOrderStatus(activeOrder.id, 'delivered', undefined, signature);
-      updateRider({
-        todayDistance: rider.todayDistance + activeOrder.distance,
-        todayEarnings: rider.todayEarnings + activeOrder.price,
-        completedCount: rider.completedCount + 1,
-      });
+      void finishDelivery(signature);
     }
   };
 
-  const verifyDeliveryOtp = () => {
-    if (VALID_DELIVERY_OTPS.includes(otpInput)) {
-      setOtpError(false);
-      setOtpVerified(true);
-    } else {
-      setOtpError(true);
+  /**
+   * The handover itself.
+   *
+   * Everything else in this workflow is optimistic — the console moves and the
+   * server catches up. This one waits, because the code is checked there and a
+   * job shown as delivered that dispatch does not agree was delivered is worse
+   * than a spinner.
+   */
+  const finishDelivery = async (signature?: string) => {
+    if (!activeOrder) return;
+
+    setHandoverBusy(true);
+    const result = await completeDelivery(activeOrder.id, {
+      code: overrideMode ? undefined : otpInput.trim(),
+      overrideReason: overrideMode ? overrideReason.trim() : undefined,
+      signature,
+    });
+    setHandoverBusy(false);
+
+    if (!result.ok) {
+      setOtpError(result.error);
+      return;
     }
+
+    setOtpError('');
+    setOtpInput('');
+    setOverrideMode(false);
+    setOverrideReason('');
+    updateRider({
+      todayDistance: rider.todayDistance + activeOrder.distance,
+      todayEarnings: rider.todayEarnings + activeOrder.price,
+      completedCount: rider.completedCount + 1,
+    });
   };
 
   return (
@@ -137,11 +213,17 @@ export default function HomeScreen() {
         navigationTarget={navigationTarget}
         focusedOrderId={focusedOrderId}
         onSelectOrder={(order) => setFocusedOrderId(order.id)}
-        onAcceptOrder={acceptOrder}
+        // Withheld until the profile is complete, so the map simply offers no
+        // accept rather than one that refuses. The banner on Tasks and the
+        // offer card above both explain why.
+        onAcceptOrder={profileComplete ? acceptOrder : undefined}
+        // Clears the floating identity chip and alert buttons below, which
+        // occupy the same corner as the map's own GPS badge and controls.
+        overlayTopOffset={IDENTITY_CHIP_HEIGHT + 10}
       />
 
       {/* Floating identity + alerts */}
-      <SafeAreaView style={styles.topBar} edges={['top']} pointerEvents="box-none">
+      <SafeAreaView style={[styles.topBar, { pointerEvents: 'box-none' }]} edges={['top']}>
         <View style={styles.identityChip}>
           <Avatar uri={rider.avatar} size={32} />
           <View style={{ maxWidth: 120 }}>
@@ -152,6 +234,7 @@ export default function HomeScreen() {
               {rider.employeeId ? `ID: ${rider.employeeId}` : 'No identity'}
             </Text>
           </View>
+          <ConnectionPill online={connected} />
         </View>
 
         <View style={styles.topActions}>
@@ -238,6 +321,10 @@ export default function HomeScreen() {
                 />
               </View>
 
+              {/* The same job in the customer's six stages, so a stage moved
+                  from the supervisor's desk shows up here too. */}
+              <CustomerStage status={activeOrder.status} />
+
               {/* --- transit legs --- */}
               {activeOrder.status === 'assigned' && (
                 <>
@@ -255,7 +342,11 @@ export default function HomeScreen() {
               {navigationTarget && (
                 <>
                   <Text style={styles.workflowMuted}>
-                    Scooter in transit — simulated GPS is driving the route.
+                    {locationDenied
+                      ? 'Location is off, so the customer cannot see you moving. Confirm arrival by hand.'
+                      : arrivalAutoConfirms
+                        ? `In transit to ${navigationTarget.label}. Arrival is confirmed automatically as you reach it.`
+                        : `In transit to ${navigationTarget.label}. Your GPS fix is too rough to confirm arrival on its own — use the button when you get there.`}
                   </Text>
                   <Button
                     label={
@@ -272,9 +363,20 @@ export default function HomeScreen() {
               )}
 
               {/* --- pickup checklist --- */}
-              {activeOrder.status === 'arrived_at_pickup' && (
+              {activeOrder.status === 'arrived_at_pickup' && !handoffCleared && (
                 <>
-                  <StepRow step={1} text="Scan FreshFold QR codes on the linen bags" />
+                  <StepRow step={1} text="Check the customer's collection code" />
+                  <Button
+                    label="Verify collection code"
+                    icon={<ScanLine size={15} color="#FFFFFF" />}
+                    onPress={() => setActiveModal('handoff')}
+                  />
+                </>
+              )}
+
+              {activeOrder.status === 'arrived_at_pickup' && handoffCleared && (
+                <>
+                  <StepRow step={2} text="Scan FreshFold QR codes on the linen bags" />
                   <Button
                     label="Open QR bag scanner"
                     icon={<QrCode size={15} color="#FFFFFF" />}
@@ -285,7 +387,7 @@ export default function HomeScreen() {
 
               {activeOrder.status === 'pickup_scanned' && !activeOrder.pickupPhoto && (
                 <>
-                  <StepRow step={2} text="Take the garment documentation photo" />
+                  <StepRow step={3} text="Take the garment documentation photo" />
                   <Button
                     label="Document garment state"
                     icon={<CameraIcon size={15} color="#FFFFFF" />}
@@ -296,7 +398,7 @@ export default function HomeScreen() {
 
               {activeOrder.status === 'pickup_scanned' && !!activeOrder.pickupPhoto && (
                 <>
-                  <StepRow step={3} text="Capture the digital signature approval" />
+                  <StepRow step={4} text="Capture the digital signature approval" />
                   <Button
                     label="Acquire digital signature"
                     icon={<UserCheck size={15} color="#FFFFFF" />}
@@ -318,26 +420,50 @@ export default function HomeScreen() {
                 </>
               )}
 
-              {activeOrder.status === 'arrived_at_laundry' && (
-                <>
-                  <Text style={styles.workflowBody}>
-                    Unload the garments and scan the barcodes for the validation receipt.
-                  </Text>
-                  <Button
-                    label="Verify drop-off barcodes"
-                    icon={<QrCode size={15} color="#FFFFFF" />}
-                    onPress={() => setActiveModal('scanner')}
-                  />
-                </>
-              )}
+              {activeOrder.status === 'arrived_at_laundry' &&
+                dropoffBagsCheckedFor !== activeOrder.id && (
+                  <>
+                    <StepRow step={1} text="Count the bags off against the manifest" />
+                    <Button
+                      label="Verify drop-off barcodes"
+                      icon={<QrCode size={15} color="#FFFFFF" />}
+                      onPress={() => setActiveModal('scanner')}
+                    />
+                  </>
+                )}
 
+              {activeOrder.status === 'arrived_at_laundry' &&
+                dropoffBagsCheckedFor === activeOrder.id && (
+                  <>
+                    <StepRow step={2} text="Ask the hub desk for their drop-off code" />
+                    <Text style={styles.formNote}>
+                      It is on the desk’s dispatch screen. This console is never told it —
+                      dispatch checks what you send.
+                    </Text>
+                    <Button
+                      label="Check the bags in"
+                      icon={<ScanLine size={15} color="#FFFFFF" />}
+                      onPress={() => setActiveModal('dropoff')}
+                    />
+                  </>
+                )}
+
+              {/* The hub's own leg. Nothing here is the courier's to press —
+                  dispatch moves it through washing and finishing on its own
+                  and files an alert when there is a delivery to ride. */}
               {(activeOrder.status === 'dropped_off' ||
                 activeOrder.status === 'processing') && (
                 <View style={styles.processingCard}>
                   <CheckCircle2 size={22} color={colors.statusSuccess} />
-                  <Text style={styles.processingTitle}>Processing active</Text>
+                  <Text style={styles.processingTitle}>
+                    {activeOrder.status === 'dropped_off'
+                      ? 'Checked in at the hub'
+                      : 'Pressing and folding'}
+                  </Text>
                   <Text style={styles.processingBody}>
-                    FreshFold artisans are caring for the linens now. Check back shortly.
+                    FreshFold artisans are caring for the linens now. Dispatch will alert you
+                    when they pass quality check and are ready to ride back — you can close the
+                    app until then.
                   </Text>
                 </View>
               )}
@@ -356,43 +482,91 @@ export default function HomeScreen() {
               )}
 
               {/* --- delivery checklist --- */}
-              {activeOrder.status === 'arrived_at_delivery' && !otpVerified && (
+              {activeOrder.status === 'arrived_at_delivery' && !overrideMode && (
                 <>
                   <View style={styles.otpHeader}>
-                    <Text style={styles.workflowBody}>Enter the customer security OTP</Text>
+                    <Text style={styles.workflowBody}>Ask for the customer's delivery code</Text>
                     <Pressable
-                      onPress={() =>
+                      onPress={() => {
                         sendRiderMessage(
-                          'Hello, I have arrived outside with your fresh laundry. Your delivery OTP is 7809.'
-                        )
-                      }
+                          'Hello, I am outside with your fresh laundry. Please read me the delivery code from your FreshFold app.'
+                        );
+                        // Open the thread the message just went into. Sending
+                        // silently from here looked like a dead button, and the
+                        // courier is standing at a door waiting on a reply.
+                        router.push('/chat');
+                      }}
                       hitSlop={6}
                     >
-                      <Text style={styles.otpRequest}>Request OTP</Text>
+                      <Text style={styles.otpRequest}>Ask in chat</Text>
                     </Pressable>
                   </View>
 
                   <View style={styles.otpRow}>
                     <TextInput
                       value={otpInput}
-                      onChangeText={setOtpInput}
-                      placeholder="4-digit OTP"
+                      onChangeText={(text) => {
+                        setOtpInput(text.replace(/\D/g, '').slice(0, 4));
+                        setOtpError('');
+                      }}
+                      placeholder="4-digit code"
                       placeholderTextColor={colors.textSlate}
                       keyboardType="number-pad"
                       maxLength={4}
                       style={styles.otpInput}
                     />
-                    <Button label="Verify" onPress={verifyDeliveryOtp} style={{ flex: 1 }} />
                   </View>
 
-                  {otpError && (
-                    <Text style={styles.otpError}>Incorrect pin. Try '7809' or '4019'.</Text>
-                  )}
+                  <Text style={styles.formNote}>
+                    It is on their order screen. This console is never told it — dispatch checks
+                    what you type.
+                  </Text>
+
+                  <Pressable onPress={() => setOverrideMode(true)} hitSlop={6}>
+                    <Text style={styles.otpRequest}>They cannot give me a code</Text>
+                  </Pressable>
                 </>
               )}
 
+              {/* The documented exception: nobody in, a porter took it. */}
+              {activeOrder.status === 'arrived_at_delivery' && overrideMode && (
+                <>
+                  <Text style={styles.workflowBody}>What happened at the door?</Text>
+                  <TextInput
+                    value={overrideReason}
+                    onChangeText={(text) => {
+                      setOverrideReason(text);
+                      setOtpError('');
+                    }}
+                    placeholder="e.g. Nobody answered; left with the hostel porter, Mr Antwi"
+                    placeholderTextColor={colors.textSlate}
+                    multiline
+                    style={[styles.otpInput, styles.overrideInput]}
+                  />
+                  <Text style={styles.formNote}>
+                    This goes to the concierge desk and onto the order permanently, and the
+                    customer is told. Take the photo below whatever you write.
+                  </Text>
+
+                  <Pressable
+                    onPress={() => {
+                      setOverrideMode(false);
+                      setOverrideReason('');
+                      setOtpError('');
+                    }}
+                    hitSlop={6}
+                  >
+                    <Text style={styles.otpRequest}>They can give me the code after all</Text>
+                  </Pressable>
+                </>
+              )}
+
+              {activeOrder.status === 'arrived_at_delivery' && !!otpError && (
+                <Text style={styles.otpError}>{otpError}</Text>
+              )}
+
               {activeOrder.status === 'arrived_at_delivery' &&
-                otpVerified &&
+                handoverReady &&
                 !activeOrder.deliveryPhoto && (
                   <>
                     <StepRow step={2} text="Upload the proof-of-delivery photo" />
@@ -405,13 +579,21 @@ export default function HomeScreen() {
                 )}
 
               {activeOrder.status === 'arrived_at_delivery' &&
-                otpVerified &&
+                handoverReady &&
                 !!activeOrder.deliveryPhoto && (
                   <>
-                    <StepRow step={3} text="Obtain the recipient's signature" />
+                    <StepRow
+                      step={3}
+                      text={
+                        overrideMode
+                          ? 'Sign it off yourself and complete the drop'
+                          : "Obtain the recipient's signature"
+                      }
+                    />
                     <Button
-                      label="Collect drop signature"
+                      label={handoverBusy ? 'Confirming with dispatch…' : 'Collect drop signature'}
                       icon={<UserCheck size={15} color="#FFFFFF" />}
+                      disabled={handoverBusy}
                       onPress={() => setActiveModal('signature')}
                     />
                   </>
@@ -456,11 +638,23 @@ export default function HomeScreen() {
               onPress={() => setDismissedOfferIds((prev) => [...prev, offer.id])}
               style={{ flex: 1 }}
             />
-            <Button
-              label="Accept job"
-              onPress={() => acceptOrder(offer.id)}
-              style={{ flex: 1.3 }}
-            />
+            {profileComplete ? (
+              <Button
+                label="Accept job"
+                onPress={() => acceptOrder(offer.id)}
+                style={{ flex: 1.3 }}
+              />
+            ) : (
+              // Sending the rider somewhere useful beats a dead button: the
+              // offer is real and they want it, they just cannot take it yet.
+              <Button
+                label="Finish profile first"
+                variant="gold"
+                icon={<IdCard size={15} color="#FFFFFF" />}
+                onPress={() => router.push('/(tabs)/profile')}
+                style={{ flex: 1.3 }}
+              />
+            )}
           </View>
         </View>
       )}
@@ -474,10 +668,32 @@ export default function HomeScreen() {
       >
         <Pressable style={styles.modalScrim} onPress={() => setActiveModal(null)}>
           <Pressable style={styles.modalBody} onPress={(e) => e.stopPropagation()}>
+            {activeModal === 'handoff' && activeOrder && (
+              <HandoffVerify
+                order={activeOrder}
+                onVerified={() => {
+                  setHandoffVerifiedFor(activeOrder.id);
+                  // Straight on to the bags — the courier is standing at the
+                  // door and the two checks are one interaction to them.
+                  setActiveModal('scanner');
+                }}
+                onCancel={() => setActiveModal(null)}
+              />
+            )}
+
             {activeModal === 'scanner' && activeOrder && (
               <QRScanner
                 order={activeOrder}
                 onScanComplete={handleQrVerified}
+                onCancel={() => setActiveModal(null)}
+              />
+            )}
+
+            {activeModal === 'dropoff' && activeOrder && (
+              <DropoffVerify
+                order={activeOrder}
+                onSubmit={(handover) => completeDropoff(activeOrder.id, handover)}
+                onDone={() => setActiveModal(null)}
                 onCancel={() => setActiveModal(null)}
               />
             )}
@@ -577,7 +793,9 @@ const styles = StyleSheet.create({
     borderColor: colors.borderSoft,
     borderRadius: radius.pill,
     paddingLeft: 5,
-    paddingRight: 14,
+    // Tighter than the 14 it was: the connection pill now sits on this edge and
+    // carries its own padding.
+    paddingRight: 6,
     paddingVertical: 5,
     ...shadow.md,
   },
@@ -729,6 +947,17 @@ const styles = StyleSheet.create({
     color: colors.textCharcoal,
   },
   otpError: { fontSize: 9.5, fontWeight: '700', color: colors.statusError },
+  overrideInput: {
+    flex: undefined,
+    minHeight: 68,
+    textAlign: 'left',
+    letterSpacing: 0,
+    fontWeight: '500',
+    fontSize: 11.5,
+    paddingHorizontal: 11,
+    textAlignVertical: 'top',
+  },
+  formNote: { fontSize: 9.5, color: colors.textSlate, lineHeight: 13.5 },
 
   offerCard: {
     position: 'absolute',

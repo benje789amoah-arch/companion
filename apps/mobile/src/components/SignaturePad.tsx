@@ -116,12 +116,12 @@ export default function SignaturePad({
       </View>
 
       <View style={styles.pad} {...panResponder.panHandlers}>
-        <View style={styles.signLine} pointerEvents="none">
+        <View style={[styles.signLine, { pointerEvents: 'none' }]}>
           <Text style={styles.signHint}>X SIGN HERE</Text>
           <Text style={styles.signHintRight}>Encrypted signature</Text>
         </View>
 
-        <Svg ref={svgRef} style={StyleSheet.absoluteFill} pointerEvents="none">
+        <Svg ref={svgRef} style={[StyleSheet.absoluteFill, { pointerEvents: 'none' }]}>
           {strokes.map((d, i) => (
             <Path
               key={i}

@@ -1,0 +1,242 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import { Camera, Check, ImageIcon, RotateCcw, TriangleAlert } from 'lucide-react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { colors, radius, tints } from '../theme';
+import { Button, Divider, Field } from './ui';
+
+/**
+ * Report a problem with a garment.
+ *
+ * The rider app's `CameraCapture` documents condition on the company's behalf;
+ * this is the mirror of it — the customer documenting theirs. The photo is
+ * optional here, unlike proof-of-service, because a complaint is worth sending
+ * either way. What it will not accept is a stand-in image: the attachment ends
+ * up on the job record, and a stock photo there reads as evidence.
+ */
+
+interface IssueReporterProps {
+  onSubmit: (note: string, photoUri?: string) => void;
+  onCancel?: () => void;
+}
+
+/** Reasons worth one tap, drawn from what the care guarantee actually covers. */
+const REASONS = [
+  'A garment came back with a stain still on it',
+  'Something is missing from the bag',
+  'A garment was damaged',
+  'The finish is not what I asked for',
+  'The order arrived late',
+];
+
+export default function IssueReporter({ onSubmit, onCancel }: IssueReporterProps) {
+  const [note, setNote] = useState('');
+  const [captured, setCaptured] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [permission, requestPermission] = useCameraPermissions();
+  const cameraRef = useRef<CameraView | null>(null);
+
+  // The photo goes onto the job record and into the courier's thread, so it has
+  // to be a real one. A stock image attached to a complaint is worse than no
+  // image — it looks like evidence. The report itself sends fine without a
+  // photo; only fabricated ones are gone.
+  useEffect(() => {
+    if (permission && !permission.granted && permission.canAskAgain) {
+      void requestPermission();
+    }
+  }, [permission, requestPermission]);
+
+  const takePicture = async () => {
+    if (!cameraRef.current || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.6 });
+      if (photo?.uri) setCaptured(photo.uri);
+      else setError('The camera returned nothing. Try again.');
+    } catch {
+      setError('The camera is unavailable. You can still send the report without a photo.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <ScrollView contentContainerStyle={styles.sheet} keyboardShouldPersistTaps="handled">
+      <View style={styles.header}>
+        <TriangleAlert size={19} color={colors.statusWarning} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.title}>Report an issue</Text>
+          <Text style={styles.subtitle}>
+            Anything not right gets re-treated at our cost — tell us what happened.
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.reasonWrap}>
+        {REASONS.map((reason) => {
+          const active = note === reason;
+          return (
+            <Pressable
+              key={reason}
+              onPress={() => setNote(active ? '' : reason)}
+              style={[styles.reasonChip, active && styles.reasonChipActive]}
+            >
+              <Text style={[styles.reasonLabel, active && styles.reasonLabelActive]}>{reason}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      <Field
+        label="What happened?"
+        value={note}
+        onChangeText={setNote}
+        placeholder="The navy blazer has a mark on the left cuff that was there when it came back."
+        multiline
+      />
+
+      <View style={styles.viewfinder}>
+        {captured ? (
+          <Image source={{ uri: captured }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+        ) : permission?.granted ? (
+          <>
+            <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
+            <Pressable
+              onPress={takePicture}
+              accessibilityLabel="Take photo"
+              style={({ pressed }) => [styles.shutter, pressed && { transform: [{ scale: 0.94 }] }]}
+            >
+              <View style={styles.shutterInner} />
+            </Pressable>
+          </>
+        ) : (
+          <View style={styles.permissionPane}>
+            <ImageIcon size={30} color="rgba(255,255,255,0.4)" />
+            <Text style={styles.permissionTitle}>Add a photo</Text>
+            <Text style={styles.permissionBody}>
+              A picture settles most of these in one message — optional, but it helps.
+            </Text>
+            <Button
+              label="Enable camera"
+              variant="outline"
+              size="sm"
+              onPress={() => void requestPermission()}
+              style={{ marginTop: 8 }}
+            />
+          </View>
+        )}
+
+        <View style={[styles.corner, styles.cornerTL]} />
+        <View style={[styles.corner, styles.cornerTR]} />
+        <View style={[styles.corner, styles.cornerBL]} />
+        <View style={[styles.corner, styles.cornerBR]} />
+      </View>
+
+      {!!error && <Text style={styles.error}>{error}</Text>}
+
+      <Divider />
+
+      <View style={styles.actions}>
+        {captured ? (
+          <Button
+            label="Retake"
+            variant="ghost"
+            onPress={() => setCaptured(null)}
+            icon={<RotateCcw size={14} color={colors.textCharcoal} />}
+            style={{ flex: 1 }}
+          />
+        ) : (
+          <Button label="Cancel" variant="ghost" onPress={onCancel} style={{ flex: 1 }} />
+        )}
+        <Button
+          label="Send report"
+          onPress={() => onSubmit(note.trim(), captured ?? undefined)}
+          disabled={!note.trim()}
+          icon={<Check size={15} color="#FFFFFF" />}
+          style={{ flex: 1.3 }}
+        />
+      </View>
+
+      <View style={styles.assurance}>
+        <Camera size={13} color={colors.brandSage} />
+        <Text style={styles.assuranceText}>
+          Your report goes to the concierge desk and the courier on this job, in the same thread.
+        </Text>
+      </View>
+    </ScrollView>
+  );
+}
+
+const styles = StyleSheet.create({
+  sheet: { padding: 20, paddingTop: 8, gap: 13 },
+  header: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  title: { fontSize: 15, fontWeight: '800', color: colors.textCharcoal },
+  subtitle: { fontSize: 10.5, color: colors.textSlate, marginTop: 3, lineHeight: 14.5 },
+
+  reasonWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
+  reasonChip: {
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: radius.pill,
+    backgroundColor: colors.bgLinen,
+    borderWidth: 1,
+    borderColor: colors.borderSoft,
+  },
+  reasonChipActive: { backgroundColor: tints.warning10, borderColor: tints.warning30 },
+  reasonLabel: { fontSize: 10, fontWeight: '600', color: colors.textSlate },
+  reasonLabelActive: { color: colors.statusWarning, fontWeight: '700' },
+
+  viewfinder: {
+    aspectRatio: 4 / 3,
+    borderRadius: radius.xl,
+    overflow: 'hidden',
+    backgroundColor: '#141412',
+    borderWidth: 1,
+    borderColor: colors.borderSoft,
+  },
+  shutter: {
+    position: 'absolute',
+    bottom: 16,
+    alignSelf: 'center',
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    borderWidth: 4,
+    borderColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shutterInner: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.statusError },
+
+  permissionPane: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+    gap: 3,
+  },
+  permissionTitle: { color: '#FFFFFF', fontSize: 12, fontWeight: '700', marginTop: 4 },
+  permissionBody: { color: colors.textMuted, fontSize: 9.5, marginBottom: 8 },
+  corner: { position: 'absolute', width: 16, height: 16, borderColor: 'rgba(255,255,255,0.45)' },
+  cornerTL: { top: 14, left: 14, borderTopWidth: 2, borderLeftWidth: 2 },
+  cornerTR: { top: 14, right: 14, borderTopWidth: 2, borderRightWidth: 2 },
+  cornerBL: { bottom: 14, left: 14, borderBottomWidth: 2, borderLeftWidth: 2 },
+  cornerBR: { bottom: 14, right: 14, borderBottomWidth: 2, borderRightWidth: 2 },
+
+  error: { fontSize: 10.5, color: colors.statusError, lineHeight: 15 },
+  actions: { flexDirection: 'row', gap: 10 },
+
+  assurance: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, paddingHorizontal: 2 },
+  assuranceText: { flex: 1, fontSize: 10, color: colors.textMuted, lineHeight: 14 },
+});

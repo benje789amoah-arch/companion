@@ -3,255 +3,205 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import {
-  bookingToJob,
-  type Booking,
-  type Job,
-  type JobStatus,
-  type Message,
-  type Notification,
-  type RiderState,
-} from '@freshfold/core';
 import { hashPassword } from './passwords';
-import type { StoredAccount } from './store';
+import { store, type StoredAccount, type StoredRider, type StoredSupervisor } from './store';
 
 /**
- * Demo data for a fresh database.
+ * What a fresh database contains.
  *
- * These are the four jobs the rider app used to hard-code as mock orders,
- * expressed as bookings and run through the same `bookingToJob` path a real
- * website submission takes. The point is that the seeded board and a
- * customer-created one are indistinguishable — no separate mock code path.
+ * Deliberately almost nothing. There are no demo jobs: every order in the
+ * system is one somebody actually booked, on the website or in the customer
+ * app, so the rider's board and the supervisor's ledger only ever show real
+ * work. A fresh install opens on empty states, which is correct — there is no
+ * work yet.
+ *
+ * What does exist is identity, because nobody can sign in to a system with no
+ * accounts in it, and none of these three can be self-registered:
+ *
+ *  - **The courier roster.** Employment records: an id, an employee number, a
+ *    contact number and a hashed PIN. Name, vehicle and plate are blank until
+ *    the courier enters them, and every performance figure starts at zero
+ *    rather than inventing a flattering one.
+ *
+ *  - **A supervisor.** The bootstrap desk account. Somebody has to be able to
+ *    sign in and put the first courier on the roster.
+ *
+ *  - **Sign-in accounts.** Without these there is no way into the customer app
+ *    except registering a new account first. They carry an identity and a
+ *    password and nothing else: no points, no wallet balance, no history.
+ *
+ * Seeding is per-table and only fires on an empty one, so restarting the server
+ * against a database that already has a roster does nothing at all. It is not
+ * an "insert if absent" over each record: a supervisor who deactivated a
+ * courier does not want them back on the next deploy.
  */
 
-interface SeedSpec {
-  booking: Omit<Booking, 'status' | 'createdAt'>;
-  status: JobStatus;
-  riderId?: string;
-}
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-const today = () => new Date().toISOString().split('T')[0];
-const tomorrow = () => new Date(Date.now() + DAY_MS).toISOString().split('T')[0];
-
-const SEEDS: SeedSpec[] = [
+/**
+ * The courier roster.
+ *
+ * Riders are provisioned by the company, never self-registered, so these are
+ * employment records rather than sample data: an id, an employee number, a
+ * contact number, a PIN, and the company vehicle they have been given. The one
+ * thing a courier enters themselves is their own name, and dispatch will not
+ * let them accept work until they have.
+ *
+ * Every performance figure starts at zero. Nobody has driven anywhere yet.
+ */
+const ROSTER = [
   {
-    status: 'assigned',
-    riderId: 'FF-R-204',
-    booking: {
-      id: 'FFC-780145',
-      name: 'Ama Serwaah',
-      email: 'ama.serwaah@st.knust.edu.gh',
-      phone: '+233 550 192 831',
-      serviceType: 'Traditional Kente Cloth & Silk Stole',
-      address: 'Unity Hall (Conti), Block C, Room 102',
-      suburb: 'KNUST Campus',
-      city: 'Kumasi',
-      pickupDate: today(),
-      pickupTime: '05:00 PM - 07:30 PM',
-      deliveryDate: tomorrow(),
-      specialInstructions:
-        'Please handle the gold-threaded Kente with extreme reverence. Hand-wash and steam-press only. No hot water.',
-      riderNote: 'Call when at the Unity Hall parking lot.',
-      specialtyAddons: ['Sandalwood Silk Scent'],
-      amount: 45,
-      paymentStatus: 'Paid',
-      paymentMethod: 'MTN MoMo',
-      momoNetwork: 'MTN',
-      transactionRef: 'TXN-MOMO-780145',
-    },
+    id: 'FF-R-204',
+    employeeId: 'RIDER-204',
+    phone: '0244567801',
+    pin: '7801',
+    vehicle: 'Electric delivery scooter',
+    vehiclePlate: 'AS-3012-26',
   },
   {
-    status: 'ready_for_delivery',
-    riderId: 'FF-R-204',
-    booking: {
-      id: 'FFC-340288',
-      name: 'Kofi Mensah',
-      email: 'kofi.mensah@gmail.com',
-      phone: '+233 240 419 844',
-      serviceType: 'Linen Shirts & Designer Khakis',
-      address: 'Millennium Hostel, Ayeduase Gate',
-      suburb: 'Ayeduase',
-      city: 'Kumasi',
-      pickupDate: today(),
-      pickupTime: '09:00 AM - 11:00 AM',
-      deliveryDate: today(),
-      specialInstructions:
-        'Scent-free premium organic detergents only. Double-fold all collared linen shirts, please.',
-      amount: 24.5,
-      paymentStatus: 'Paid',
-      paymentMethod: 'Card',
-      transactionRef: 'TXN-CARD-340288',
-    },
+    id: 'FF-R-118',
+    employeeId: 'RIDER-118',
+    phone: '0209114402',
+    pin: '4019',
+    vehicle: 'Electric delivery scooter',
+    vehiclePlate: 'AS-2884-25',
   },
   {
-    status: 'unassigned',
-    booking: {
-      id: 'FFC-902133',
-      name: 'Adwoa Osei',
-      email: 'adwoa.osei@outlook.com',
-      phone: '+233 500 887 261',
-      serviceType: 'Premium Comforter Shell & Egyptian Sheets',
-      address: 'Jubilee Apartment Complex, Penthouse 4B',
-      suburb: 'Bomso',
-      city: 'Kumasi',
-      pickupDate: today(),
-      pickupTime: '06:00 PM - 08:00 PM',
-      deliveryDate: tomorrow(),
-      specialInstructions:
-        'Hot water wash for linens. Apply lavender natural scent mist. Leave with the secure apartment gate desk if unavailable.',
-      specialtyAddons: ['French Lavender Scent Spray'],
-      amount: 68,
-      paymentStatus: 'Pay on Pickup',
-      paymentMethod: 'Pay on Pickup',
-    },
-  },
-  {
-    status: 'delivered',
-    riderId: 'FF-R-204',
-    booking: {
-      id: 'FFC-110977',
-      name: "Prof. Acheampong's Office",
-      email: 'vc.office@knust.edu.gh',
-      phone: '+233 200 991 111',
-      serviceType: 'Academic Gowns & Velvet Hood Sets',
-      address: 'KNUST Vice Chancellor Lodge, Lodge Hill Road',
-      suburb: 'KNUST Campus',
-      city: 'Kumasi',
-      pickupDate: today(),
-      pickupTime: '02:00 PM - 04:00 PM',
-      deliveryDate: today(),
-      specialInstructions:
-        'Signature required on delivery. Drop off directly at the private residence reception desk. Ask for Adama.',
-      amount: 110,
-      paymentStatus: 'Paid',
-      paymentMethod: 'Card',
-      transactionRef: 'TXN-CARD-110977',
-    },
+    id: 'FF-R-337',
+    employeeId: 'RIDER-337',
+    phone: '0553370915',
+    pin: '1234',
+    vehicle: 'Cargo tricycle',
+    vehiclePlate: 'AS-4471-24',
   },
 ];
 
-export function seedJobs(): Job[] {
-  return SEEDS.map(({ booking, status, riderId }) => {
-    const job = bookingToJob({ ...booking, status: 'Scheduled', createdAt: new Date().toISOString() });
+/**
+ * Sign-in accounts, all with the password `password` — hashed on the way in,
+ * like any other account. There is no plaintext credential in the database.
+ *
+ * These exist so there is a door into the customer app on a fresh install.
+ * They start with no points, no wallet and no orders; everything a real
+ * account accumulates, it accumulates by being used.
+ */
+const SIGN_IN_ACCOUNTS = [
+  { name: 'Ama Serwaah', email: 'ama.serwaah@st.knust.edu.gh', phone: '0550192831' },
+  { name: 'Kofi Mensah', email: 'kofi.mensah@gmail.com', phone: '0240419844' },
+  { name: 'Adwoa Osei', email: 'adwoa.osei@outlook.com', phone: '0500887261' },
+];
 
-    job.status = status;
-    job.dispatch.riderId = riderId;
+/** Every seeded staff and sign-in credential uses this. */
+export const DEMO_PASSWORD = 'password';
 
-    if (riderId) job.dispatch.assignedAt = new Date().toISOString();
+/**
+ * The supervisor desk.
+ *
+ * One account to start, because somebody has to be able to sign in and put the
+ * first courier on the roster. Supervisors are not self-registered either —
+ * this is the bootstrap identity, and further ones would be created by an
+ * existing supervisor.
+ */
+const SUPERVISORS = [
+  { id: 'FF-S-001', name: 'Concierge Desk Supervisor', email: 'supervisor@freshfold.com' },
+];
 
-    if (status === 'delivered') {
-      job.dispatch.deliveredAt = new Date().toISOString();
-      job.dispatch.pickedUpAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-      job.dispatch.proof = {
-        pickupPhoto:
-          'https://images.unsplash.com/photo-1545173168-9f19472ef7f8?auto=format&fit=crop&q=80&w=300',
-        pickupSignature: 'SEED_SIGNATURE_PICKUP',
-        deliveryPhoto:
-          'https://images.unsplash.com/photo-1541123437800-1bb1317badc2?auto=format&fit=crop&q=80&w=300',
-        deliverySignature: 'SEED_SIGNATURE_DELIVERY',
-      };
-      job.dispatch.bags = job.dispatch.bags.map((bag) => ({ ...bag, scanned: true }));
-    }
-
-    if (status === 'ready_for_delivery') {
-      job.dispatch.pickedUpAt = new Date(Date.now() - 90 * 60 * 1000).toISOString();
-      job.dispatch.bags = job.dispatch.bags.map((bag) => ({ ...bag, scanned: true }));
-    }
-
-    return job;
-  });
-}
-
-/** The rider the companion app signs in as. */
-export const DEFAULT_RIDER_ID = 'FF-R-204';
-
-export function seedRiders(): RiderState[] {
-  return [
-    {
-      id: DEFAULT_RIDER_ID,
+export function seedRiders(): StoredRider[] {
+  return ROSTER.map(({ id, employeeId, phone, pin, vehicle, vehiclePlate }) => {
+    const { salt, hash } = hashPassword(pin);
+    return {
+      id,
+      employeeId,
+      phone,
+      // The courier's own, entered on first sign-in. Dispatch refuses to let
+      // them accept work until it has a value.
       name: '',
-      employeeId: '',
       avatar: '',
-      vehicle: '',
-      vehiclePlate: '',
-      rating: 5.0,
+      // The company's, assigned with the employment record.
+      vehicle,
+      vehiclePlate,
+      // Nothing has been rated, driven or delivered yet. Zero says that;
+      // a 5.0 rating and a 96.5% acceptance rate would be a claim.
+      rating: 0,
       isOnline: false,
       batteryLevel: 100,
-      gpsAccuracy: 1.5,
+      gpsAccuracy: 0,
       speed: 0,
-      heading: 180,
-      // Parked at the hub until the rider goes online.
+      heading: 0,
+      // Parked at the hub until the device reports a real fix.
       coords: { lat: 6.6852, lng: -1.5815 },
       todayDistance: 0,
       todayEarnings: 0,
       completedCount: 0,
-      onTimeRate: 100,
-      acceptanceRate: 96.5,
-      completionRate: 100,
-    },
-  ];
+      onTimeRate: 0,
+      acceptanceRate: 0,
+      completionRate: 0,
+      active: true,
+      pinSalt: salt,
+      pinHash: hash,
+    };
+  });
 }
 
-export function seedMessages(): Message[] {
-  return [
-    {
-      id: 'msg-seed-1',
-      sender: 'dispatcher',
-      text: 'Welcome back. You have been assigned the Ama Serwaah delicate collection. The customer is expecting you by 19:30.',
-      timestamp: '19:01',
-      orderId: 'FFC-780145',
-    },
-    {
-      id: 'msg-seed-2',
-      sender: 'customer',
-      text: 'Hello, I placed the bag of kente out on the bench, but I will be here to sign. Please let me know when you are outside.',
-      timestamp: '19:03',
-      orderId: 'FFC-780145',
-    },
-  ];
-}
-
-export function seedNotifications(): Notification[] {
-  return [
-    {
-      id: 'notif-seed-1',
-      title: 'New Premium Pickup Available',
-      body: 'An elite order from Ama Serwaah (Unity Hall) has been assigned to you. Touch to view route.',
-      timestamp: '19:00',
-      type: 'order',
-      orderId: 'FFC-780145',
-      read: false,
-    },
-    {
-      id: 'notif-seed-2',
-      title: 'High Priority Active Alert',
-      body: 'Campus traffic is normal. All riders are requested to wear FreshFold signature ivory aprons.',
-      timestamp: '18:30',
-      type: 'system',
-      read: true,
-    },
-  ];
-}
-
-/**
- * Demo accounts, all with the password `password` — hashed on the way in, like
- * any other account. There is no plaintext credential anywhere in the database.
- */
-export const DEMO_PASSWORD = 'password';
-
-export function seedAccounts(): StoredAccount[] {
-  return SEEDS.map(({ booking }) => {
+export function seedSupervisors(): StoredSupervisor[] {
+  return SUPERVISORS.map((supervisor) => {
     const { salt, hash } = hashPassword(DEMO_PASSWORD);
     return {
-      email: booking.email,
-      phone: booking.phone,
-      name: booking.name,
-      points: 850,
-      walletBalance: 120,
+      ...supervisor,
       createdAt: new Date().toISOString(),
+      active: true,
       passwordSalt: salt,
       passwordHash: hash,
     };
+  });
+}
+
+export function seedAccounts(): StoredAccount[] {
+  return SIGN_IN_ACCOUNTS.map((account) => {
+    const { salt, hash } = hashPassword(DEMO_PASSWORD);
+    return {
+      ...account,
+      points: 0,
+      walletBalance: 0,
+      createdAt: new Date().toISOString(),
+      passwordSalt: salt,
+      passwordHash: hash,
+      // Confirmed on the way in. These exist so a fresh install has a door into
+      // the customer app; one that cannot book until somebody reads a mailbox
+      // nobody owns is not a door.
+      emailVerified: true,
+    };
+  });
+}
+
+/**
+ * Puts the three bootstrap identities in place if they are not there already.
+ *
+ * Runs on every boot and on `POST /api/reset`. All three checks share one
+ * transaction so two instances starting together cannot both find an empty
+ * roster and both fill it — the second waits, sees three couriers, and does
+ * nothing.
+ */
+export async function ensureSeeded(): Promise<{
+  riders: number;
+  supervisors: number;
+  accounts: number;
+}> {
+  return store.tx(async (t) => {
+    const inserted = { riders: 0, supervisors: 0, accounts: 0 };
+
+    if ((await t.riders.count()) === 0) {
+      for (const rider of seedRiders()) await t.riders.insert(rider);
+      inserted.riders = ROSTER.length;
+    }
+
+    if ((await t.supervisors.list()).length === 0) {
+      for (const supervisor of seedSupervisors()) await t.supervisors.insert(supervisor);
+      inserted.supervisors = SUPERVISORS.length;
+    }
+
+    if ((await t.accounts.list()).length === 0) {
+      for (const account of seedAccounts()) await t.accounts.insert(account);
+      inserted.accounts = SIGN_IN_ACCOUNTS.length;
+    }
+
+    return inserted;
   });
 }

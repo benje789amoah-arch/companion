@@ -2,7 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Booking, UserAccount } from '../types';
 import * as store from '../services/store';
-import { BOOKING_STAGE_SEQUENCE, bookingProgressPercent } from '@freshfold/core';
+import {
+  ApiError,
+  BOOKING_STAGE_SEQUENCE,
+  bookingProgressPercent,
+  samePhone,
+  type JobStatus,
+  type Message,
+} from '@freshfold/core';
 import { 
   X, Shield, Lock, Smartphone, Mail, Sparkles, User, LogOut,
   MapPin, Calendar, Clock, ChevronRight, CheckCircle2, History,
@@ -10,12 +17,57 @@ import {
   CreditCard, Wallet, Banknote, QrCode, Receipt, DollarSign, CheckCircle, Trash2
 } from 'lucide-react';
 import LiveDispatchMap from './LiveDispatchMap';
+import HandoffCode from './HandoffCode';
+
+/**
+ * Dispatch states in which the bags are still with the customer, and the
+ * collection code is therefore worth showing.
+ */
+const COLLECTION_PENDING = new Set<JobStatus>([
+  'unassigned',
+  'assigned',
+  'navigating_to_pickup',
+  'arrived_at_pickup',
+]);
+
+/**
+ * And the states in which the clean laundry is on its way back, so the
+ * delivery code is the one worth showing. It appears as the courier sets off
+ * rather than when they knock — a customer who has to hunt for it with
+ * somebody waiting at the door will just read out whatever is nearest.
+ */
+const DELIVERY_PENDING = new Set<JobStatus>([
+  'ready_for_delivery',
+  'navigating_to_delivery',
+  'arrived_at_delivery',
+]);
+
+/**
+ * Who a message is from, in the customer's language. The wire values are the
+ * dispatch team's own vocabulary, and "laundry_center" on a bubble helps
+ * nobody.
+ */
+const SENDER_LABELS: Record<Message['sender'], string> = {
+  rider: 'Your Courier',
+  customer: 'You',
+  dispatcher: 'Dispatch Desk',
+  laundry_center: 'Bomso Atelier',
+};
+
+/** What `GET /api/auth/claim` hands back for a live setup link. */
+interface SetupBooking {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+}
 
 interface ClientPortalProps {
   isOpen: boolean;
   onClose: () => void;
   bookingIdParam: string | null;
-  setupModeParam: boolean;
+  /** The token from an emailed setup link, or null when this is a plain visit. */
+  setupTokenParam: string | null;
   activeBookings: Booking[];
   onUpdateBookings: (bookings: Booking[]) => void;
   onOpenBooking: () => void;
@@ -25,7 +77,7 @@ export default function ClientPortal({
   isOpen,
   onClose,
   bookingIdParam,
-  setupModeParam,
+  setupTokenParam,
   activeBookings,
   onUpdateBookings,
   onOpenBooking
@@ -38,10 +90,30 @@ export default function ClientPortal({
   // Setup Password states
   const [setupPassword, setSetupPassword] = useState('');
   const [setupConfirmPassword, setSetupConfirmPassword] = useState('');
-  const [setupBooking, setSetupBooking] = useState<Booking | null>(null);
+  /**
+   * The booking a setup link opens, as the server describes it.
+   *
+   * Not a full `Booking`: the token buys the contact details this screen shows
+   * and nothing else — no address, no payment, no hand-off codes. What the
+   * order is doing is the tracking terminal's business, once there is a login.
+   */
+  const [setupBooking, setSetupBooking] = useState<SetupBooking | null>(null);
   const [setupError, setSetupError] = useState('');
   const [loginError, setLoginError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+
+  // The unconfirmed-email notice. `verifyNotice` carries whatever the server
+  // last said — a cooldown message is more useful to show than to swallow.
+  const [verifySending, setVerifySending] = useState(false);
+  const [verifyNotice, setVerifyNotice] = useState<string>('');
+
+  // The reset request is in flight. Its outcome rides on the existing
+  // success/error banners rather than a third one — the sign-in card already
+  // has two places to look, and a locked-out customer does not need a fourth.
+  const [resetSending, setResetSending] = useState(false);
+
+  // And the same for "send my setup link again", which shares those banners.
+  const [setupSending, setSetupSending] = useState(false);
 
   // Active User Data states
   const [userBookings, setUserBookings] = useState<Booking[]>([]);
@@ -197,6 +269,24 @@ export default function ClientPortal({
   const [conciergeText, setConciergeText] = useState('');
   const [conciergeSuccess, setConciergeSuccess] = useState('');
 
+  /**
+   * The order thread, mirrored from the dispatch server.
+   *
+   * The same conversation the rider sees in the companion app, so a courier
+   * asking which buzzer to press gets an answer here rather than nowhere. The
+   * subscription covers both directions: our own sends notify synchronously,
+   * and the five-second poll brings the rider's replies in.
+   */
+  const [messages, setMessages] = useState<Message[]>(() => store.readMessages());
+  useEffect(() => {
+    return store.subscribe(() => setMessages(store.readMessages()));
+  }, []);
+
+  const threadOrderId = activeTrackingId ?? userBookings[0]?.id ?? null;
+  const thread = threadOrderId
+    ? messages.filter((message) => message.orderId === threadOrderId)
+    : [];
+
   // Main portal navigation tab state
   const [activePortalTab, setActivePortalTab] = useState<'dashboard' | 'orders' | 'wallet' | 'settings'>('dashboard');
   const [receiptModalBooking, setReceiptModalBooking] = useState<Booking | null>(null);
@@ -205,118 +295,6 @@ export default function ClientPortal({
   const [userSuburb, setUserSuburb] = useState('Ayeduase');
   const [savedSettingsMsg, setSavedSettingsMsg] = useState('');
   const [redeemedRewardMsg, setRedeemedRewardMsg] = useState('');
-
-  /**
-   * Preset Profile Quick Switcher helper.
-   *
-   * Signs in for real rather than fabricating a session: the demo patron is
-   * registered on the server the first time and signed in from then on, so the
-   * portal holds a genuine token and survives a reload like any other patron.
-   */
-  const loginPresetUser = async (preset: 'sena' | 'akwasi') => {
-    const email = preset === 'sena' ? 'sena.kwami@knust.edu.gh' : 'akwasi.addai@gmail.com';
-    const phone = preset === 'sena' ? '0244123456' : '0208112233';
-    const name = preset === 'sena' ? 'Sena Kwami' : 'Akwasi Addai';
-    const points = preset === 'sena' ? 750 : 1250;
-    const wallet = preset === 'sena' ? 180 : 350;
-
-    const presetUser: UserAccount = {
-      email,
-      phone,
-      name,
-      createdAt: new Date().toISOString(),
-      points
-    };
-
-    let savedAccounts: UserAccount[] = [];
-    try {
-      savedAccounts = store.readAccounts();
-    } catch (e) {}
-
-    const idx = savedAccounts.findIndex(a => a.email.toLowerCase() === email.toLowerCase());
-    if (idx >= 0) {
-      savedAccounts[idx] = presetUser;
-    } else {
-      savedAccounts.push(presetUser);
-    }
-    store.writeAccounts(savedAccounts);
-
-    let allBookings: Booking[] = [];
-    try {
-      allBookings = store.readBookings();
-    } catch (e) {}
-
-    const userExisting = allBookings.filter(b => b.email.toLowerCase() === email.toLowerCase());
-    if (userExisting.length === 0) {
-      if (preset === 'sena') {
-        allBookings.unshift({
-          id: 'FFC-882049',
-          name: 'Sena Kwami',
-          phone: '0244123456',
-          email: 'sena.kwami@knust.edu.gh',
-          address: 'KNUST Gaza Hostel, Room 304',
-          suburb: 'Ayeduase',
-          serviceType: 'Boutique Wash & Press',
-          specialtyAddons: ['French Lavender Scent Spray', 'Fabric Softening'],
-          pickupDate: 'Today',
-          pickupTime: '10:00 AM - 12:00 PM',
-          deliveryDate: 'Tomorrow',
-          notes: 'Careful with silk collars. Call when near Gaza entrance.',
-          riderNote: 'Rider Kwame assigned • En route via Bomso Junction',
-          status: 'Collecting',
-          createdAt: new Date().toISOString(),
-          paymentStatus: 'Paid',
-          transactionRef: 'TXN-MOMO-992144',
-          amount: 45
-        });
-      } else {
-        allBookings.unshift({
-          id: 'FFC-910322',
-          name: 'Akwasi Addai',
-          phone: '0208112233',
-          email: 'akwasi.addai@gmail.com',
-          address: 'Plot 14, Bomso Hill Estate',
-          suburb: 'Bomso',
-          serviceType: 'Architectural Steam Press',
-          specialtyAddons: ['Cedarwood Organic Scent', 'Laser Line Creasing'],
-          pickupDate: 'Today',
-          pickupTime: '02:00 PM - 04:00 PM',
-          deliveryDate: 'Tomorrow',
-          notes: 'Suit jackets on wooden hangers please.',
-          riderNote: 'HQ Cleaning Bay • Steam pressing active',
-          status: 'In Care',
-          createdAt: new Date().toISOString(),
-          paymentStatus: 'Paid',
-          transactionRef: 'TXN-CARD-812039',
-          amount: 80
-        });
-      }
-      store.writeBookings(allBookings);
-      onUpdateBookings(allBookings);
-    }
-
-    store.writeWallet(email, wallet);
-    setWalletBalance(wallet);
-
-    const DEMO_PASSWORD = 'password';
-    try {
-      setCurrentUser(await store.login(email, DEMO_PASSWORD));
-      setLoginError('');
-    } catch {
-      try {
-        setCurrentUser(await store.register({ email, phone, name, password: DEMO_PASSWORD }));
-        setLoginError('');
-      } catch (e) {
-        // No server to sign in against. Fall back to a local-only profile so
-        // the demo still opens; it just won't survive a reload.
-        store.writeCurrentUser(presetUser);
-        setCurrentUser(presetUser);
-        setLoginError(
-          e instanceof Error ? `Signed in locally — ${e.message}` : 'Signed in locally.'
-        );
-      }
-    }
-  };
 
   // Load wallet balance whenever currentUser changes. The balance lives on the
   // shared account record, so a top-up made on another device shows up here.
@@ -415,7 +393,7 @@ export default function ClientPortal({
         const matched = allBookings.filter(
           b => 
             b.email.toLowerCase() === currentUser.email.toLowerCase() || 
-            b.phone.replace(/[\s-+]/g, '') === currentUser.phone.replace(/[\s-+]/g, '')
+            samePhone(b.phone, currentUser.phone)
         );
         setUserBookings(matched);
         if (matched.length > 0 && !activeTrackingId) {
@@ -430,26 +408,42 @@ export default function ClientPortal({
     }
   }, [currentUser, activeBookings]);
 
-  // Load target booking details if in setup mode
+  // Resolve the emailed setup link into the booking it opens
   useEffect(() => {
-    if (bookingIdParam && setupModeParam) {
-      try {
-        const allBookings: Booking[] = store.readBookings();
-        const target = allBookings.find(b => b.id === bookingIdParam);
-        if (target) {
-          setSetupBooking(target);
-          setInputIdentifier(target.email); // Pre-fill email
-        } else {
-          setSetupBooking(null);
-          setSetupError('Could not locate booking details matching this security reference.');
-        }
-      } catch (e) {
-        setSetupError('Error reading secure database.');
-      }
-    } else {
+    if (!setupTokenParam) {
       setSetupBooking(null);
+      return;
     }
-  }, [bookingIdParam, setupModeParam]);
+
+    // Asked of the server, never read out of the URL or the local mirror. The
+    // token is the only claim this browser has to the order — it arrived in the
+    // customer's inbox — and the server is the only thing that can say whether
+    // it is still good. A link opened on a phone that has never seen this site
+    // works for exactly the same reason.
+    let cancelled = false;
+    setSetupError('');
+
+    store
+      .readSetupLink(setupTokenParam)
+      .then((booking) => {
+        if (cancelled) return;
+        setSetupBooking(booking);
+        setInputIdentifier(booking.email); // Pre-fill email
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setSetupBooking(null);
+        setSetupError(
+          e instanceof ApiError
+            ? e.message
+            : 'Could not open this setup link. Check your connection and try again.'
+        );
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [setupTokenParam]);
 
   // Handle setting/creating a new secure password
   const handleSetupPasswordSubmit = async (e: React.FormEvent) => {
@@ -457,7 +451,7 @@ export default function ClientPortal({
     setSetupError('');
     setSuccessMsg('');
 
-    if (!setupBooking) {
+    if (!setupTokenParam || !setupBooking) {
       setSetupError('No active booking state is associated with this link.');
       return;
     }
@@ -473,29 +467,45 @@ export default function ClientPortal({
     }
 
     try {
-      // Whether this contact already has a login is the server's call, not
-      // ours: a profile created by a booking exists but has no password yet,
-      // and claiming it is exactly what this form is for. The server returns a
-      // 409 only when a password is genuinely already set.
+      // Which account this opens is decided by the token, not by the fields on
+      // screen — those are shown so the customer can see what they are claiming,
+      // and are not sent. The password goes to the server and is hashed there;
+      // it is never held in this browser.
+      const account = await store.claimBooking(setupTokenParam, setupPassword);
 
-      // The password goes to the server and is hashed there. It is never held
-      // in this browser and never written into the account ledger.
-      const account = await store.register({
-        email: setupBooking.email,
-        phone: setupBooking.phone,
-        name: setupBooking.name,
-        password: setupPassword
-      });
-
+      // The spent token leaves the URL in the same beat the terminal opens.
+      //
+      // These used to be 1.5 seconds apart, which put the setup card and the
+      // signed-in portal on screen together — the overlap the note on
+      // `AnimatePresence` above is about. There is also nothing left to read on
+      // the card by then: the account exists and the terminal is the answer.
       setCurrentUser(account);
-      setSuccessMsg('Patron account certified successfully! Redirecting to tracking terminal...');
-
-      // Remove query hash parameters
-      setTimeout(() => {
-        window.location.hash = '#portal';
-      }, 1500);
+      window.location.hash = '#portal';
+      setSuccessMsg('Patron account certified successfully.');
 
     } catch (e) {
+      // Two refusals mean the same thing to the customer: this link cannot set
+      // a password, and pressing the button again will not change that. A 409 is
+      // an account that already has one; a spent link is usually a previous
+      // attempt that reached the server and lost only its response, leaving an
+      // account the customer was told had failed. Both end at sign-in, with the
+      // address already filled in, rather than at a refusal they cannot act on.
+      const spent =
+        e instanceof ApiError &&
+        (e.status === 409 ||
+          (typeof e.body === 'object' &&
+            e.body !== null &&
+            (e.body as { code?: string }).code === 'SETUP_LINK_INVALID'));
+
+      if (spent) {
+        setInputIdentifier(setupBooking.email);
+        setLoginError(
+          'This contact already has a password — your account may have been created on an earlier attempt. Sign in below, or use the reset link if you do not have the password.'
+        );
+        window.location.hash = '#portal';
+        return;
+      }
+
       setSetupError(e instanceof Error ? e.message : 'Could not create your credentials. Please try again.');
     }
   };
@@ -528,14 +538,116 @@ export default function ClientPortal({
       // them stuck on "wrong credentials".
       const bookingMatch = store.readBookings().find(b => {
         const cleanInp = inputIdentifier.toLowerCase().trim();
-        return b.email.toLowerCase() === cleanInp || b.phone.replace(/[\s-+]/g, '') === cleanInp.replace(/[\s-+]/g, '');
+        return b.email.toLowerCase() === cleanInp || samePhone(b.phone, cleanInp);
       });
 
       if (bookingMatch) {
-        setLoginError(`We found your booking ${bookingMatch.id} under this contact! However, you haven't chosen a secure login password yet. Please check your WhatsApp/SMS tracking link or click below to initialize your password.`);
+        setLoginError(`We found your booking ${bookingMatch.id} under this contact! However, you haven't chosen a secure login password yet. Open the setup link in your booking confirmation email — or press "Send my setup link again" below and we will mail you a fresh one.`);
       } else {
         setLoginError(e instanceof Error ? e.message : 'No matching patron credentials found. Please double-check formatting or schedule a pickup to sign up.');
       }
+    }
+  };
+
+  /**
+   * Asks for a password-reset link.
+   *
+   * This control was a dead `<a>` with no handler and a `cursor-not-allowed`
+   * class — it looked live and did nothing, which is worse than not offering
+   * it, because the customer it is aimed at is already locked out.
+   *
+   * The confirmation says the same thing whether or not that contact has an
+   * account. The server refuses to distinguish them so that this endpoint
+   * cannot be used to find out who banks here, and a message that varied would
+   * hand back precisely what the server withheld.
+   */
+  const handleForgotPassword = async () => {
+    const identifier = inputIdentifier.trim();
+
+    if (!identifier) {
+      setLoginError('Enter your email or phone number above first, then press Reset Password.');
+      return;
+    }
+
+    setLoginError('');
+    setSuccessMsg('');
+    setResetSending(true);
+
+    try {
+      await store.requestPasswordReset(identifier);
+      setSuccessMsg(
+        `If ${identifier} has a FreshFold account, a reset link is on its way. It is good for one hour — check your spam folder too.`
+      );
+    } catch (error) {
+      setLoginError(
+        error instanceof Error
+          ? error.message
+          : 'Could not reach FreshFold just now. Please try again shortly.'
+      );
+    } finally {
+      setResetSending(false);
+    }
+  };
+
+  /**
+   * Asks for the setup link to be sent again.
+   *
+   * For the patron who booked as a guest and no longer has the confirmation
+   * email. Reset Password cannot help them — there is no account to reset until
+   * a setup link has been spent — so this is the only way back to a password
+   * for a booking, and the sign-in card offers both side by side.
+   *
+   * Says the same thing whatever the server found, for the reason the reset
+   * confirmation does.
+   */
+  const handleResendSetupLink = async () => {
+    const identifier = inputIdentifier.trim();
+
+    if (!identifier) {
+      setLoginError('Enter the email address you booked with above first.');
+      return;
+    }
+
+    setLoginError('');
+    setSuccessMsg('');
+    setSetupSending(true);
+
+    try {
+      await store.requestSetupLink(identifier);
+      setSuccessMsg(
+        `If ${identifier} has a booking with no password yet, a setup link is on its way — check your spam folder too.`
+      );
+    } catch (error) {
+      setLoginError(
+        error instanceof Error
+          ? error.message
+          : 'Could not reach FreshFold just now. Please try again shortly.'
+      );
+    } finally {
+      setSetupSending(false);
+    }
+  };
+
+  /**
+   * Asks for another confirmation link.
+   *
+   * The server's message is shown as-is rather than replaced with a generic
+   * one: "try again in 41 seconds" is the answer to the question the customer
+   * is about to ask, and a bland failure would have them pressing the button
+   * again.
+   */
+  const handleResendVerification = async () => {
+    setVerifySending(true);
+    setVerifyNotice('');
+    try {
+      await store.resendVerification();
+      setVerifyNotice('Sent. Check your inbox — and your spam folder.');
+    } catch (error) {
+      setVerifyNotice(
+        error instanceof Error ? error.message : 'Could not send the link. Try again shortly.'
+      );
+    } finally {
+      setVerifySending(false);
     }
   };
 
@@ -550,40 +662,6 @@ export default function ClientPortal({
   };
 
   // Step the progress of an active booking for interactive presentation/testing
-  const stepBookingProgress = (targetId: string) => {
-    try {
-      const allBookings: Booking[] = store.readBookings();
-      const statusCycle = BOOKING_STAGE_SEQUENCE;
-      
-      const updated = allBookings.map(b => {
-        if (b.id === targetId) {
-          const currIdx = statusCycle.indexOf(b.status);
-          const nextIdx = (currIdx + 1) % statusCycle.length;
-          return {
-            ...b,
-            status: statusCycle[nextIdx]
-          };
-        }
-        return b;
-      });
-
-      store.writeBookings(updated);
-      onUpdateBookings(updated);
-      
-      // Update local array for instantaneous render
-      const matched = updated.filter(
-        b => 
-          currentUser && (
-            b.email.toLowerCase() === currentUser.email.toLowerCase() || 
-            b.phone.replace(/[\s-+]/g, '') === currentUser.phone.replace(/[\s-+]/g, '')
-          )
-      );
-      setUserBookings(matched);
-    } catch (e) {
-      console.warn('Could not update tracking parameters.', e);
-    }
-  };
-
   // Handler to remove a single order from the client portal
   const handleRemoveOrder = (bookingId: string) => {
     if (!window.confirm(`Are you sure you want to remove order ${bookingId} from your account history?`)) {
@@ -622,7 +700,7 @@ export default function ClientPortal({
       const updatedAll = allBookings.filter(b => {
         if (!currentUser) return true;
         const matchesEmail = b.email.toLowerCase() === currentUser.email.toLowerCase();
-        const matchesPhone = b.phone.replace(/[\s-+]/g, '') === currentUser.phone.replace(/[\s-+]/g, '');
+        const matchesPhone = samePhone(b.phone, currentUser.phone);
         return !matchesEmail && !matchesPhone;
       });
 
@@ -674,7 +752,7 @@ export default function ClientPortal({
       if (currentUser) {
         const matched = updated.filter(
           b => b.email.toLowerCase() === currentUser.email.toLowerCase() ||
-               b.phone.replace(/[\s-+]/g, '') === currentUser.phone.replace(/[\s-+]/g, '')
+               samePhone(b.phone, currentUser.phone)
         );
         setUserBookings(matched);
       }
@@ -713,40 +791,10 @@ export default function ClientPortal({
       case 'Collecting': return 'Concierge courier is inbound to collect your clothing protectors.';
       case 'In Care': return 'Garments undergo botanical stain treatment and temperature washing.';
       case 'Ironing & Folding': return 'Artisanal hand-pressing and boutique crisp folding active.';
-      case 'Quality Check': return 'Pristine laser-alignment and fabric thread inspection process.';
+      case 'Quality Check': return 'Pristine laser-alignment and fabric thread inspection complete, awaiting a courier.';
+      case 'Delivering': return 'Your courier is riding back to your door with the finished order.';
       case 'Delivered': return 'Delivered back safely into your physical closet wardrobe sanctuary.';
       default: return 'Under luxury surveillance.';
-    }
-  };
-
-  /**
-   * Auto-fill helper for fast review.
-   *
-   * It can only fill the form now — it cannot read anybody's password, because
-   * no password is readable. Seeded demo accounts all use `password`; anyone
-   * else has to have set one through the setup link.
-   */
-  const tryDemoLogin = async () => {
-    const DEMO_PASSWORD = 'password';
-
-    const firstAccount = store.readAccounts()[0];
-    const candidate = firstAccount?.email ?? store.readBookings()[0]?.email;
-
-    if (!candidate) {
-      setLoginError('No active bookings recorded yet. Go back, schedule a pickup first to generate a tracking profile!');
-      return;
-    }
-
-    setInputIdentifier(candidate);
-    setInputPassword(DEMO_PASSWORD);
-
-    const status = await store.authStatus(candidate).catch(() => null);
-    if (status && !status.hasPassword) {
-      setLoginError(
-        `${candidate} has a booking but no login yet. Use the tracking link to choose a password first.`
-      );
-    } else {
-      setLoginError('');
     }
   };
 
@@ -777,10 +825,31 @@ export default function ClientPortal({
         <div className="absolute top-1/4 right-1/4 w-[400px] h-[400px] bg-brand-sage/5 blur-[150px] pointer-events-none rounded-full" />
         <div className="absolute bottom-12 left-10 w-[300px] h-[300px] bg-brand-gold/5 blur-[120px] pointer-events-none rounded-full" />
 
-        <AnimatePresence mode="wait">
-          
-          {/* STATE 1: SETUP/PASSWORD CREATION MODE */}
-          {setupModeParam && bookingIdParam && (
+        {/*
+          Not `mode="wait"`.
+
+          Two reasons, neither of them cosmetic. The three panels below are
+          separate conditions rather than one switch, so two can be true in a
+          single render — which framer-motion says out loud in the console:
+          "attempting to animate multiple children within AnimatePresence, but
+          its mode is set to wait". And `wait` makes the entering panel wait on
+          the leaving one's exit *animation*; where animations do not run — a
+          backgrounded tab is the ordinary case, since browsers stop
+          requestAnimationFrame there — that exit never finishes and the
+          entering panel never mounts at all.
+
+          Claiming a setup link is the worst moment for that: the account is
+          created and the session stored, so the terminal is the only correct
+          thing to be looking at. The default mode crossfades instead, and
+          nothing is waiting on a frame that may never come.
+        */}
+        <AnimatePresence>
+
+          {/* STATE 1: SETUP/PASSWORD CREATION MODE
+              `!currentUser` because a claimed link has nothing left to set — the
+              terminal below is what that customer wants, and overlapping panels
+              are what the note above is about. */}
+          {setupTokenParam && !currentUser && (
             <motion.div
               key="setup-view"
               initial={{ opacity: 0, y: 10 }}
@@ -798,7 +867,15 @@ export default function ClientPortal({
                   Certify Your Password
                 </h3>
                 <p className="font-sans text-stone-400 text-xs font-light max-w-xs mx-auto leading-relaxed">
-                  Booking <span className="text-brand-sage font-mono font-bold">{bookingIdParam}</span> verified. Set a secure password to unlock continuous progress updates.
+                  {setupBooking ? (
+                    <>
+                      Booking <span className="text-brand-sage font-mono font-bold">{setupBooking.id}</span> verified. Set a secure password to unlock continuous progress updates.
+                    </>
+                  ) : setupError ? (
+                    <>This setup link could not be opened.</>
+                  ) : (
+                    <>Verifying your setup link…</>
+                  )}
                 </p>
               </div>
 
@@ -825,7 +902,13 @@ export default function ClientPortal({
                 </div>
               )}
 
-              <form onSubmit={handleSetupPasswordSubmit} className="space-y-4 text-left">
+              {/* Only once the server has said what this link opens. A dead or
+                  spent link gets the way out below and no password fields —
+                  there is nothing they could be submitted to. */}
+              <form
+                onSubmit={handleSetupPasswordSubmit}
+                className={`space-y-4 text-left ${setupBooking ? '' : 'hidden'}`}
+              >
                 <div className="space-y-1.5">
                   <label className="font-sans text-[10px] uppercase font-bold tracking-widest text-[#8E9299]">Secure Account Password</label>
                   <div className="relative">
@@ -864,23 +947,24 @@ export default function ClientPortal({
                   <span>Create Account & Log In</span>
                 </button>
 
-                <div className="text-center pt-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      window.location.hash = '#portal';
-                    }}
-                    className="font-sans text-[11px] text-stone-500 hover:text-white uppercase tracking-wider font-semibold cursor-pointer"
-                  >
-                    Go back to traditional Login
-                  </button>
-                </div>
               </form>
+
+              <div className="text-center pt-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.location.hash = '#portal';
+                  }}
+                  className="font-sans text-[11px] text-stone-500 hover:text-white uppercase tracking-wider font-semibold cursor-pointer"
+                >
+                  Go back to traditional Login
+                </button>
+              </div>
             </motion.div>
           )}
 
           {/* STATE 2: DIRECT MANUAL LOGIN MODE (If no currentUser is set) */}
-          {!currentUser && (!setupModeParam || !bookingIdParam) && (
+          {!currentUser && !setupTokenParam && (
             <motion.div
               key="login-view"
               initial={{ opacity: 0, y: 10 }}
@@ -926,7 +1010,7 @@ export default function ClientPortal({
                       required
                       value={inputIdentifier}
                       onChange={(e) => setInputIdentifier(e.target.value)}
-                      placeholder="e.g. PCobbold@yahoo.com or +233..."
+                      placeholder="e.g. PCobbold@yahoo.com or 0244123456"
                       className="w-full bg-black text-white pl-10 pr-4 py-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs rounded-xl transition-colors"
                     />
                   </div>
@@ -935,7 +1019,16 @@ export default function ClientPortal({
                 <div className="space-y-1.5">
                   <div className="flex justify-between items-center">
                     <label className="font-sans text-[10px] uppercase font-bold tracking-widest text-[#8E9299]">Patron Password</label>
-                    <a className="text-[9px] font-sans text-brand-gold font-bold hover:underline cursor-not-allowed">Reset Password?</a>
+                    {/* `type="button"` matters: this sits inside the sign-in
+                        form, and a bare <button> would submit it. */}
+                    <button
+                      type="button"
+                      onClick={handleForgotPassword}
+                      disabled={resetSending}
+                      className="text-[9px] font-sans text-brand-gold font-bold hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+                    >
+                      {resetSending ? 'Sending…' : 'Reset Password?'}
+                    </button>
                   </div>
                   <div className="relative">
                     <Lock className="absolute left-3.5 top-3.5 w-4 h-4 text-stone-500" />
@@ -959,37 +1052,20 @@ export default function ClientPortal({
                 </button>
 
                 <div className="text-center pt-2 space-y-3">
-                  {/* Demo Quick-Access Presets Chips */}
-                  <div className="p-3.5 bg-[#e2d1b9]/5 rounded-xl border border-[#c5a880]/20 text-left space-y-2">
-                    <span className="font-mono text-[8px] text-brand-gold font-bold uppercase tracking-wider block">
-                      ⚡ DEMO QUICK-ACCESS PRESETS
-                    </span>
-                    <p className="text-[10px] text-stone-400 font-sans leading-tight">
-                      Click a profile preset below to instantly load a realistic Kumasi patron account with live dispatch telemetry:
-                    </p>
-                    <div className="grid grid-cols-2 gap-2 pt-1">
-                      <button
-                        type="button"
-                        onClick={() => loginPresetUser('sena')}
-                        className="p-2 bg-brand-sage/15 hover:bg-brand-sage/30 border border-brand-sage/30 rounded-lg text-left transition-all cursor-pointer group"
-                      >
-                        <span className="font-bold text-white text-[11px] block group-hover:text-brand-sage font-serif">Sena Kwami</span>
-                        <span className="text-[9px] text-brand-sage font-mono block">KNUST Gaza • 750 pts</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => loginPresetUser('akwasi')}
-                        className="p-2 bg-brand-gold/15 hover:bg-brand-gold/30 border border-brand-gold/30 rounded-lg text-left transition-all cursor-pointer group"
-                      >
-                        <span className="font-bold text-white text-[11px] block group-hover:text-brand-gold font-serif">Akwasi Addai</span>
-                        <span className="text-[9px] text-brand-gold font-mono block">Bomso Hill • 1250 pts</span>
-                      </button>
-                    </div>
-                  </div>
-
                   <p className="font-sans text-[10.5px] text-stone-500 leading-relaxed font-light">
-                    First-time scheduling? Access passwords are created via secure SMS / WhatsApp links receipt after placing a booking.
+                    First-time scheduling? Access passwords are created via a secure email link you receive after placing a booking.
                   </p>
+                  {/* The way back for a guest who lost that email. Reset
+                      Password above cannot help them: there is no account to
+                      reset until a setup link has been spent. */}
+                  <button
+                    type="button"
+                    onClick={handleResendSetupLink}
+                    disabled={setupSending}
+                    className="font-sans text-[10px] text-brand-sage font-bold uppercase tracking-wider hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+                  >
+                    {setupSending ? 'Sending…' : 'Send my setup link again'}
+                  </button>
                 </div>
               </form>
             </motion.div>
@@ -1004,7 +1080,36 @@ export default function ClientPortal({
               exit={{ opacity: 0 }}
               className="space-y-8 text-left"
             >
-              {/* TOP BANNER: Welcome Card & Quick Demo Switcher */}
+              {/*
+                UNCONFIRMED EMAIL NOTICE
+
+                Shown above everything else, because the server refuses a
+                booking from an unconfirmed account — finding that out at
+                checkout, after filling in the whole form, is the version of
+                this that generates support calls.
+              */}
+              {currentUser.emailVerified === false && (
+                <div className="bg-brand-gold/10 border border-brand-gold/30 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center gap-4">
+                  <AlertCircle className="w-5 h-5 text-brand-gold shrink-0" />
+                  <div className="flex-1">
+                    <h4 className="font-serif text-base text-white mb-1">Confirm your email</h4>
+                    <p className="text-xs font-sans text-stone-400 font-light leading-relaxed">
+                      {verifyNotice ||
+                        <>We sent a link to <strong className="text-stone-200">{currentUser.email}</strong>. Confirm it to start booking pickups.</>}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleResendVerification()}
+                    disabled={verifySending}
+                    className="px-4 py-2.5 rounded-xl text-xs font-sans tracking-wider uppercase font-bold bg-brand-gold/20 text-brand-gold border border-brand-gold/40 hover:bg-brand-gold/30 disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap cursor-pointer"
+                  >
+                    {verifySending ? 'Sending…' : 'Resend link'}
+                  </button>
+                </div>
+              )}
+
+              {/* TOP BANNER: Welcome card */}
               <div className="bg-[#161616] rounded-2xl border border-white/10 p-6 relative overflow-hidden shadow-xl">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
                   <div className="flex items-center space-x-4">
@@ -1018,7 +1123,7 @@ export default function ClientPortal({
                         </span>
                         {/* Membership Badge */}
                         <span className="px-2 py-0.5 rounded-full text-[9px] font-serif font-bold bg-brand-gold/15 text-brand-gold border border-brand-gold/30">
-                          ⭐️ Gold Patron (750 pts)
+                          ⭐️ {currentUser.points ?? 0} care points
                         </span>
                       </div>
                       <h3 className="font-serif text-2xl text-white font-medium">
@@ -1026,41 +1131,17 @@ export default function ClientPortal({
                       </h3>
                       <p className="text-xs font-sans text-stone-400 flex items-center gap-1.5 mt-1 font-light">
                         <MapPin className="w-3.5 h-3.5 text-brand-sage shrink-0" />
-                        <span>Primary Address: <strong className="text-stone-200">{currentUser.email.includes('knust') ? 'KNUST Gaza Hostel, Ayeduase' : 'Plot 14, Bomso Hill Estate'}</strong></span>
+                        <span>
+                          {userBookings[0]?.address ? (
+                            <>Last collection: <strong className="text-stone-200">{[userBookings[0].address, userBookings[0].suburb].filter(Boolean).join(', ')}</strong></>
+                          ) : (
+                            <>No collections yet — your address is taken at booking.</>
+                          )}
+                        </span>
                       </p>
                     </div>
                   </div>
 
-                  {/* Preset Profile Quick Switcher Chips */}
-                  <div className="bg-black/50 p-3 rounded-xl border border-white/5 space-y-1.5 self-start md:self-auto">
-                    <span className="font-mono text-[8px] text-brand-gold font-bold uppercase tracking-widest block">
-                      ⚡ DEMO QUICK-SWITCH ACCOUNTS
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => loginPresetUser('sena')}
-                        className={`px-3 py-1.5 rounded-lg border text-[10px] font-mono transition-all cursor-pointer flex items-center gap-1.5 ${
-                          currentUser.email.includes('sena')
-                            ? 'bg-brand-sage text-white border-brand-sage font-bold'
-                            : 'bg-black/40 text-stone-400 border-white/10 hover:text-white'
-                        }`}
-                      >
-                        <User className="w-3 h-3" /> Sena (KNUST Gaza)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => loginPresetUser('akwasi')}
-                        className={`px-3 py-1.5 rounded-lg border text-[10px] font-mono transition-all cursor-pointer flex items-center gap-1.5 ${
-                          currentUser.email.includes('akwasi')
-                            ? 'bg-brand-gold text-black border-brand-gold font-bold'
-                            : 'bg-black/40 text-stone-400 border-white/10 hover:text-white'
-                        }`}
-                      >
-                        <User className="w-3 h-3" /> Akwasi (Bomso Hill)
-                      </button>
-                    </div>
-                  </div>
                 </div>
 
                 {/* SIMPLE TAB NAVIGATION BAR */}
@@ -1276,15 +1357,6 @@ export default function ClientPortal({
                                     </p>
                                   </div>
 
-                                  <div className="md:col-span-4 justify-self-start md:justify-self-end">
-                                    <button
-                                      onClick={() => stepBookingProgress(booking.id)}
-                                      className="px-3.5 py-2 bg-gradient-to-r from-brand-sage-dark to-brand-sage hover:from-brand-sage hover:to-brand-sage-light text-white rounded-xl text-[10px] font-sans font-extrabold uppercase tracking-widest cursor-pointer inline-flex items-center gap-1.5 shadow-md border border-white/5"
-                                    >
-                                      <Play className="w-3 h-3 text-white fill-white" />
-                                      <span>Simulate Progress</span>
-                                    </button>
-                                  </div>
                                 </div>
 
                                 {/* Progress bar line */}
@@ -1300,37 +1372,39 @@ export default function ClientPortal({
                                     />
                                   </div>
 
-                                  {/* 6-step progress indicators */}
-                                  <div className="grid grid-cols-6 pt-1 text-center font-mono text-[8px] font-bold uppercase tracking-tighter gap-1">
-                                    <div className={`flex flex-col items-center ${percent >= 10 ? 'text-brand-sage' : 'text-stone-600'}`}>
-                                      <CheckCircle2 className="w-3.5 h-3.5 mb-0.5" />
-                                      <span>1. Scheduled</span>
-                                    </div>
-                                    <div className={`flex flex-col items-center ${percent >= 30 ? 'text-brand-sage' : 'text-stone-600'}`}>
-                                      <CheckCircle2 className="w-3.5 h-3.5 mb-0.5" />
-                                      <span>2. Collecting</span>
-                                    </div>
-                                    <div className={`flex flex-col items-center ${percent >= 55 ? 'text-brand-sage' : 'text-stone-600'}`}>
-                                      <CheckCircle2 className="w-3.5 h-3.5 mb-0.5" />
-                                      <span>3. In Care</span>
-                                    </div>
-                                    <div className={`flex flex-col items-center ${percent >= 75 ? 'text-brand-sage' : 'text-stone-600'}`}>
-                                      <CheckCircle2 className="w-3.5 h-3.5 mb-0.5" />
-                                      <span>4. Pressing</span>
-                                    </div>
-                                    <div className={`flex flex-col items-center ${percent >= 90 ? 'text-brand-sage' : 'text-stone-600'}`}>
-                                      <CheckCircle2 className="w-3.5 h-3.5 mb-0.5" />
-                                      <span>5. Quality Check</span>
-                                    </div>
-                                    <div className={`flex flex-col items-center ${percent >= 100 ? 'text-brand-sage' : 'text-stone-600'}`}>
-                                      <CheckCircle2 className="w-3.5 h-3.5 mb-0.5" />
-                                      <span>6. Delivered</span>
-                                    </div>
+                                  {/*
+                                    Stage strip, off BOOKING_STAGE_SEQUENCE.
+                                    Hand-listing the stages here is how this
+                                    strip ended up one stage behind the rest of
+                                    the product; deriving it means a stage
+                                    added in core arrives here for free.
+                                  */}
+                                  <div
+                                    className="grid pt-1 text-center font-mono text-[8px] font-bold uppercase tracking-tighter gap-1"
+                                    style={{
+                                      gridTemplateColumns: `repeat(${BOOKING_STAGE_SEQUENCE.length}, minmax(0, 1fr))`,
+                                    }}
+                                  >
+                                    {BOOKING_STAGE_SEQUENCE.map((stageName, stageIndex) => (
+                                      <div
+                                        key={stageName}
+                                        className={`flex flex-col items-center ${
+                                          percent >= bookingProgressPercent(stageName)
+                                            ? 'text-brand-sage'
+                                            : 'text-stone-600'
+                                        }`}
+                                      >
+                                        <CheckCircle2 className="w-3.5 h-3.5 mb-0.5" />
+                                        <span>
+                                          {stageIndex + 1}. {stageName}
+                                        </span>
+                                      </div>
+                                    ))}
                                   </div>
                                 </div>
 
                                 {/* Live Dispatch Map */}
-                                <LiveDispatchMap 
+                                <LiveDispatchMap
                                   clientSuburb={booking.suburb}
                                   clientAddress={booking.address}
                                   bookingStatus={booking.status}
@@ -1339,6 +1413,20 @@ export default function ClientPortal({
                                   clientCoords={booking.pickupCoords}
                                   rider={booking.rider}
                                 />
+
+                                {/* Collection hand-off — only while the bags are
+                                    still here. Once the courier has them the code
+                                    has done its job. */}
+                                {COLLECTION_PENDING.has(booking.rider?.jobStatus ?? 'unassigned') && (
+                                  <HandoffCode booking={booking} />
+                                )}
+
+                                {/* And the other end of the round trip: the code
+                                    the courier needs before the clean laundry
+                                    changes hands back. */}
+                                {DELIVERY_PENDING.has(booking.rider?.jobStatus ?? 'unassigned') && (
+                                  <HandoffCode booking={booking} leg="delivery" />
+                                )}
                               </div>
                             );
                           })}
@@ -1999,7 +2087,7 @@ export default function ClientPortal({
               exit={{ opacity: 0 }}
               className="fixed inset-0 z-[120] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 text-left"
             >
-              <div className="bg-[#181818] border border-brand-gold/40 rounded-2xl max-w-md w-full p-6 text-left space-y-5 shadow-2xl relative">
+              <div className="bg-[#181818] border border-brand-gold/40 rounded-2xl max-w-md w-full p-6 text-left space-y-4 shadow-2xl relative flex flex-col max-h-[85vh]">
                 <button
                   type="button"
                   onClick={() => { setConciergeOpen(false); setConciergeSuccess(''); }}
@@ -2008,7 +2096,7 @@ export default function ClientPortal({
                   <X className="w-5 h-5" />
                 </button>
 
-                <div className="space-y-1">
+                <div className="space-y-1 shrink-0">
                   <span className="font-mono text-[9px] text-brand-gold uppercase tracking-widest block font-bold">
                     FRESHFOLD PATRON CONCIERGE DESK
                   </span>
@@ -2016,48 +2104,85 @@ export default function ClientPortal({
                     Direct Artisan Assistance
                   </h3>
                   <p className="text-stone-400 text-xs leading-relaxed">
-                    Need delicate fabric care instructions, custom scent blending, or priority dispatch assistance? Submit a note to our Master Artisan team at Bomso HQ.
+                    {threadOrderId
+                      ? <>Live thread with your courier and the Bomso dispatch desk for order <strong className="text-brand-gold font-mono">{threadOrderId}</strong>. Replies appear here as they are sent.</>
+                      : <>Schedule a pickup to open a live thread with your courier. In the meantime, the desk is reachable on WhatsApp or the hotline below.</>}
                   </p>
                 </div>
 
                 {conciergeSuccess && (
-                  <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 p-3 rounded-xl text-xs flex items-center gap-2">
+                  <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 p-3 rounded-xl text-xs flex items-center gap-2 shrink-0">
                     <CheckCircle2 className="w-4 h-4 shrink-0" />
                     <span>{conciergeSuccess}</span>
                   </div>
                 )}
 
-                <div className="space-y-2">
+                {threadOrderId && (
+                  <div className="flex-1 min-h-[140px] overflow-y-auto bg-black/50 border border-white/10 rounded-xl p-3 space-y-2.5">
+                    {thread.length === 0 ? (
+                      <p className="text-stone-500 text-[11px] text-center py-8 font-sans">
+                        No messages yet. Send the first note to your courier.
+                      </p>
+                    ) : (
+                      thread.map((message) => {
+                        const mine = message.sender === 'customer';
+                        return (
+                          <div
+                            key={message.id}
+                            className={`flex flex-col max-w-[85%] ${mine ? 'ml-auto items-end' : 'items-start'}`}
+                          >
+                            <span className="font-mono text-[8px] uppercase tracking-widest text-stone-500 mb-1">
+                              {mine ? 'You' : SENDER_LABELS[message.sender]} · {message.timestamp}
+                            </span>
+                            <div
+                              className={`px-3 py-2 rounded-xl text-[11px] leading-relaxed font-sans ${
+                                mine
+                                  ? 'bg-brand-gold text-black rounded-tr-sm'
+                                  : 'bg-[#232323] text-stone-200 border border-white/10 rounded-tl-sm'
+                              }`}
+                            >
+                              {message.text}
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+
+                <div className="space-y-2 shrink-0">
                   <label className="block text-[10px] font-mono text-stone-400 uppercase font-bold">
                     Garment / Dispatch Instruction Note
                   </label>
                   <textarea
-                    rows={4}
+                    rows={3}
                     value={conciergeText}
                     onChange={(e) => setConciergeText(e.target.value)}
-                    placeholder="e.g., Special care for hand-woven Kente trim on Order #FFC-882049 or request organic cedarwood infusion..."
+                    placeholder="e.g., Special care for hand-woven Kente trim, or the buzzer number for the hostel gate..."
                     className="w-full bg-black text-white text-xs p-3 rounded-xl border border-white/10 font-sans focus:border-brand-gold focus:outline-none"
                   />
                 </div>
 
-                <div className="space-y-2 pt-1">
+                <div className="space-y-2 pt-1 shrink-0">
                   <button
                     type="button"
+                    disabled={!threadOrderId}
                     onClick={() => {
-                      if (!conciergeText.trim()) {
-                        alert('Please enter a note for the Concierge desk.');
-                        return;
-                      }
-                      setConciergeSuccess('Your concierge note has been dispatched directly to Master Artisan Kwame at HQ!');
+                      const text = conciergeText.trim();
+                      if (!text || !threadOrderId) return;
+
+                      store.sendMessage(text, threadOrderId);
                       setConciergeText('');
-                      setTimeout(() => {
-                        setConciergeOpen(false);
-                        setConciergeSuccess('');
-                      }, 2000);
+                      setConciergeSuccess(
+                        store.isOnline()
+                          ? 'Sent to your courier and the Bomso dispatch desk.'
+                          : 'Saved — it will send as soon as you are back online.'
+                      );
+                      setTimeout(() => setConciergeSuccess(''), 4000);
                     }}
-                    className="w-full py-3 bg-brand-gold text-black rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-yellow-400 font-mono transition-all flex items-center justify-center gap-1.5 shadow-lg"
+                    className="w-full py-3 bg-brand-gold text-black rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-yellow-400 font-mono transition-all flex items-center justify-center gap-1.5 shadow-lg disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-brand-gold"
                   >
-                    <Send className="w-3.5 h-3.5" /> Dispatch Note to Master Artisan
+                    <Send className="w-3.5 h-3.5" /> {threadOrderId ? 'Send to Courier & Desk' : 'No Active Order'}
                   </button>
 
                   <div className="grid grid-cols-2 gap-2 pt-1 text-[10px] font-mono">
