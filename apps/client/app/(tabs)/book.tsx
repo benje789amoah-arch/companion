@@ -34,7 +34,7 @@ import {
   ApiError,
   PHONE_DIGITS,
   PHONE_LENGTH_MESSAGE,
-  SERVICE_SUBURBS,
+  deriveSuburb,
   isCompletePhone,
   limitPhoneInput,
   membershipBookingQuote,
@@ -119,7 +119,6 @@ export default function BookScreen() {
   const [pickupDate, setPickupDate] = useState(() => isoDaysFromNow(1));
   const [timeSlot, setTimeSlot] = useState<string>(PICKUP_TIME_SLOTS[0]);
   const [address, setAddress] = useState('');
-  const [suburb, setSuburb] = useState(SERVICE_SUBURBS[0]);
   const [city, setCity] = useState('Kumasi');
   /**
    * The doorstep, as the customer placed it. Null until they do — the booking
@@ -129,6 +128,16 @@ export default function BookScreen() {
   const [pickupPin, setPickupPin] = useState<Coords | null>(null);
   /** How that pin came to be, so the picker can say so under the map. */
   const [pinOrigin, setPinOrigin] = useState<PinOrigin>(null);
+
+  /**
+   * The collection zone this booking is filed under.
+   *
+   * Derived, never chosen. The dispatch board still groups by suburb, but it
+   * is a fact about where the pin is rather than a separate answer the
+   * customer can get wrong — and they could, because a sheet defaulting to
+   * Bomso and a pin in Kotei were both accepted and nothing reconciled them.
+   */
+  const suburb = useMemo(() => deriveSuburb(pickupPin, address), [pickupPin, address]);
   const [saveThisAddress, setSaveThisAddress] = useState(false);
   const [scent, setScent] = useState<string>(SCENTS[0].id);
   const [starch, setStarch] = useState<string>(STARCH_LEVELS[0]);
@@ -150,7 +159,6 @@ export default function BookScreen() {
 
   // -- ui ------------------------------------------------------------------
   const [servicePickerOpen, setServicePickerOpen] = useState(false);
-  const [suburbPickerOpen, setSuburbPickerOpen] = useState(false);
   const [addressPickerOpen, setAddressPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -239,7 +247,6 @@ export default function BookScreen() {
 
     prefilledFor.current = defaultAddress.id;
     setAddress(defaultAddress.address);
-    setSuburb(defaultAddress.suburb);
     if (defaultAddress.city) setCity(defaultAddress.city);
     if (defaultAddress.coords) {
       setPickupPin({ ...defaultAddress.coords });
@@ -702,18 +709,10 @@ export default function BookScreen() {
                 hint="Include the block and room — this is what the courier reads at the door."
               />
 
-              <Pressable onPress={() => setSuburbPickerOpen(true)}>
-                <View pointerEvents="none">
-                  <Field
-                    label="Suburb"
-                    value={suburb}
-                    onChangeText={() => {}}
-                    editable={false}
-                    icon={<MapPin size={15} color={colors.textMuted} />}
-                  />
-                </View>
-              </Pressable>
-
+              {/* The suburb sheet used to sit here. It is derived from the pin
+                  now — a customer who has dropped one has already said where
+                  they are, and picking a collection zone as well was asking
+                  them to do our filing. */}
               <Field label="City" value={city} onChangeText={setCity} placeholder="Kumasi" />
 
               <View style={{ gap: 8 }}>
@@ -1064,25 +1063,6 @@ export default function BookScreen() {
       </ScrollSheet>
 
       <ScrollSheet
-        visible={suburbPickerOpen}
-        onClose={() => setSuburbPickerOpen(false)}
-        title="Which suburb?"
-      >
-        {SERVICE_SUBURBS.map((option) => (
-          <OptionRow
-            key={option}
-            title={option}
-            selected={option === suburb}
-            onPress={() => {
-              setSuburb(option);
-              setSuburbPickerOpen(false);
-            }}
-            trailing={option === suburb ? <Check size={16} color={colors.brandSage} /> : undefined}
-          />
-        ))}
-      </ScrollSheet>
-
-      <ScrollSheet
         visible={addressPickerOpen}
         onClose={() => setAddressPickerOpen(false)}
         title="Saved addresses"
@@ -1095,7 +1075,6 @@ export default function BookScreen() {
             icon={<MapPin size={15} color={colors.brandSage} />}
             onPress={() => {
               setAddress(saved.address);
-              setSuburb(saved.suburb);
               if (saved.city) setCity(saved.city);
               // Addresses saved before pins existed have none; the customer
               // places one and this address learns it on the next save.

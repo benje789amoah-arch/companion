@@ -86,6 +86,70 @@ export const LANDMARKS: Landmark[] = [
 ];
 
 /**
+ * Which suburb a point is in.
+ *
+ * The nearest anchor, which is all "suburb" ever meant here: the six names in
+ * the table are collection zones, not surveyed boundaries, and the dispatch
+ * board groups by them.
+ *
+ * This exists because the booking forms stopped asking. A suburb was a
+ * required field back when the pin was hashed out of the address and the map
+ * needed *something* to centre on — now the customer picks a real place or
+ * drops a real pin, and asking them to also classify it into a zone was asking
+ * them to do the geometry themselves. Derived from the pin, the two can never
+ * disagree, which they previously could and did.
+ */
+export function suburbForCoords(coords: Coords): string {
+  let best = SERVICE_SUBURBS[0];
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const [name, anchor] of Object.entries(SUBURB_COORDS)) {
+    const away = distanceKm(coords, anchor);
+    if (away < bestDistance) {
+      bestDistance = away;
+      best = name;
+    }
+  }
+
+  return best;
+}
+
+/**
+ * The suburb to file a booking under, given what the customer has actually
+ * told us: a pin if they placed one, otherwise the address they typed.
+ *
+ * Empty when neither says anything — which is honest, and which the job model
+ * already tolerates. `coordsForAddress` falls back to the middle of campus for
+ * an unknown suburb, so a blank one costs nothing that guessing would not.
+ */
+export function deriveSuburb(pin?: Coords | null, address = ''): string {
+  if (!pin) return matchLandmark(address)?.suburb ?? '';
+
+  /*
+   * A pin standing on a place we already know is filed where that place is
+   * filed. The table's labels are a dispatcher's judgement and the anchors are
+   * geometry, and the two do not always agree: SRC Hostel is listed under
+   * KNUST Campus but sits half a kilometre from the Ayeduase anchor and nearly
+   * two from the campus one. Nearest-anchor alone would quietly refile it, so
+   * the board and the landmark table would disagree about the same building.
+   * Whoever curated the table wins on the buildings the table covers.
+   */
+  const onLandmark = LANDMARKS.find(
+    (mark) => metresBetween(pin, mark) <= LANDMARK_SNAP_M
+  );
+  if (onLandmark) return onLandmark.suburb;
+
+  return suburbForCoords(pin);
+}
+
+/**
+ * How close to a landmark counts as standing on it. A gate, a side entrance
+ * and the point recorded in the table are all the same building at this range,
+ * and the nearest two landmarks are further apart than this.
+ */
+const LANDMARK_SNAP_M = 150;
+
+/**
  * The landmark a free-text address is talking about, if any.
  *
  * Students type where they live the way they say it — "Evandy", "Conti",

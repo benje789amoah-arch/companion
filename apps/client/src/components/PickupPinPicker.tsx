@@ -125,23 +125,16 @@ function NativePinPicker({
   // region back into a map the customer is panning fights them for it.
   const initialRegion = useMemo(() => regionAround(value ?? anchor), []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /**
-   * Follow the suburb.
+  /*
+   * There is no longer a suburb to follow.
    *
-   * The camera only — a suburb is a neighbourhood, not a doorstep, and
-   * dropping a pin in the middle of one is the derived-location behaviour this
-   * component exists to replace. What it fixes is the customer who picks Kotei
-   * and is left looking at a map of KNUST Campus two kilometres away, with
-   * nothing to do but drag.
+   * The camera used to chase the suburb because the customer picked one from a
+   * sheet. That sheet is gone — the suburb is derived from the pin now — so
+   * following it would mean the camera chasing the pin's own classification
+   * around: drag across a boundary and the map flies to the middle of the
+   * suburb you just left for. The address lookup and the landmark match do
+   * this job properly, by moving to a building rather than to a zone.
    */
-  const firstRender = useRef(true);
-  useEffect(() => {
-    if (firstRender.current) {
-      firstRender.current = false;
-      return;
-    }
-    flyTo(anchor);
-  }, [anchor.lat, anchor.lng]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * Follow the address, when it names somewhere we already know.

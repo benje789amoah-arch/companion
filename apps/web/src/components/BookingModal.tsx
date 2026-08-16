@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Calendar, MapPin, Sparkles, MessageSquare, Clock, ShieldCheck, CheckCircle, Smartphone, CreditCard, Wallet, Banknote, Lock, CheckCircle2, QrCode } from 'lucide-react';
 import {
@@ -7,6 +7,7 @@ import {
   isCompletePhone,
   limitPhoneInput,
   samePhone,
+  deriveSuburb,
   type Coords,
 } from '@freshfold/core';
 import { Booking } from '../types';
@@ -27,7 +28,6 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [address, setAddress] = useState('');
-  const [suburb, setSuburb] = useState('');
   const [city, setCity] = useState('');
   /**
    * The doorstep, when the customer places one. Left null the dispatch server
@@ -37,6 +37,17 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
   const [pickupPin, setPickupPin] = useState<Coords | null>(null);
   /** How that pin came to be, so the field can say so under the map. */
   const [pinOrigin, setPinOrigin] = useState<PinOrigin>(null);
+
+  /**
+   * The collection zone this booking is filed under.
+   *
+   * Derived, never typed. The dispatch board still groups by suburb and the
+   * supervisor still filters on it, but it is a fact about where the pin is,
+   * not a separate answer the customer can get wrong — and they routinely did,
+   * because "Ayeduase" and a pin on campus were both accepted and nothing
+   * reconciled them.
+   */
+  const suburb = useMemo(() => deriveSuburb(pickupPin, address), [pickupPin, address]);
   const [service, setService] = useState(SERVICES[0]?.name || 'Washing (Machine & Hand Wash)');
   const [pickupDate, setPickupDate] = useState('');
   const [pickupTimeSlot, setPickupTimeSlot] = useState('08:00 AM - 11:00 AM (Morning Concierge)');
@@ -149,7 +160,6 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
             matched.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
             const latest = matched[0];
             if (latest.address) setAddress(latest.address);
-            if (latest.suburb) setSuburb(latest.suburb);
             if (latest.city) setCity(latest.city);
             // The pin travels with the address it was placed for. A patron
             // booking the same pickup again should not have to aim it twice.
@@ -165,7 +175,6 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
           setEmail('');
           setPhone('');
           setAddress('');
-          setSuburb('');
           setCity('');
           setPickupPin(null);
           setPinOrigin(null);
@@ -459,32 +468,22 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                     className="w-full bg-[#161616] text-white placeholder-[#8E9299]/50 rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors"
                   />
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
-                      Suburb *
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={suburb}
-                      onChange={(e) => setSuburb(e.target.value)}
-                      placeholder="e.g. Ayeduase"
-                      className="w-full bg-[#161616] text-white placeholder-[#8E9299]/50 rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
-                      City
-                    </label>
-                    <input
-                      type="text"
-                      value={city}
-                      onChange={(e) => setCity(e.target.value)}
-                      placeholder="Kumasi"
-                      className="w-full bg-[#161616] text-white placeholder-[#8E9299]/50 rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors"
-                    />
-                  </div>
+                {/* The suburb used to be a required box here. It is derived
+                    from the pin now — see `suburb` above — because a customer
+                    who has chosen a building or dropped a pin has already said
+                    where they are, and asking them to also sort it into a
+                    collection zone was asking them to do our filing. */}
+                <div>
+                  <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
+                    City
+                  </label>
+                  <input
+                    type="text"
+                    value={city}
+                    onChange={(e) => setCity(e.target.value)}
+                    placeholder="Kumasi"
+                    className="w-full bg-[#161616] text-white placeholder-[#8E9299]/50 rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors"
+                  />
                 </div>
 
                 {/* The doorstep itself, which the typed address above cannot

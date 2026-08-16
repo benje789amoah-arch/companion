@@ -25,7 +25,7 @@ import {
 import React, { useCallback, useMemo, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { SERVICE_SUBURBS } from '@freshfold/core';
+import { deriveSuburb } from '@freshfold/core';
 import NotificationsSheet from '../../src/components/NotificationsSheet';
 import OrderCard from '../../src/components/OrderCard';
 import {
@@ -37,8 +37,6 @@ import {
   EmptyState,
   Field,
   InitialsAvatar,
-  OptionRow,
-  ScrollSheet,
   SectionHeader,
   SectionLabel,
   Sheet,
@@ -82,7 +80,6 @@ export default function AccountScreen() {
 
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [addressSheetOpen, setAddressSheetOpen] = useState(false);
-  const [suburbPickerOpen, setSuburbPickerOpen] = useState(false);
 
   // The unconfirmed-email notice. `verifyNotice` holds whatever the server last
   // said — a cooldown message answers the question the customer is about to ask.
@@ -91,8 +88,18 @@ export default function AccountScreen() {
 
   const [draftLabel, setDraftLabel] = useState('');
   const [draftAddress, setDraftAddress] = useState('');
-  const [draftSuburb, setDraftSuburb] = useState(SERVICE_SUBURBS[0]);
   const [draftCity, setDraftCity] = useState('Kumasi');
+
+  /**
+   * The collection zone, read out of the address rather than picked.
+   *
+   * This editor has no pin of its own, so the landmark table is all there is
+   * to go on — and it is enough for the addresses people actually save, which
+   * are the halls and hostels it already knows. Blank otherwise, which the job
+   * model tolerates; the booking screen fills it in properly once a pin is
+   * placed against this address.
+   */
+  const draftSuburb = useMemo(() => deriveSuburb(null, draftAddress), [draftAddress]);
 
   const tier = useMemo(() => tierForPoints(points), [points]);
   const recent = useMemo(() => [...activeBookings, ...pastBookings].slice(0, 3), [
@@ -136,7 +143,7 @@ export default function AccountScreen() {
 
     saveAddress({
       id: `addr-${Date.now()}`,
-      label: draftLabel.trim() || draftSuburb,
+      label: draftLabel.trim() || draftSuburb || 'Pickup address',
       address: draftAddress.trim(),
       suburb: draftSuburb,
       city: draftCity.trim(),
@@ -437,18 +444,8 @@ export default function AccountScreen() {
             multiline
           />
 
-          <Pressable onPress={() => setSuburbPickerOpen(true)}>
-            <View pointerEvents="none">
-              <Field
-                label="Suburb"
-                value={draftSuburb}
-                onChangeText={() => {}}
-                editable={false}
-                icon={<MapPin size={15} color={colors.textMuted} />}
-              />
-            </View>
-          </Pressable>
-
+          {/* The suburb sheet used to sit here. It is read out of the address
+              now rather than asked for separately. */}
           <Field label="City" value={draftCity} onChangeText={setDraftCity} placeholder="Kumasi" />
 
           <SectionLabel>
@@ -473,23 +470,6 @@ export default function AccountScreen() {
         </ScrollView>
       </Sheet>
 
-      <ScrollSheet
-        visible={suburbPickerOpen}
-        onClose={() => setSuburbPickerOpen(false)}
-        title="Which suburb?"
-      >
-        {SERVICE_SUBURBS.map((option) => (
-          <OptionRow
-            key={option}
-            title={option}
-            selected={option === draftSuburb}
-            onPress={() => {
-              setDraftSuburb(option);
-              setSuburbPickerOpen(false);
-            }}
-          />
-        ))}
-      </ScrollSheet>
     </SafeAreaView>
   );
 }
