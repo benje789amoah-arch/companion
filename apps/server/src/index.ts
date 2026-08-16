@@ -9,6 +9,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
 import { closeDatabase, ping } from './db';
+import { emailProvider } from './email';
 import { store } from './store';
 import { ensureSeeded } from './seed';
 import { startHubCycle } from './hub';
@@ -189,26 +190,27 @@ function describeDatabase(): string {
  *
  * Worth a line because the failure it names is invisible from the product: a
  * booking confirmation and the setup link it carries are sent after the
- * response, so a refusal by Resend leaves the customer with a cheerful "check
- * your inbox" and nothing in it. `onboarding@resend.dev` is Resend's shared
- * sender, and it delivers only to the address that owns the Resend account —
- * every customer address is rejected. That is fine for a first test and wrong
- * the moment anybody else books.
+ * response, so a refusal by the provider leaves the customer with a cheerful
+ * "check your inbox" and nothing in it. `onboarding@resend.dev` is Resend's
+ * shared sender, and it delivers only to the address that owns the Resend
+ * account — every customer address is rejected. That is fine for a first test
+ * and wrong the moment anybody else books.
  */
 function describeEmail(): string {
-  if (!process.env.RESEND_API_KEY) return 'not configured — links are written to this log instead';
+  const provider = emailProvider();
+  if (!provider) return 'not configured — links are written to this log instead';
 
   const from = process.env.EMAIL_FROM;
-  if (!from) return 'RESEND_API_KEY is set but EMAIL_FROM is not — nothing will be sent';
+  if (!from) return `${provider} key is set but EMAIL_FROM is not — nothing will be sent`;
 
-  if (/@resend\.dev\b/i.test(from)) {
+  if (provider === 'resend' && /@resend\.dev\b/i.test(from)) {
     return (
-      `${from} — Resend's shared sender, which DELIVERS ONLY TO THE ADDRESS THAT ` +
-      'OWNS THE RESEND ACCOUNT. Verify a domain and set EMAIL_FROM to it before customers book.'
+      `${from} via resend — Resend's shared sender, which DELIVERS ONLY TO THE ADDRESS ` +
+      'THAT OWNS THE RESEND ACCOUNT. Verify a domain, or set BREVO_API_KEY, before customers book.'
     );
   }
 
-  return from;
+  return `${from} via ${provider}`;
 }
 
 /**

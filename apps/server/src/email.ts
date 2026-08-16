@@ -4,24 +4,33 @@
  */
 
 /**
- * Outbound email, via Resend.
+ * Outbound email, via Brevo or Resend.
  *
- * Written against Resend's REST endpoint with bare `fetch` rather than the
- * `resend` package. There is one call to make and it is four lines; a
- * dependency would buy retry logic this does not want — a verification email
- * that fails is resent by the customer pressing a button, not by the server
- * queueing work it cannot see the outcome of.
+ * Both are written against their REST endpoint with bare `fetch` rather than a
+ * vendor package. There is one call to make and it is four lines; a dependency
+ * would buy retry logic this does not want — a verification email that fails is
+ * resent by the customer pressing a button, not by the server queueing work it
+ * cannot see the outcome of.
  *
- * With no `RESEND_API_KEY` set, the link is written to the server log instead
- * of sent. That is the difference between a fresh clone being able to register
- * an account and not, and it keeps the whole flow exercisable offline — which
+ * Brevo wins when both keys are set, because of the thing that actually blocks
+ * this project: Resend's shared sender delivers only to the address that owns
+ * the Resend account, so every customer address bounces until a domain is
+ * verified — and verifying one needs a domain, which we do not have yet. Brevo
+ * verifies a *single sender address* by clicking a link in that mailbox, and
+ * then sends to anybody. That is the whole reason for the second transport;
+ * Resend stays because the domain route is still the better end state.
+ *
+ * With neither key set, the link is written to the server log instead of sent.
+ * That is the difference between a fresh clone being able to register an
+ * account and not, and it keeps the whole flow exercisable offline — which
  * matters here, where the dev machine is often on a hotspot with unreliable
  * DNS.
  */
 
+const BREVO_ENDPOINT = 'https://api.brevo.com/v3/smtp/email';
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
 
-/** How long to wait on Resend before giving up. */
+/** How long to wait on the provider before giving up. */
 const SEND_TIMEOUT_MS = 10_000;
 
 export interface Mail {
@@ -31,8 +40,15 @@ export interface Mail {
   text: string;
 }
 
+/** Which transport `sendMail` will use, given the environment as it stands. */
+export function emailProvider(): 'brevo' | 'resend' | null {
+  if (process.env.BREVO_API_KEY) return 'brevo';
+  if (process.env.RESEND_API_KEY) return 'resend';
+  return null;
+}
+
 export function emailConfigured(): boolean {
-  return Boolean(process.env.RESEND_API_KEY);
+  return emailProvider() !== null;
 }
 
 /**
@@ -46,11 +62,11 @@ export function emailConfigured(): boolean {
  * or "we could not send it".
  */
 export async function sendMail(mail: Mail): Promise<boolean> {
-  const key = process.env.RESEND_API_KEY;
+  const provider = emailProvider();
 
-  if (!key) {
+  if (!provider) {
     console.log(
-      `[email] RESEND_API_KEY unset — not sending. To: ${mail.to}\n` +
+      `[email] no BREVO_API_KEY or RESEND_API_KEY — not sending. To: ${mail.to}\n` +
         `[email] ${mail.subject}\n` +
         mail.text
           .split('\n')
@@ -62,7 +78,7 @@ export async function sendMail(mail: Mail): Promise<boolean> {
 
   const from = process.env.EMAIL_FROM;
   if (!from) {
-    console.error('[email] RESEND_API_KEY is set but EMAIL_FROM is not; nothing sent.');
+    console.error(`[email] ${provider} key is set but EMAIL_FROM is not; nothing sent.`);
     return false;
   }
 
@@ -70,27 +86,16 @@ export async function sendMail(mail: Mail): Promise<boolean> {
   const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
 
   try {
-    const response = await fetch(RESEND_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${key}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from,
-        to: [mail.to],
-        subject: mail.subject,
-        html: mail.html,
-        text: mail.text,
-      }),
-      signal: controller.signal,
-    });
+    const response =
+      provider === 'brevo'
+        ? await postBrevo(mail, from, controller.signal)
+        : await postResend(mail, from, controller.signal);
 
     if (!response.ok) {
-      // Resend puts the useful part in the body — an unverified sending domain
-      // and a malformed address are both 4xx, and the message is the only thing
-      // that tells them apart.
-      console.error(`[email] Resend refused (${response.status}): ${await response.text()}`);
+      // The useful part is in the body — an unverified sender and a malformed
+      // address are both 4xx, and the message is the only thing that tells them
+      // apart.
+      console.error(`[email] ${provider} refused (${response.status}): ${await response.text()}`);
       return false;
     }
 
@@ -101,6 +106,67 @@ export async function sendMail(mail: Mail): Promise<boolean> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Brevo's transactional endpoint.
+ *
+ * It wants the sender split into name and address, so `EMAIL_FROM` — which is
+ * written in the one format both providers' dashboards show you,
+ * `FreshFold <hello@example.com>` — gets taken apart here rather than being a
+ * second variable that can disagree with the first.
+ */
+function postBrevo(mail: Mail, from: string, signal: AbortSignal): Promise<Response> {
+  const sender = parseAddress(from);
+
+  return fetch(BREVO_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'api-key': process.env.BREVO_API_KEY as string,
+      accept: 'application/json',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      sender,
+      to: [{ email: mail.to }],
+      subject: mail.subject,
+      htmlContent: mail.html,
+      textContent: mail.text,
+    }),
+    signal,
+  });
+}
+
+function postResend(mail: Mail, from: string, signal: AbortSignal): Promise<Response> {
+  return fetch(RESEND_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY as string}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from,
+      to: [mail.to],
+      subject: mail.subject,
+      html: mail.html,
+      text: mail.text,
+    }),
+    signal,
+  });
+}
+
+/**
+ * Splits `Name <addr@host>` into its parts, tolerating a bare address.
+ *
+ * Brevo rejects a `sender.email` with angle brackets in it, so getting this
+ * wrong is a 400 on every send rather than something that degrades quietly.
+ */
+export function parseAddress(value: string): { name?: string; email: string } {
+  const match = /^\s*(.*?)\s*<\s*([^>]+?)\s*>\s*$/.exec(value);
+  if (!match) return { email: value.trim() };
+
+  const name = match[1].replace(/^"(.*)"$/, '$1').trim();
+  return name ? { name, email: match[2] } : { email: match[2] };
 }
 
 /**
