@@ -246,6 +246,8 @@ rider app over the LAN.
 | `POST /reset` | Empty the ledger back to a fresh install |
 | `POST /chat` | Gemini-backed "Foldie" concierge chatbot |
 | `POST /paystack/initialize`, `GET /paystack/verify/:ref` | Payments |
+| `POST /paystack/webhook` | Paystack's own settlement callback. HMAC-signed with the secret key, read as raw bytes, and the only route that credits a wallet without anyone asking it to |
+| `POST /accounts/wallet` | The one path that moves a balance or points. A `topup` carries a Paystack reference, never an amount — the server verifies it and credits what was collected |
 
 ### The database
 

@@ -58,6 +58,17 @@ if (process.env.TRUST_PROXY) {
   app.set('trust proxy', Number.isFinite(hops) ? hops : process.env.TRUST_PROXY);
 }
 
+/**
+ * The Paystack webhook, and only it, is read as raw bytes.
+ *
+ * Its signature is an HMAC over exactly what Paystack sent, so the body cannot
+ * be parsed and re-serialised before it is checked — key order and number
+ * formatting would not survive the round trip, and a valid payment would look
+ * forged. This has to be mounted before the JSON parser below; body-parser
+ * marks the body as read, so the parser leaves it alone afterwards.
+ */
+app.use('/api/paystack/webhook', express.raw({ type: '*/*', limit: '1mb' }));
+
 // Bodies carry base64 proof-of-service photos and signature PNGs, which blow
 // past Express's 100kb default.
 app.use(express.json({ limit: '12mb' }));

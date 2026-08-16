@@ -3,9 +3,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { Router } from 'express';
 import { GoogleGenAI } from '@google/genai';
 import { guard } from '../helpers';
+import { topUp } from '../wallet';
 
 /**
  * Third-party integrations, carried over unchanged from the original web
@@ -221,6 +223,112 @@ export async function verifyPaystackTransaction(
     },
   };
 }
+
+/**
+ * Constant-time compare of two hex digests.
+ *
+ * `timingSafeEqual` throws on a length mismatch rather than returning false,
+ * and a forged header is exactly where a length mismatch comes from.
+ */
+function signatureMatches(expected: string, received: string): boolean {
+  const a = Buffer.from(expected, 'utf8');
+  const b = Buffer.from(received, 'utf8');
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * Paystack's own notification that a payment settled.
+ *
+ * The reason this exists: until now a top-up was only credited when the
+ * customer came back and tapped "I have paid". Someone who paid and then
+ * closed the app, lost signal, or had their battery die had money with
+ * Paystack and nothing in their wallet until they thought to return. This
+ * arrives whether or not anyone is holding the phone.
+ *
+ * It does not replace the verify-on-return path, it races it. Both call
+ * `topUp` with Paystack's reference, and `topUp` ignores a reference already
+ * in the ledger — so whichever gets there first credits, and the other is a
+ * no-op. That is also what makes Paystack's own retries harmless.
+ *
+ * The body is the raw bytes, not parsed JSON: the signature is over exactly
+ * what was sent, and `JSON.parse` followed by `JSON.stringify` is not
+ * guaranteed to reproduce it. See the `express.raw` mount in `index.ts`.
+ */
+paystackRouter.post(
+  '/webhook',
+  guard(async (req, res) => {
+    const secret = process.env.PAYSTACK_SECRET_KEY;
+    if (!secret) {
+      // 500, not 200: this is our misconfiguration, and Paystack retrying is
+      // the behaviour we want once the key is in place.
+      console.error('[paystack] webhook received but PAYSTACK_SECRET_KEY is not set.');
+      res.status(500).json({ error: 'Webhook not configured.' });
+      return;
+    }
+
+    const raw = Buffer.isBuffer(req.body) ? req.body : Buffer.from('');
+    const signature = req.get('x-paystack-signature') ?? '';
+    const expected = createHmac('sha512', secret.trim()).update(raw).digest('hex');
+
+    if (!signature || !signatureMatches(expected, signature)) {
+      // Anyone can POST here; only Paystack can sign. Refuse quietly — an
+      // unsigned caller learns nothing about what a signed one would get.
+      res.status(401).json({ error: 'Invalid signature.' });
+      return;
+    }
+
+    let event: { event?: string; data?: Record<string, unknown> };
+    try {
+      event = JSON.parse(raw.toString('utf8'));
+    } catch {
+      res.status(400).json({ error: 'Malformed webhook body.' });
+      return;
+    }
+
+    // Everything below is acknowledged with 200 whether or not it moves money.
+    // A non-2xx makes Paystack retry, and retrying will not fix an event this
+    // server has no interest in.
+    if (event.event !== 'charge.success' || !event.data) {
+      res.json({ received: true, applied: false, reason: 'event-ignored' });
+      return;
+    }
+
+    const data = event.data;
+    const metadata = (data.metadata ?? {}) as Record<string, unknown>;
+    const customer = (data.customer ?? {}) as { email?: unknown };
+    const reference = typeof data.reference === 'string' ? data.reference : '';
+    const email = typeof customer.email === 'string' ? customer.email : '';
+    const amount = typeof data.amount === 'number' ? data.amount / 100 : 0;
+
+    // A booking's payment is not a wallet credit. Same gate the wallet route
+    // applies, for the same reason: without it, paying for a wash would also
+    // put its value in the wallet.
+    if (metadata.type !== 'wallet_topup') {
+      res.json({ received: true, applied: false, reason: 'not-a-topup' });
+      return;
+    }
+
+    if (!reference || !email || amount <= 0) {
+      console.warn(`[paystack] charge.success for ${reference || 'no reference'} is unusable.`);
+      res.json({ received: true, applied: false, reason: 'incomplete-event' });
+      return;
+    }
+
+    const outcome = await topUp({ email, amount, method: 'Paystack', reference });
+
+    if (!outcome.ok) {
+      // Logged rather than retried. `no-account` is the realistic case — a
+      // payment made against an email this server has never seen — and no
+      // number of retries will conjure the account.
+      console.error(`[paystack] could not credit ${email} for ${reference}: ${outcome.reason}`);
+      res.json({ received: true, applied: false, reason: outcome.reason });
+      return;
+    }
+
+    console.log(`[paystack] credited ${email} ₵${amount.toFixed(2)} from ${reference}.`);
+    res.json({ received: true, applied: true });
+  })
+);
 
 paystackRouter.get(
   '/verify/:reference',
