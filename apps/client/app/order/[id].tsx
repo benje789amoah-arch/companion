@@ -18,10 +18,9 @@ import {
   QrCode,
   Receipt,
   RefreshCcw,
-  Share2,
 } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Image, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
+import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { bagsForJob, humanizeStatus, type JobStatus } from '@freshfold/core';
 
@@ -194,13 +193,6 @@ export default function OrderDetailScreen() {
         title={booking.id}
         subtitle={booking.serviceType}
         onBack={() => router.back()}
-        onShare={() =>
-          // The OS share sheet, rather than a hard-coded chat app, so the
-          // patron picks wherever they want the update to go.
-          Share.share({
-            message: `Tracking my FreshFold order ${booking.id} — ${booking.status}.`,
-          })
-        }
       />
 
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
@@ -480,12 +472,10 @@ function Header({
   title,
   subtitle,
   onBack,
-  onShare,
 }: {
   title: string;
   subtitle?: string;
   onBack: () => void;
-  onShare?: () => void;
 }) {
   return (
     <View style={styles.header}>
@@ -500,11 +490,6 @@ function Header({
           </Text>
         )}
       </View>
-      {!!onShare && (
-        <Pressable onPress={onShare} hitSlop={10} style={styles.headerButton}>
-          <Share2 size={16} color={colors.textCharcoal} />
-        </Pressable>
-      )}
     </View>
   );
 }
