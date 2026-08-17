@@ -18,7 +18,7 @@ import { defineConfig, loadEnv } from 'vite';
  */
 export default defineConfig(({ mode }) => {
   const env = { ...loadEnv(mode, __dirname, ''), ...process.env };
-  const apiTarget = env.API_URL || 'http://localhost:4000';
+  const apiTarget = env.API_URL || 'http://127.0.0.1:4000';
   const disableHmr = env.DISABLE_HMR === 'true';
 
   return {
@@ -53,6 +53,39 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: apiTarget,
           changeOrigin: true,
+          // Say out loud when the dispatch server is not there.
+          //
+          // Without this the failure is silent from both ends: Vite answers the
+          // browser with a bare 500, and the app — which queues a failed write
+          // and retries later by design — shows the customer a confirmation
+          // anyway. A booking then sits in localStorage for as long as the
+          // target is down, with nothing in the terminal to say why. That
+          // happened for an hour and forty minutes because nothing was
+          // listening on 4002.
+          configure: (proxy) => {
+            let warned = false;
+            proxy.on('error', (error: NodeJS.ErrnoException, req, res) => {
+              if (!warned) {
+                warned = true;
+                console.error(
+                  `\n  ✖ /api is proxied to ${apiTarget} and nothing answered (${error.code ?? error.message}).\n` +
+                    '    Writes will queue in the browser and the UI will still look like it worked.\n' +
+                    '    Start the dispatch server, or point API_URL in apps/web/.env at one that is running.\n'
+                );
+              }
+              // Vite's default is an empty-bodied 500. Name the cause instead,
+              // so the app can tell "server is down" from "server said no".
+              if (!res.headersSent && 'writeHead' in res) {
+                res.writeHead(503, { 'Content-Type': 'application/json' });
+                res.end(
+                  JSON.stringify({ error: `dispatch server unreachable at ${apiTarget}`, path: req.url })
+                );
+              }
+            });
+            proxy.on('proxyRes', () => {
+              warned = false;
+            });
+          },
         },
       },
       // HMR is disabled in AI Studio via the DISABLE_HMR env var.

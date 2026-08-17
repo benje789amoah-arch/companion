@@ -194,6 +194,9 @@ async function drain(): Promise<void> {
   draining = true;
   inFlight += 1;
 
+  const onlineBefore = online;
+  const queuedBefore = queue.length;
+
   try {
     while (queue.length > 0) {
       const [next] = queue;
@@ -224,7 +227,36 @@ async function drain(): Promise<void> {
   } finally {
     draining = false;
     inFlight -= 1;
+
+    // Both `online` and the queue length can have moved, and anything showing
+    // either — the booking confirmation, most of all — is subscribed to this.
+    // Without a nudge the UI keeps whatever it read on first render, which is
+    // how a queued booking goes on claiming it was sent.
+    //
+    // Only when something actually moved, though. `draining` is already false
+    // by this point, so a listener that re-enters here would be let straight
+    // back in; notifying unconditionally turned one failed write into a retry
+    // storm — dozens of POSTs in the same millisecond against a server that was
+    // down. Gating on a real change bounds it: the second pass has nothing new
+    // to report and stops.
+    if (online !== onlineBefore || queue.length !== queuedBefore) notify();
   }
+}
+
+/** How many writes are still waiting to reach the server. */
+export function pendingWriteCount(): number {
+  return queue.length;
+}
+
+/**
+ * Whether this booking is still sitting in the queue.
+ *
+ * The confirmation screen asks, because "we have your booking" and "the server
+ * has your booking" are different claims and only the second one comes with an
+ * email.
+ */
+export function isBookingPending(id: string): boolean {
+  return queue.some((write) => write.kind === 'booking:create' && write.booking.id === id);
 }
 
 // ---------------------------------------------------------------------------

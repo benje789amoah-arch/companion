@@ -7,8 +7,6 @@ import { useRouter } from 'expo-router';
 import { ScanFace, Star } from 'lucide-react-native';
 import React, { useEffect, useState } from 'react';
 import {
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -17,6 +15,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { KeyboardAvoider } from '../../src/components/KeyboardAvoider';
 import { Avatar, Button, Card } from '../../src/components/ui';
 import { usePullToRefresh } from '../../src/hooks/usePullToRefresh';
 import { useApp } from '../../src/store/AppStore';
@@ -65,10 +64,7 @@ export default function ProfileScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
+      <KeyboardAvoider>
         <ScrollView
           contentContainerStyle={styles.scroll}
           showsVerticalScrollIndicator={false}
@@ -205,7 +201,7 @@ export default function ProfileScreen() {
             }}
           />
         </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAvoider>
     </SafeAreaView>
   );
 }

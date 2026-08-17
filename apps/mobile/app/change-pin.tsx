@@ -7,8 +7,6 @@ import { useRouter } from 'expo-router';
 import { AlertCircle, KeyRound, ShieldCheck } from 'lucide-react-native';
 import React, { useCallback, useState } from 'react';
 import {
-  KeyboardAvoidingView,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -17,6 +15,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ApiError } from '@freshfold/core';
+import { KeyboardAvoider } from '../src/components/KeyboardAvoider';
 import { Button } from '../src/components/ui';
 import { api } from '../src/services/api';
 import { useSession } from '../src/store/SessionStore';
@@ -88,10 +87,7 @@ export default function ChangePinScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
+      <KeyboardAvoider>
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
           <View style={styles.mark}>
             <KeyRound size={22} color={colors.brandSage} />
@@ -156,7 +152,7 @@ export default function ChangePinScreen() {
             </Text>
           </View>
         </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAvoider>
     </SafeAreaView>
   );
 }

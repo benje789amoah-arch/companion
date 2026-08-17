@@ -8,8 +8,6 @@ import { AlertCircle, ScanFace } from 'lucide-react-native';
 import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,6 +17,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ApiError, PHONE_DIGITS, limitPhoneInput } from '@freshfold/core';
+import { KeyboardAvoider } from '../src/components/KeyboardAvoider';
 import { Button } from '../src/components/ui';
 import { REQUIRED_PROFILE_FIELDS, useApp } from '../src/store/AppStore';
 import { useSession } from '../src/store/SessionStore';
@@ -111,10 +110,7 @@ export default function AuthScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
+      <KeyboardAvoider>
         <ScrollView
           contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="handled"
@@ -209,7 +205,7 @@ export default function AuthScreen() {
             <Text style={styles.legalBrand}>FreshFold Luxury Co. All rights reserved 2026</Text>
           </View>
         </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAvoider>
 
       {scanningFace && (
         <View style={styles.scanOverlay}>

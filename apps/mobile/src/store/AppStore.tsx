@@ -285,6 +285,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const inFlight = useRef(0);
 
   /**
+   * How many writes to the *board* have landed, ever.
+   *
+   * `inFlight` only holds off a poll that starts mid-write. It cannot help the
+   * other order: a poll issued a moment *before* the write can come back a
+   * moment after it, carrying the board as it was, and applying that snapshot
+   * rewinds the leg the courier just finished — the delivery they completed
+   * reappears at the door, code and photo and all, and the workflow starts
+   * again. So a poll notes this counter when it goes out and drops what it
+   * fetched if anything changed the board in the meantime.
+   *
+   * Position updates deliberately do not count. They go out every three
+   * seconds and would discard nearly every poll.
+   */
+  const boardWrites = useRef(0);
+
+  /**
    * Held in refs so `pull` can read them without taking them as dependencies —
    * `pull` drives the poll interval, and rebuilding it on every render would
    * restart the timer four times a second.
@@ -332,6 +348,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
     },
     [track]
+  );
+
+  /**
+   * `track`, for a write that moves a job rather than reporting where the
+   * courier is. Marks the board as changed as the write lands — see
+   * {@link boardWrites} — so a poll already on the wire cannot undo it.
+   */
+  const trackBoard = useCallback(
+    <T,>(operation: () => Promise<T>): Promise<T> =>
+      track(async () => {
+        try {
+          return await operation();
+        } finally {
+          boardWrites.current += 1;
+        }
+      }),
+    [track]
+  );
+
+  /** `trackBoard` for the board writes nobody is waiting on an answer to. */
+  const pushBoard = useCallback(
+    async <T,>(operation: () => Promise<T>): Promise<T | null> => {
+      try {
+        return await trackBoard(operation);
+      } catch {
+        setConnected(false);
+        return null;
+      }
+    },
+    [trackBoard]
   );
 
   // Hydrate from device storage once on launch, so the first frame has data
@@ -404,6 +450,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const pull = useCallback(async () => {
     if (inFlight.current > 0) return;
 
+    // What the board had been written to when this snapshot was asked for.
+    const writesAtStart = boardWrites.current;
+
     try {
       const [serverOrders, serverMessages, serverNotifications, serverRider] =
         await Promise.all([
@@ -413,7 +462,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           api.riderMe(tokenRef.current!),
         ]);
 
-      if (inFlight.current > 0) return;
+      // Anything that moved a job while these requests were out makes them
+      // stale, whether it is still on the wire or has already landed. Applying
+      // them anyway is what put a finished delivery back on the courier's board.
+      if (inFlight.current > 0 || boardWrites.current !== writesAtStart) return;
 
       // A job the rider is part-way through can vanish from under them — a
       // supervisor deleting it from the master ledger is the usual reason. It
@@ -651,14 +703,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const updateRider = useCallback(
     (updates: Partial<RiderState>) => {
-      setRider((prev) => {
-        const next = { ...prev, ...updates };
-        // The session caches the courier's record for the next cold start, so
-        // a profile saved here has to reach it — otherwise the app would boot
-        // showing the identity they had before they filled the form in.
-        if (signedInRider) applyRider({ ...signedInRider, ...updates });
-        return next;
-      });
+      setRider((prev) => ({ ...prev, ...updates }));
+
+      // The session caches the courier's record for the next cold start, so a
+      // profile saved here has to reach it — otherwise the app would boot
+      // showing the identity they had before they filled the form in.
+      //
+      // Outside the updater above, and through the refs the poll uses. React
+      // runs an updater during the *render* that consumes it and may run it
+      // more than once, so writing to another provider from in there set state
+      // on `SessionProvider` mid-render — which is the warning LogBox raised —
+      // and put a stray AsyncStorage write on every replay.
+      const cached = signedInRiderRef.current;
+      if (cached) applyRiderRef.current({ ...cached, ...updates });
 
       // Profile and presence changes matter to the customer's live map, so
       // they go up straight away rather than waiting for the telemetry tick.
@@ -724,7 +781,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       void (async () => {
         try {
-          await track(() => api.acceptOrder(orderId, riderIdRef.current));
+          await trackBoard(() => api.acceptOrder(orderId, riderIdRef.current));
         } catch (error) {
           // Two very different failures land here and they need opposite
           // handling: a 409 means another rider has the job and this phone must
@@ -747,13 +804,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
       })();
     },
-    [profileComplete, patchOrder, pushNotification, track]
+    [profileComplete, patchOrder, pushNotification, trackBoard]
   );
 
   const declineOrder = useCallback(
     (orderId: string) => {
       patchOrder(orderId, { status: 'unassigned', riderId: undefined });
-      void push(() => api.declineOrder(orderId, riderIdRef.current));
+      void pushBoard(() => api.declineOrder(orderId, riderIdRef.current));
 
       pushNotification({
         id: `notif-${Date.now()}`,
@@ -763,7 +820,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         read: false,
       });
     },
-    [patchOrder, push, pushNotification, rider.name]
+    [patchOrder, pushBoard, pushNotification, rider.name]
   );
 
   const updateOrderStatus = useCallback(
@@ -807,11 +864,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       // The customer-facing narration for each step is written by the server,
       // so both the rider's chat and the client portal show the same thread.
-      void push(() =>
+      void pushBoard(() =>
         api.updateOrderStatus(orderId, { status, riderId: riderIdRef.current, photo, signature })
       );
     },
-    [connected, orders, push]
+    [connected, orders, pushBoard]
   );
 
   /**
@@ -846,6 +903,47 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [navigationTarget, updateOrderStatus]);
 
   /**
+   * Sends one of the two adjudicated hand-offs and insists on an answer.
+   *
+   * A *refusal* is dispatch saying no, and is passed back word for word. A
+   * *lost answer* is a different thing entirely and must not be reported as
+   * one: a counter's wifi drops the reply far more often than it drops the
+   * request, so the write has very likely landed. Saying "could not reach
+   * dispatch" there sends a courier to re-scan a load the hub already has, or
+   * — at a door — to redo a delivery the customer has been told is complete.
+   *
+   * So a lost answer is asked again rather than reported. Repeating a hand-off
+   * is safe by construction: the server narrates to the customer and credits
+   * the courier only when the status actually moves, so a second copy of one
+   * that already landed writes nothing and answers 200. If the retry is lost
+   * too, the courier is genuinely offline and is told so.
+   */
+  const sendHandoff = useCallback(
+    async (
+      send: () => Promise<unknown>,
+      lostAnswer: string
+    ): Promise<{ ok: true } | { ok: false; error: string }> => {
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          await trackBoard(send);
+          return { ok: true };
+        } catch (error) {
+          if (error instanceof ApiError) {
+            // Dispatch answered; it said no. The connection is fine.
+            setConnected(true);
+            return { ok: false, error: error.message };
+          }
+          if (attempt > 0) {
+            setConnected(false);
+            return { ok: false, error: lostAnswer };
+          }
+        }
+      }
+    },
+    [trackBoard]
+  );
+
+  /**
    * Completing a delivery, which is the one transition this app cannot make on
    * its own say-so.
    *
@@ -864,8 +962,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       orderId: string,
       handover: { code?: string; overrideReason?: string; photo?: string; signature?: string }
     ): Promise<{ ok: true } | { ok: false; error: string }> => {
-      try {
-        await push(() =>
+      // Waits on the answer and reports a refusal rather than swallowing it —
+      // a handover shown as complete that dispatch rejected is a job the next
+      // poll puts back at the door with the workflow started over, which from
+      // the doorstep looks like the app losing the delivery.
+      const sent = await sendHandoff(
+        () =>
           api.updateOrderStatus(orderId, {
             status: 'delivered',
             riderId: riderIdRef.current,
@@ -873,17 +975,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             signature: handover.signature,
             deliveryCode: handover.code,
             overrideReason: handover.overrideReason,
-          })
-        );
-      } catch (error) {
-        if (error instanceof ApiError) {
-          return { ok: false, error: error.message };
-        }
-        return {
-          ok: false,
-          error: 'Could not reach dispatch to confirm the handover. Check your signal.',
-        };
-      }
+          }),
+        'Could not reach dispatch to confirm the handover. Check your signal.'
+      );
+
+      if (!sent.ok) return sent;
 
       // The server accepted it, so the console may now agree.
       setOrders((prev) =>
@@ -902,7 +998,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       return { ok: true };
     },
-    [push]
+    [sendHandoff]
   );
 
   /**
@@ -923,24 +1019,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       orderId: string,
       handover: { code?: string; overrideReason?: string }
     ): Promise<{ ok: true } | { ok: false; error: string }> => {
-      try {
-        await push(() =>
+      // Waits on the answer and reports the refusal, exactly as the delivery
+      // does above and for the same reason.
+      const sent = await sendHandoff(
+        () =>
           api.updateOrderStatus(orderId, {
             status: 'dropped_off',
             riderId: riderIdRef.current,
             dropoffCode: handover.code,
             overrideReason: handover.overrideReason,
-          })
-        );
-      } catch (error) {
-        if (error instanceof ApiError) {
-          return { ok: false, error: error.message };
-        }
-        return {
-          ok: false,
-          error: 'Could not reach dispatch to check the bags in. Check your signal.',
-        };
-      }
+          }),
+        'Could not reach dispatch to check the bags in. Check your signal.'
+      );
+
+      if (!sent.ok) return sent;
 
       // The server accepted it, so the console may now agree.
       setOrders((prev) =>
@@ -949,7 +1041,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       return { ok: true };
     },
-    [push]
+    [sendHandoff]
   );
 
   /**

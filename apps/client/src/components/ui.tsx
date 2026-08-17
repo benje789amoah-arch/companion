@@ -19,8 +19,9 @@ import {
   View,
   ViewStyle,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DEFAULT_AVATAR, colors, radius, shadow, tints } from '../theme';
+import { KeyboardAvoider, useKeyboardVisible } from './KeyboardAvoider';
 
 /* ------------------------------------------------------------------ layout */
 
@@ -491,6 +492,11 @@ export function ProgressBar({
  * sheet in this app is a short, deliberate task (scan bags, sign, pick a
  * method), and a dismissable overlay is both lighter and less likely to eat a
  * signature stroke mid-drag.
+ *
+ * The keyboard is handled here rather than by each caller: a `Modal` is its
+ * own window, so nothing a screen wraps around it reaches inside, and half the
+ * sheets in the app (the address form, the top-up amount, the issue report)
+ * are forms that were being typed into from underneath the keys.
  */
 export function Sheet({
   visible,
@@ -503,17 +509,22 @@ export function Sheet({
   children: React.ReactNode;
   maxHeight?: number | `${number}%`;
 }) {
+  const insets = useSafeAreaInsets();
+  const keyboardUp = useKeyboardVisible();
+
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={styles.sheetBackdrop}>
+      <KeyboardAvoider style={styles.sheetBackdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Dismiss" />
-        <SafeAreaView edges={['bottom']} style={{ maxHeight }}>
+        {/* The inset the home indicator needs is space the keyboard is already
+            covering once it is up, and keeping it there floats the sheet. */}
+        <View style={{ maxHeight, paddingBottom: keyboardUp ? 0 : insets.bottom }}>
           <View style={styles.sheetBody}>
             <View style={styles.sheetGrabber} />
             {children}
           </View>
-        </SafeAreaView>
-      </View>
+        </View>
+      </KeyboardAvoider>
     </Modal>
   );
 }

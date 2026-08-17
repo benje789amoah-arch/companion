@@ -31,6 +31,7 @@ import CameraCapture from '../../src/components/CameraCapture';
 import CustomerStage from '../../src/components/CustomerStage';
 import DropoffVerify from '../../src/components/DropoffVerify';
 import HandoffVerify from '../../src/components/HandoffVerify';
+import { KeyboardAvoider } from '../../src/components/KeyboardAvoider';
 import LiveMap from '../../src/components/LiveMap';
 import NotificationsSheet from '../../src/components/NotificationsSheet';
 import QRScanner from '../../src/components/QRScanner';
@@ -743,63 +744,67 @@ export default function HomeScreen() {
         onRequestClose={() => setActiveModal(null)}
       >
         <Pressable style={styles.modalScrim} onPress={() => setActiveModal(null)}>
-          <Pressable style={styles.modalBody} onPress={(e) => e.stopPropagation()}>
-            {activeModal === 'handoff' && activeOrder && (
-              <HandoffVerify
-                order={activeOrder}
-                onVerified={() => {
-                  setHandoffVerifiedFor(activeOrder.id);
-                  // Straight on to the bags — the courier is standing at the
-                  // door and the two checks are one interaction to them.
-                  setActiveModal('scanner');
-                }}
-                onCancel={() => setActiveModal(null)}
-              />
-            )}
+          {/* A modal is its own window, so the screen's avoider does not reach
+              in — and the hub code and the override reason are typed here. */}
+          <KeyboardAvoider style={styles.modalAvoider}>
+            <Pressable style={styles.modalBody} onPress={(e) => e.stopPropagation()}>
+              {activeModal === 'handoff' && activeOrder && (
+                <HandoffVerify
+                  order={activeOrder}
+                  onVerified={() => {
+                    setHandoffVerifiedFor(activeOrder.id);
+                    // Straight on to the bags — the courier is standing at the
+                    // door and the two checks are one interaction to them.
+                    setActiveModal('scanner');
+                  }}
+                  onCancel={() => setActiveModal(null)}
+                />
+              )}
 
-            {activeModal === 'scanner' && activeOrder && (
-              <QRScanner
-                order={activeOrder}
-                onScanComplete={handleQrVerified}
-                onCancel={() => setActiveModal(null)}
-              />
-            )}
+              {activeModal === 'scanner' && activeOrder && (
+                <QRScanner
+                  order={activeOrder}
+                  onScanComplete={handleQrVerified}
+                  onCancel={() => setActiveModal(null)}
+                />
+              )}
 
-            {activeModal === 'dropoff' && activeOrder && (
-              <DropoffVerify
-                order={activeOrder}
-                onSubmit={(handover) => completeDropoff(activeOrder.id, handover)}
-                onDone={() => setActiveModal(null)}
-                onCancel={() => setActiveModal(null)}
-              />
-            )}
+              {activeModal === 'dropoff' && activeOrder && (
+                <DropoffVerify
+                  order={activeOrder}
+                  onSubmit={(handover) => completeDropoff(activeOrder.id, handover)}
+                  onDone={() => setActiveModal(null)}
+                  onCancel={() => setActiveModal(null)}
+                />
+              )}
 
-            {(activeModal === 'pickup-camera' || activeModal === 'delivery-camera') && (
-              <CameraCapture
-                context={activeModal === 'pickup-camera' ? 'pickup' : 'delivery'}
-                title={
-                  activeModal === 'pickup-camera'
-                    ? 'Document garment condition'
-                    : 'Proof of delivery'
-                }
-                onCapture={handlePhotoCaptured}
-                onCancel={() => setActiveModal(null)}
-              />
-            )}
+              {(activeModal === 'pickup-camera' || activeModal === 'delivery-camera') && (
+                <CameraCapture
+                  context={activeModal === 'pickup-camera' ? 'pickup' : 'delivery'}
+                  title={
+                    activeModal === 'pickup-camera'
+                      ? 'Document garment condition'
+                      : 'Proof of delivery'
+                  }
+                  onCapture={handlePhotoCaptured}
+                  onCancel={() => setActiveModal(null)}
+                />
+              )}
 
-            {activeModal === 'signature' && activeOrder && (
-              <SignaturePad
-                customerName={activeOrder.customerName}
-                title={
-                  activeOrder.status === 'pickup_scanned'
-                    ? 'Pickup signature verification'
-                    : 'Delivery receipt slip'
-                }
-                onSave={handleSignatureCaptured}
-                onCancel={() => setActiveModal(null)}
-              />
-            )}
-          </Pressable>
+              {activeModal === 'signature' && activeOrder && (
+                <SignaturePad
+                  customerName={activeOrder.customerName}
+                  title={
+                    activeOrder.status === 'pickup_scanned'
+                      ? 'Pickup signature verification'
+                      : 'Delivery receipt slip'
+                  }
+                  onSave={handleSignatureCaptured}
+                  onCancel={() => setActiveModal(null)}
+                />
+              )}
+            </Pressable>
+          </KeyboardAvoider>
         </Pressable>
       </Modal>
 
@@ -1129,5 +1134,6 @@ const styles = StyleSheet.create({
   offerActions: { flexDirection: 'row', gap: 10, marginTop: 8 },
 
   modalScrim: { flex: 1, backgroundColor: tints.scrim, justifyContent: 'flex-end' },
+  modalAvoider: { justifyContent: 'flex-end' },
   modalBody: { width: '100%' },
 });

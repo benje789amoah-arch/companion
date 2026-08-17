@@ -10,7 +10,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "tsc --noEmit",
-    "check": "tsx src/store/workload.check.ts"
+    "check": "tsx src/store/workload.check.ts && tsx src/scan.check.ts"
   },
   "dependencies": {
     "@expo/metro-runtime": "~6.1.2",

@@ -137,6 +137,24 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
   const [createdBooking, setCreatedBooking] = useState<Booking | null>(null);
   const [loggedInUser, setLoggedInUser] = useState<any | null>(null);
 
+  /**
+   * Whether the booking on the confirmation screen has reached the server yet.
+   *
+   * A write that cannot be sent is kept in a queue and retried, and the screen
+   * used to promise an email regardless — so a booking made while the dispatch
+   * server was unreachable sat in this browser claiming a receipt was on its
+   * way. It stays subscribed rather than reading once, because the queue
+   * usually drains a moment later and the panel should stop warning by itself.
+   */
+  const [awaitingServer, setAwaitingServer] = useState(false);
+
+  useEffect(() => {
+    if (!createdBooking) return;
+    const check = () => setAwaitingServer(store.isBookingPending(createdBooking.id));
+    check();
+    return store.subscribe(check);
+  }, [createdBooking]);
+
   // Check for active logged in session on open and pre-fill credentials & logistics
   useEffect(() => {
     if (isOpen) {
@@ -911,7 +929,19 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
               <div className="max-w-md mx-auto bg-brand-sage/5 border border-brand-sage/20 rounded-2xl p-4 text-xs text-left space-y-2 mt-4">
                 <span className="font-mono text-[9px] text-brand-gold uppercase tracking-widest block font-bold">DIGITAL CLIENT PORTAL DISPATCH</span>
                 <div className="text-[#8E9299] font-light leading-relaxed text-[11px]">
-                  {loggedInUser ? (
+                  {awaitingServer ? (
+                    /* The email is sent by the dispatch server once it has the
+                       booking, so while the write is still queued there is
+                       nothing in any inbox to look for. Saying "check your
+                       email" here sends the customer hunting for a message that
+                       was never sent. */
+                    <p>
+                      Saved on this device, but we have not been able to reach FreshFold yet — so{' '}
+                      <strong className="text-brand-gold">no email has gone out</strong>. Keep this tab
+                      open and it will send itself the moment the connection is back. Your booking is not
+                      lost.
+                    </p>
+                  ) : loggedInUser ? (
                     <p>This pickup order is saved under your patron profile. You can view and track it here:</p>
                   ) : (
                     /* No shortcut into the password screen from here: the link

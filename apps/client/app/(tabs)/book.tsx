@@ -21,8 +21,6 @@ import {
 } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -46,6 +44,7 @@ import {
 } from '@freshfold/core';
 import AddressAutocomplete from '../../src/components/AddressAutocomplete';
 import { Icon } from '../../src/components/Icon';
+import { KeyboardAvoider } from '../../src/components/KeyboardAvoider';
 import type { PinOrigin } from '../../src/components/PickupPinPanel';
 import PickupPinPicker from '../../src/components/PickupPinPicker';
 import {
@@ -567,11 +566,7 @@ export default function BookScreen() {
         <ProgressBar percent={((step + 1) / 5) * 100} height={4} />
       </View>
 
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
-      >
+      <KeyboardAvoider>
         <ScrollView
           contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="handled"
@@ -1039,7 +1034,7 @@ export default function BookScreen() {
             />
           )}
         </View>
-      </KeyboardAvoidingView>
+      </KeyboardAvoider>
 
       {/* ---------------------------------------------------------- pickers */}
       <ScrollSheet

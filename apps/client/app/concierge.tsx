@@ -8,8 +8,6 @@ import { Bot, Send, Sparkles, X } from 'lucide-react-native';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,6 +17,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { ChatMessage } from '@freshfold/core';
+import { KeyboardAvoider } from '../src/components/KeyboardAvoider';
 import { api } from '../src/services/api';
 import { useClient } from '../src/store/ClientStore';
 import { useSession } from '../src/store/SessionStore';
@@ -118,11 +117,7 @@ export default function ConciergeScreen() {
         </Pressable>
       </View>
 
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
-      >
+      <KeyboardAvoider offset={8}>
         <ScrollView
           ref={scrollRef}
           contentContainerStyle={styles.thread}
@@ -207,7 +202,7 @@ export default function ConciergeScreen() {
             <Send size={16} color="#FFFFFF" />
           </Pressable>
         </View>
-      </KeyboardAvoidingView>
+      </KeyboardAvoider>
     </SafeAreaView>
   );
 }

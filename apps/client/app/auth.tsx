@@ -18,8 +18,6 @@ import {
 } from 'lucide-react-native';
 import React, { useCallback, useState } from 'react';
 import {
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -34,6 +32,7 @@ import {
   isCompletePhone,
   limitPhoneInput,
 } from '@freshfold/core';
+import { KeyboardAvoider } from '../src/components/KeyboardAvoider';
 import { Button, Card, Divider, Field, Segmented } from '../src/components/ui';
 import { useSession } from '../src/store/SessionStore';
 import { colors, radius, shadow, tints } from '../src/theme';
@@ -200,10 +199,7 @@ export default function AuthScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
+      <KeyboardAvoider>
         <ScrollView
           contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="handled"
@@ -373,7 +369,7 @@ export default function AuthScreen() {
             <Text style={styles.guestLabel}>Continue browsing without an account</Text>
           </Pressable>
         </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAvoider>
     </SafeAreaView>
   );
 }

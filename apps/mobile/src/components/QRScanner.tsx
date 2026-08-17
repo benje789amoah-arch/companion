@@ -5,10 +5,10 @@
 
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
-import { parseHandoffPayload } from '@freshfold/core';
 import { ClipboardCheck, Layers, QrCode, ShieldCheck } from 'lucide-react-native';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { classifyScan } from '../scan';
 import { colors, radius, tints } from '../theme';
 import { LaundryBag, Order } from '../types';
 import { Button, Divider } from './ui';
@@ -64,34 +64,40 @@ export default function QRScanner({ order, onScanComplete, onCancel }: QRScanner
       if (lastCodeRef.current?.value === data && now - lastCodeRef.current.at < 2000) return;
       lastCodeRef.current = { value: data, at: now };
 
-      const match = bags.find(
-        (b) => b.qrCode.toLowerCase() === data.trim().toLowerCase() && !b.scanned
-      );
+      const result = classifyScan(data, bags);
 
-      if (match) {
-        markScanned(match.id);
-        setStatus(`Verified ${match.qrCode} — ${match.type}.`);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-        return;
+      switch (result.kind) {
+        case 'bag':
+          markScanned(result.bag.id);
+          setStatus(`Verified ${result.bag.qrCode} — ${result.bag.type}.`);
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          return;
+
+        // A bag the rider has already checked off, read again because they left
+        // the label in the frame or went back to confirm it. No haptic: this
+        // comes round every couple of seconds while a label is held there, and
+        // a bag buzzing on a loop reads as a fault.
+        case 'bag-again':
+          setStatus(`${result.bag.qrCode} is already accounted for.`);
+          return;
+
+        // The customer's collection QR is the other code in the room, and it is
+        // the easiest thing to point at by mistake. Saying "unrecognised label"
+        // to a rider who has just scanned the right customer reads like a
+        // failure, so name what they actually scanned.
+        case 'handoff':
+          setStatus(
+            result.payload.jobId === order.id
+              ? `That is the collection code for this order, not a bag label. Tick the bags off below.`
+              : `That is order ${result.payload.jobId}'s collection code, not a bag on ${order.orderNumber}.`
+          );
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+          return;
+
+        default:
+          setStatus(`Unrecognised label "${data}". Not part of ${order.orderNumber}.`);
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
       }
-
-      // The customer's collection QR is the other code in the room, and it is
-      // the easiest thing to point at by mistake. Saying "unrecognised label"
-      // to a rider who has just scanned the right customer reads like a
-      // failure, so name what they actually scanned.
-      const handoff = parseHandoffPayload(data);
-      if (handoff) {
-        setStatus(
-          handoff.jobId === order.id
-            ? `That is the collection code for this order, not a bag label. Tick the bags off below.`
-            : `That is order ${handoff.jobId}'s collection code, not a bag on ${order.orderNumber}.`
-        );
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-        return;
-      }
-
-      setStatus(`Unrecognised label "${data}". Not part of ${order.orderNumber}.`);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
     },
     [bags, markScanned, order.id, order.orderNumber]
   );

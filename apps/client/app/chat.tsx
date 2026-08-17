@@ -7,8 +7,6 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Activity, ArrowLeft, Bot, Send } from 'lucide-react-native';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -18,6 +16,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { Message, MessageSender } from '@freshfold/core';
+import { KeyboardAvoider } from '../src/components/KeyboardAvoider';
 import { EmptyState } from '../src/components/ui';
 import { useClient } from '../src/store/ClientStore';
 import { colors, courierName, radius, shadow, tints } from '../src/theme';
@@ -98,11 +97,7 @@ export default function ChatScreen() {
         </Pressable>
       </View>
 
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
-      >
+      <KeyboardAvoider offset={8}>
         <ScrollView
           ref={scrollRef}
           style={styles.thread}
@@ -165,7 +160,7 @@ export default function ChatScreen() {
             </View>
           </>
         )}
-      </KeyboardAvoidingView>
+      </KeyboardAvoider>
     </SafeAreaView>
   );
 }
