@@ -13,6 +13,7 @@ import {
   SUBURB_COORDS,
   coordsForAddress,
   matchLandmark,
+  routeEtaMinutes,
   type BookingRiderView,
   type Coords,
   type Landmark,
@@ -180,14 +181,11 @@ export default function LiveDispatchMap({
   rider
 }: LiveDispatchMapProps) {
   const [mapTheme, setMapTheme] = useState<'light' | 'dark'>('dark');
-  const [selectedLandmark, setSelectedLandmark] = useState<Landmark | null>({
-    name: 'FreshFold Laundry Hub',
-    lat: 6.6852,
-    lng: -1.5815,
-    suburb: 'Bomso',
-    type: 'hub',
-    description: 'FreshFold Premium Apparel Processing & Steam-Press Sanctuary.'
-  });
+  // The hub out of the shared table rather than a copy of it. This was a
+  // literal, and it went stale the moment the operation moved off Bomso.
+  const [selectedLandmark, setSelectedLandmark] = useState<Landmark | null>(
+    () => landmarks.find((mark) => mark.type === 'hub') ?? null
+  );
 
   // Calculate Client Position accurately
   const getClientPosition = (): { lat: number; lng: number } => {
@@ -273,11 +271,21 @@ export default function LiveDispatchMap({
    */
   const isRoad = route?.source === 'roads';
 
+  /**
+   * Minutes to the door, from the same road leg the polyline is drawn from.
+   *
+   * `null` until the routing engine answers, and `null` for good if it never
+   * does. The marker used to read `rider.etaMinutes` — a straight line divided
+   * by an assumed scooter speed — while this component already held the real
+   * answer in `route` a few lines up.
+   */
+  const etaMinutes = route ? routeEtaMinutes(route) : null;
+
   const pathPoints = useMemo(() => {
     const raw = route
       ? route.coordinates.map((point) => ({ lat: point.lat, lng: point.lng }))
       : // The straight line from wherever the courier actually is. The canned
-        // waypoint table that used to fill this gap always began at Bomso HQ,
+        // waypoint table that used to fill this gap always began at the hub,
         // so a courier already halfway to Kotei was drawn setting off from the
         // hub — a route bending convincingly through junctions nobody was at.
         [routeOrigin];
@@ -456,7 +464,7 @@ export default function LiveDispatchMap({
                       [rider.vehicle?.trim(), rider.vehiclePlate?.trim()]
                         .filter(Boolean)
                         .join(' · '),
-                      rider.etaMinutes !== undefined ? `${rider.etaMinutes} min away` : '',
+                      etaMinutes !== null ? `${etaMinutes} min away` : '',
                     ]
                       .filter(Boolean)
                       .join(' — ')
@@ -524,7 +532,7 @@ export default function LiveDispatchMap({
           <div className="space-y-1.5 text-[10px] font-sans">
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded bg-[#c5a880] border border-black inline-block"></span>
-              <span className="text-stone-300 font-light">FreshFold HQ (Bomso)</span>
+              <span className="text-stone-300 font-light">FreshFold HQ (Wagyingo Opal)</span>
             </div>
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-brand-sage inline-block"></span>

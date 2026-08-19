@@ -19,6 +19,7 @@ import {
   requireSupervisor,
   revokeSession,
 } from '../auth';
+import { deskActor, recordAudit } from '../audit';
 import { hashPassword, sanitizeRider, verifySecret } from '../passwords';
 import { store, type StoredRider } from '../store';
 import { guard, notFound } from '../helpers';
@@ -321,6 +322,20 @@ ridersRouter.post(
       return;
     }
 
+    // The PIN is deliberately absent. It is a credential, the trail is readable
+    // by every desk, and a record of who was hired does not need the password
+    // they were hired with.
+    await recordAudit(store, {
+      ...deskActor(req),
+      action: 'Courier hired',
+      details:
+        `Added ${outcome.rider.name || 'an unnamed courier'} to the roster as ` +
+        `${outcome.rider.employeeId} on ${outcome.rider.vehicle} ` +
+        `(${outcome.rider.vehiclePlate}), phone ${outcome.rider.phone}`,
+      type: 'roster',
+      subject: outcome.rider.employeeId,
+    });
+
     res
       .status(201)
       .json({ rider: sanitizeRider(outcome.rider), temporaryPin, pinExpiresAt });
@@ -358,6 +373,20 @@ ridersRouter.patch(
       notFound(res, 'Rider');
       return;
     }
+
+    // What it is now, not what it was: nothing here holds a lock, so a "changed
+    // from" read before the write could name a plate a second desk had already
+    // replaced. The assignment is the fact this route produced.
+    await recordAudit(store, {
+      ...deskActor(req),
+      action: 'Vehicle reassigned',
+      details:
+        `Assigned ${rider.vehicle} (${rider.vehiclePlate}) to ` +
+        `${rider.name || 'an unnamed courier'}, ${rider.employeeId}`,
+      type: 'roster',
+      subject: rider.employeeId,
+    });
+
     res.json(sanitizeRider(rider));
   })
 );
@@ -387,6 +416,18 @@ ridersRouter.patch(
       notFound(res, 'Rider');
       return;
     }
+
+    await recordAudit(store, {
+      ...deskActor(req),
+      action: active ? 'Courier reinstated' : 'Courier deactivated',
+      details: active
+        ? `Put ${rider.name || 'an unnamed courier'} (${rider.employeeId}) back on the roster`
+        : `Took ${rider.name || 'an unnamed courier'} (${rider.employeeId}) off the roster; ` +
+          'their sign-in stops working on the next request',
+      type: 'roster',
+      subject: rider.employeeId,
+    });
+
     res.json(sanitizeRider(rider));
   })
 );

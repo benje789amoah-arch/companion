@@ -2,18 +2,30 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Booking, UserAccount } from '../types';
 import * as store from '../services/store';
+import { displayAmount } from '../services/amount';
 import {
+  ADDRESS_LIMIT_MESSAGE,
   ApiError,
   BOOKING_STAGE_SEQUENCE,
   LOYALTY_REWARDS,
+  MAX_SAVED_ADDRESSES,
+  PHONE_DIGITS,
+  SERVICE_SUBURBS,
   bookingProgressPercent,
+  decodeFinish,
+  isCompletePhone,
+  limitPhoneInput,
   membershipPlan,
+  priceBreakdown,
   samePhone,
   tierForPoints,
   tierProgress,
+  withAddress,
+  withoutAddress,
   type JobStatus,
   type LoyaltyTierId,
   type Message,
+  type SavedAddress,
 } from '@freshfold/core';
 import { 
   X, Shield, Lock, Smartphone, Mail, Sparkles, User, LogOut,
@@ -47,6 +59,7 @@ const DELIVERY_PENDING = new Set<JobStatus>([
   'arrived_at_delivery',
 ]);
 
+
 /**
  * Who a message is from, in the customer's language. The wire values are the
  * dispatch team's own vocabulary, and "laundry_center" on a bubble helps
@@ -56,7 +69,7 @@ const SENDER_LABELS: Record<Message['sender'], string> = {
   rider: 'Your Courier',
   customer: 'You',
   dispatcher: 'Dispatch Desk',
-  laundry_center: 'Bomso Atelier',
+  laundry_center: 'Wagyingo Opal Atelier',
 };
 
 /**
@@ -166,10 +179,18 @@ export default function ClientPortal({
 
   // Portal Payment Modal states
   const [payModalBooking, setPayModalBooking] = useState<Booking | null>(null);
-  const [payMethod, setPayMethod] = useState<'Paystack' | 'MTN MoMo' | 'Telecel Cash' | 'AT Money' | 'Card' | 'Wallet'>('Paystack');
-  const [payMomoNum, setPayMomoNum] = useState('');
-  const [payMomoPin, setPayMomoPin] = useState('');
-  const [payUssdPrompt, setPayUssdPrompt] = useState(false);
+  /**
+   * How the customer is settling. Two methods, because two are what can
+   * actually take money.
+   *
+   * This union used to carry `'MTN MoMo' | 'Telecel Cash' | 'AT Money' | 'Card'`
+   * as well. None of them had a gateway behind them — picking one only changed
+   * the prefix of a reference this screen invented for itself. All four are
+   * Paystack channels and always were, which is what the badge on that panel
+   * says.
+   */
+  const [payMethod, setPayMethod] = useState<'Paystack' | 'Wallet'>('Paystack');
+  const [paying, setPaying] = useState(false);
 
   // Paystack portal states
   const [paystackLoading, setPaystackLoading] = useState(false);
@@ -182,13 +203,19 @@ export default function ClientPortal({
     setPaystackLoading(true);
     setPaystackError('');
     try {
-      const userEmail = currentUser?.email || payModalBooking.email || 'patron@freshfold.com';
+      // The receipt address Paystack will use. No invented fallback: this ran
+      // with `'patron@freshfold.com'` when both were blank, which sent a real
+      // customer's receipt to an address nobody reads.
+      const userEmail = currentUser?.email || payModalBooking.email;
+      if (!userEmail) {
+        throw new Error('Add an email address to your account before paying online.');
+      }
       const res = await fetch('/api/paystack/initialize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: userEmail,
-          amount: payModalBooking.amount || 35,
+          amount: displayAmount(payModalBooking),
           metadata: {
             booking_id: payModalBooking.id,
             customer_name: currentUser?.name || payModalBooking.name,
@@ -209,24 +236,27 @@ export default function ClientPortal({
     }
   };
 
+  /**
+   * Settles the order against the Paystack reference this screen opened.
+   *
+   * The browser used to be the thing that decided a payment had happened: it
+   * called `/api/paystack/verify` itself, and on `success` marked the booking
+   * paid locally. Nothing checked that the reference belonged to this booking,
+   * or that it was for the right amount, and the "Mark Paid" button beside it
+   * skipped even that.
+   *
+   * `payForBooking` hands the reference to the server, which re-verifies it
+   * with Paystack, checks it was made for this job, and reads the amount off
+   * the job rather than off this screen. A 402 comes back while the customer
+   * is still mid-checkout, which is the "not settled yet" case and reads as
+   * such.
+   */
   const handlePortalPaystackVerify = async () => {
     if (!paystackRef || !payModalBooking) return;
     setPaystackLoading(true);
     setPaystackError('');
     try {
-      const res = await fetch(`/api/paystack/verify/${encodeURIComponent(paystackRef)}`);
-      const data = await res.json();
-      if (!res.ok || !data.status) {
-        throw new Error(data.error || 'Payment verification failed.');
-      }
-      if (data.data && data.data.status === 'success') {
-        handleCompletePayment(payModalBooking.id);
-        alert('Paystack Payment Confirmed!');
-      } else {
-        alert(`Status: ${data.data?.status || 'pending'}. Complete the transaction in the popup window and retry.`);
-      }
-    } catch (err: any) {
-      setPaystackError(err.message || 'Error verifying Paystack transaction.');
+      await settleBooking(payModalBooking.id, 'Paystack', paystackRef);
     } finally {
       setPaystackLoading(false);
     }
@@ -337,10 +367,31 @@ export default function ClientPortal({
   // Main portal navigation tab state
   const [activePortalTab, setActivePortalTab] = useState<'dashboard' | 'orders' | 'wallet' | 'settings'>('dashboard');
   const [receiptModalBooking, setReceiptModalBooking] = useState<Booking | null>(null);
-  const [userAddress, setUserAddress] = useState('KNUST Gaza Hostel, Room 304, Ayeduase');
-  const [userHostel, setUserHostel] = useState('Gaza Hostel, Room 304');
-  const [userSuburb, setUserSuburb] = useState('Ayeduase');
+
+  /**
+   * The settings tab's form state.
+   *
+   * What was here printed "Settings updated successfully!" from a `setTimeout`
+   * and wrote nothing at all: three delivery fields seeded with "KNUST Gaza
+   * Hostel, Room 304" — one invented address shown to every patron as though it
+   * were theirs — over a button that touched no store and no server. Now the
+   * name and the number go to `/api/accounts` and the book to
+   * `/api/accounts/addresses`, which is the same pair of routes the customer app
+   * writes, so an edit made here shows up on the phone within a poll and an edit
+   * made on the phone shows up here within one.
+   */
+  const [profileName, setProfileName] = useState('');
+  const [profilePhone, setProfilePhone] = useState('');
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileError, setProfileError] = useState('');
   const [savedSettingsMsg, setSavedSettingsMsg] = useState('');
+
+  const [addressDraft, setAddressDraft] = useState<SavedAddress | null>(null);
+  const [addressError, setAddressError] = useState('');
+  const [addressSaving, setAddressSaving] = useState(false);
+
+  const savedAddresses = currentUser?.addresses ?? [];
+
   const [redeemedRewardMsg, setRedeemedRewardMsg] = useState('');
 
   /**
@@ -417,7 +468,7 @@ export default function ClientPortal({
     let cancelled = false;
 
     const load = () => {
-      store.readUserBookings(currentUser.email)
+      store.readUserBookings()
         .then((matched) => {
           if (cancelled) return;
           setUserBookings(matched);
@@ -746,63 +797,56 @@ export default function ClientPortal({
   };
 
   /**
-   * Marks a booking paid, and — when it is paid from the wallet — moves the
-   * money.
+   * Settles an outstanding order. The only path to `Paid` on this screen.
    *
-   * The wallet leg is a server call now, and it goes first: the debit is what
-   * can fail, and marking an order paid that was never actually paid for is the
-   * one outcome worth ordering the steps to avoid. It also earns the loyalty
-   * points the spend is worth, which this screen never did — the app awarded a
-   * point per cedi and the website awarded none, on the same ledger.
+   * What used to be here invented a reference — `'TXN-' + payMethod.slice(0,3)
+   * + Math.random()` — wrote `paymentStatus: 'Paid'` into the local ledger and
+   * announced "Payment confirmed. Ref: TXN-MTN-483920". For every method but
+   * the wallet, no money moved anywhere: the reference was decoration on a
+   * payment that had not happened. It did not even survive, because the server
+   * drops `paymentStatus`, `paidAt` and `transactionRef` from any patch that is
+   * not a supervisor's — so the customer saw a settled bill until they
+   * refreshed, and the desk saw an unpaid one throughout.
+   *
+   * `payForBooking` is `POST /bookings/:id/payment`, the one route that can
+   * mark a booking paid. It reads the amount off the job rather than off this
+   * screen, debits the wallet server-side or re-verifies the Paystack
+   * reference, and returns the settled booking with the reference the payment
+   * actually carried. A failure leaves the bill standing and says why, which is
+   * the honest outcome for a customer who is about to try again.
    */
-  const handleCompletePayment = async (bookingId: string) => {
-    const cost = payModalBooking?.amount || 35;
-    let ref = 'TXN-' + payMethod.substring(0, 3).toUpperCase() + '-' + Math.floor(100000 + Math.random() * 900000);
-
-    if (payMethod === 'Wallet') {
-      try {
-        const account = await store.chargeWallet({
-          amount: cost,
-          description: `FreshFold order ${bookingId}`,
-          bookingId,
-          reference: ref,
-        });
-        setCurrentUser(account);
-      } catch (error) {
-        setSuccessMsg('');
-        setPaystackError(
-          error instanceof ApiError
-            ? error.message
-            : 'Could not reach FreshFold to take the payment. Try again in a moment.'
-        );
-        return;
-      }
-    }
-
+  const settleBooking = async (
+    bookingId: string,
+    method: 'Paystack' | 'Wallet',
+    reference?: string
+  ) => {
+    setPaying(true);
+    setPaystackError('');
     try {
-      const nowIso = new Date().toISOString();
-      const allBookings: Booking[] = store.readBookings();
+      const settled = await store.payForBooking(bookingId, method, reference);
 
-      const updated = allBookings.map(b =>
-        b.id === bookingId
-          ? {
-              ...b,
-              paymentStatus: 'Paid' as const,
-              paymentMethod: payMethod,
-              transactionRef: ref,
-              paidAt: nowIso,
-            }
-          : b
-      );
-
-      store.writeBookings(updated);
-      onUpdateBookings(updated);
+      onUpdateBookings(store.readBookings());
+      // A wallet payment moved the balance and earned the points the spend is
+      // worth; `payForBooking` has already pulled the account down.
+      setCurrentUser(store.readCurrentUser());
 
       setPayModalBooking(null);
-      setPayUssdPrompt(false);
-      setSuccessMsg(`Payment of ₵${cost.toFixed(2)} GHS confirmed via ${payMethod}. Ref: ${ref}`);
-    } catch (e) {
-      console.error('Payment error', e);
+      setPaystackAuthUrl('');
+      setPaystackRef('');
+      setSuccessMsg(
+        `Payment of ₵${(settled.amount ?? 0).toFixed(2)} GHS received via ${method}.` +
+          (settled.transactionRef ? ` Ref: ${settled.transactionRef}` : '')
+      );
+      setTimeout(() => setSuccessMsg(''), 6000);
+    } catch (error) {
+      setSuccessMsg('');
+      setPaystackError(
+        error instanceof ApiError
+          ? error.message
+          : 'Could not reach FreshFold to take the payment. Your order is unpaid — try again in a moment.'
+      );
+    } finally {
+      setPaying(false);
     }
   };
 
@@ -1626,11 +1670,11 @@ export default function ClientPortal({
                               <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
                                 {booking.paymentStatus === 'Paid' ? (
                                   <span className="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-lg font-mono font-bold flex items-center gap-1">
-                                    <CheckCircle2 className="w-3 h-3" /> PAID (₵{booking.amount || 45}.00)
+                                    <CheckCircle2 className="w-3 h-3" /> PAID (₵{displayAmount(booking).toFixed(2)})
                                   </span>
                                 ) : (
                                   <span className="text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-1 rounded-lg font-mono font-bold flex items-center gap-1">
-                                    UNPAID / COD (₵{booking.amount || 45}.00)
+                                    UNPAID / COD (₵{displayAmount(booking).toFixed(2)})
                                   </span>
                                 )}
 
@@ -1655,7 +1699,7 @@ export default function ClientPortal({
                               </div>
                               <div>
                                 <span className="text-[9px] font-mono text-stone-500 uppercase block">Scent Option</span>
-                                <span className="text-brand-gold font-medium">{booking.specialtyAddons ? booking.specialtyAddons.join(', ') : 'French Lavender'}</span>
+                                <span className="text-brand-gold font-medium">{decodeFinish(booking.specialInstructions).scent ?? '—'}</span>
                               </div>
                               <div>
                                 <span className="text-[9px] font-mono text-stone-500 uppercase block">Current Status</span>
@@ -1673,7 +1717,7 @@ export default function ClientPortal({
                                   }}
                                   className="px-4 py-2 bg-brand-gold text-black rounded-xl text-xs font-bold font-mono uppercase tracking-wider hover:bg-yellow-400 transition-all flex items-center gap-1.5 cursor-pointer shadow-md"
                                 >
-                                  <Smartphone className="w-3.5 h-3.5" /> Settle Online Now (₵{booking.amount || 45}.00 GHS)
+                                  <Smartphone className="w-3.5 h-3.5" /> Settle Online Now (₵{displayAmount(booking).toFixed(2)} GHS)
                                 </button>
                               </div>
                             )}
@@ -1898,7 +1942,7 @@ export default function ClientPortal({
                     Settle Order {payModalBooking.id}
                   </h3>
                   <p className="text-stone-400 text-xs">
-                    Amount Due: <strong className="text-brand-sage font-mono text-sm font-bold">₵{payModalBooking.amount || 35}.00 GHS</strong>
+                    Amount Due: <strong className="text-brand-sage font-mono text-sm font-bold">₵{displayAmount(payModalBooking).toFixed(2)} GHS</strong>
                   </p>
                 </div>
 
@@ -1954,7 +1998,7 @@ export default function ClientPortal({
                       className="w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-500 text-white rounded-xl text-xs font-bold font-mono uppercase tracking-wider hover:from-emerald-500 hover:to-teal-400 transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-lg"
                     >
                       <Lock className="w-3.5 h-3.5" />
-                      {paystackLoading ? 'Connecting...' : `Pay ₵${payModalBooking.amount || 35}.00 GHS via Paystack`}
+                      {paystackLoading ? 'Connecting...' : `Pay ₵${displayAmount(payModalBooking).toFixed(2)} GHS via Paystack`}
                     </button>
 
                     {paystackAuthUrl && (
@@ -1967,23 +2011,24 @@ export default function ClientPortal({
                         >
                           Open Paystack Checkout Window ↗
                         </a>
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            onClick={handlePortalPaystackVerify}
-                            disabled={paystackLoading}
-                            className="flex-1 py-2 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-lg text-xs font-mono font-bold hover:bg-emerald-500/30 transition-all cursor-pointer"
-                          >
-                            Verify Payment
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleCompletePayment(payModalBooking.id)}
-                            className="px-3 py-2 bg-white/10 text-stone-300 rounded-lg text-xs font-mono font-bold hover:bg-white/20 transition-all cursor-pointer"
-                          >
-                            Mark Paid
-                          </button>
-                        </div>
+                        {/*
+                          One button, because there is one way to settle this.
+                          A "Mark Paid" sat beside this one and skipped the
+                          gateway entirely — a customer could clear their own
+                          bill by clicking it.
+                        */}
+                        <button
+                          type="button"
+                          onClick={handlePortalPaystackVerify}
+                          disabled={paystackLoading || paying}
+                          className="w-full py-2 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-lg text-xs font-mono font-bold hover:bg-emerald-500/30 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {paystackLoading || paying ? 'Checking with Paystack…' : "I've Paid — Confirm"}
+                        </button>
+                        <p className="text-[10px] text-stone-500 font-mono leading-relaxed">
+                          Finish the transaction in the Paystack window first. We
+                          confirm it with Paystack before marking the order paid.
+                        </p>
                       </div>
                     )}
                   </div>
@@ -1996,7 +2041,14 @@ export default function ClientPortal({
                       <span className="text-stone-300">Wallet Balance:</span>
                       <span className="font-mono text-brand-gold font-bold">₵{walletBalance.toFixed(2)} GHS</span>
                     </div>
-                    {walletBalance < (payModalBooking.amount || 35) ? (
+
+                    {/* A refused debit — a short balance, a server that could not
+                        be reached — says so here rather than nowhere. */}
+                    {paystackError && (
+                      <p className="text-xs text-red-400 font-mono">⚠️ {paystackError}</p>
+                    )}
+
+                    {walletBalance < displayAmount(payModalBooking) ? (
                       <div className="space-y-2">
                         <p className="text-[11px] text-red-400 font-mono">
                           Insufficient wallet balance. Top up your wallet securely via Paystack.
@@ -2015,10 +2067,13 @@ export default function ClientPortal({
                     ) : (
                       <button
                         type="button"
-                        onClick={() => handleCompletePayment(payModalBooking.id)}
-                        className="w-full py-2.5 bg-brand-gold text-black rounded-xl text-xs font-bold font-mono uppercase tracking-wider hover:bg-yellow-400 transition-all cursor-pointer"
+                        disabled={paying}
+                        onClick={() => settleBooking(payModalBooking.id, 'Wallet')}
+                        className="w-full py-2.5 bg-brand-gold text-black rounded-xl text-xs font-bold font-mono uppercase tracking-wider hover:bg-yellow-400 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        Deduct ₵{payModalBooking.amount || 35}.00 GHS from Wallet
+                        {paying
+                          ? 'Taking payment…'
+                          : `Deduct ₵${displayAmount(payModalBooking).toFixed(2)} GHS from Wallet`}
                       </button>
                     )}
                   </div>
@@ -2176,7 +2231,7 @@ export default function ClientPortal({
                   </h3>
                   <p className="text-stone-400 text-xs leading-relaxed">
                     {threadOrderId
-                      ? <>Live thread with your courier and the Bomso dispatch desk for order <strong className="text-brand-gold font-mono">{threadOrderId}</strong>. Replies appear here as they are sent.</>
+                      ? <>Live thread with your courier and the dispatch desk for order <strong className="text-brand-gold font-mono">{threadOrderId}</strong>. Replies appear here as they are sent.</>
                       : <>Schedule a pickup to open a live thread with your courier. In the meantime, the desk is reachable on the hotline below.</>}
                   </p>
                 </div>
@@ -2246,7 +2301,7 @@ export default function ClientPortal({
                       setConciergeText('');
                       setConciergeSuccess(
                         store.isOnline()
-                          ? 'Sent to your courier and the Bomso dispatch desk.'
+                          ? 'Sent to your courier and the dispatch desk.'
                           : 'Saved — it will send as soon as you are back online.'
                       );
                       setTimeout(() => setConciergeSuccess(''), 4000);
@@ -2259,7 +2314,7 @@ export default function ClientPortal({
                   {/* WhatsApp HQ shortcut hidden for now — hotline only. */}
                   <div className="pt-1 text-[10px] font-mono">
                     <a
-                      href="tel:+233244123456"
+                      href="tel:+233200957165"
                       className="p-2.5 bg-brand-sage/10 hover:bg-brand-sage/20 text-brand-sage border border-brand-sage/30 rounded-xl text-center font-bold block"
                     >
                       📞 Direct Hotline
@@ -2295,6 +2350,28 @@ export default function ClientPortal({
                   <p className="text-[10px] font-mono text-stone-400">Order Ref: {receiptModalBooking.id} • Kumasi, Ghana</p>
                 </div>
 
+                {/*
+                  Itemised from the booking itself. This block used to print a
+                  "Base Care Package" of the total minus ten and an "Express
+                  Dispatch Fee" of exactly ₵10.00 on every order — a split that
+                  described no booking and no fee this business charges. The
+                  lines below are the ones the quote was actually built from.
+                */}
+                {(() => {
+                  const finish = decodeFinish(receiptModalBooking.specialInstructions);
+                  const lines = priceBreakdown({
+                    serviceType: receiptModalBooking.serviceType,
+                    scent: finish.scent,
+                    starch: finish.starch,
+                    addonIds: receiptModalBooking.specialtyAddons,
+                  });
+                  const total = displayAmount(receiptModalBooking);
+                  // Charged below list price: an included pickup, the member
+                  // rate or a loyalty tier took its cut. Shown as its own line
+                  // rather than folded silently into the base.
+                  const reduction = Math.max(0, lines.gross - total);
+
+                  return (
                 <div className="space-y-3 font-sans text-xs">
                   <div className="flex justify-between text-stone-300">
                     <span>Service Tier:</span>
@@ -2304,23 +2381,45 @@ export default function ClientPortal({
                     <span>Pickup Suburb:</span>
                     <span className="text-stone-200">{receiptModalBooking.suburb} ({receiptModalBooking.address})</span>
                   </div>
-                  <div className="flex justify-between text-stone-300">
-                    <span>Aroma/Fragrance Choice:</span>
-                    <span className="text-brand-gold font-medium">{receiptModalBooking.specialtyAddons ? receiptModalBooking.specialtyAddons.join(', ') : 'Organic French Lavender'}</span>
-                  </div>
+                  {finish.scent && (
+                    <div className="flex justify-between text-stone-300">
+                      <span>Aroma/Fragrance Choice:</span>
+                      <span className="text-brand-gold font-medium">{finish.scent}</span>
+                    </div>
+                  )}
+                  {!!receiptModalBooking.specialtyAddons?.length && (
+                    <div className="flex justify-between text-stone-300 gap-4">
+                      <span>Specialty Finishes:</span>
+                      <span className="text-stone-200 text-right">{receiptModalBooking.specialtyAddons.join(', ')}</span>
+                    </div>
+                  )}
 
                   <div className="pt-3 border-t border-white/10 space-y-2 font-mono text-xs">
                     <div className="flex justify-between text-stone-400">
                       <span>Base Care Package:</span>
-                      <span>₵{(receiptModalBooking.amount || 45) - 10}.00 GHS</span>
+                      <span>₵{lines.base.toFixed(2)} GHS</span>
                     </div>
-                    <div className="flex justify-between text-stone-400">
-                      <span>Express Dispatch Fee:</span>
-                      <span>₵10.00 GHS</span>
-                    </div>
+                    {lines.finishes > 0 && (
+                      <div className="flex justify-between text-stone-400">
+                        <span>Scent &amp; Starch Finish:</span>
+                        <span>₵{lines.finishes.toFixed(2)} GHS</span>
+                      </div>
+                    )}
+                    {lines.addons > 0 && (
+                      <div className="flex justify-between text-stone-400">
+                        <span>Specialty Add-ons:</span>
+                        <span>₵{lines.addons.toFixed(2)} GHS</span>
+                      </div>
+                    )}
+                    {reduction > 0 && (
+                      <div className="flex justify-between text-emerald-400">
+                        <span>Membership &amp; Loyalty:</span>
+                        <span>−₵{reduction.toFixed(2)} GHS</span>
+                      </div>
+                    )}
                     <div className="flex justify-between text-white font-bold pt-2 border-t border-white/10 text-sm">
                       <span>Total Paid/Due:</span>
-                      <span className="text-brand-gold">₵{receiptModalBooking.amount || 45}.00 GHS</span>
+                      <span className="text-brand-gold">₵{total.toFixed(2)} GHS</span>
                     </div>
                   </div>
 
@@ -2331,6 +2430,8 @@ export default function ClientPortal({
                     </span>
                   </div>
                 </div>
+                  );
+                })()}
 
                 <button
                   type="button"

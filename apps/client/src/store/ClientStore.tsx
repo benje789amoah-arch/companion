@@ -16,21 +16,27 @@ import {
   ApiError,
   bookingProgressPercent,
   bookingWithKnownProof,
+  defaultAddress as firstAddress,
   isTerminal,
   membershipPlan,
   newJobId,
+  sameAddresses,
+  withAddress,
+  withoutAddress,
   type ActivePlan,
   type Booking,
-  type Coords,
+  type BookingAuth,
   type JobStatus,
   type LaundryBag,
   type Message,
   type Notification,
   type PaymentTransaction,
+  type SavedAddress,
   type UserAccount,
 } from '@freshfold/core';
 import { api } from '../services/api';
 import { STORAGE_KEYS, readJson, remove, writeJson } from '../services/storage';
+import { usePreferences } from './PreferencesStore';
 import { useSession } from './SessionStore';
 
 /**
@@ -68,21 +74,73 @@ function isPermanentFailure(error: unknown): boolean {
   return error.status >= 400 && error.status < 500;
 }
 
-/** A saved pickup address, local to the device. */
-export interface SavedAddress {
-  id: string;
-  label: string;
-  address: string;
-  suburb: string;
-  city?: string;
-  /**
-   * The doorstep the customer pinned for this address. Optional because
-   * addresses saved before pins existed do not have one — those fall back to
-   * the derived point until the customer places a pin and saves again.
-   */
-  coords?: Coords;
-  isDefault?: boolean;
+/**
+ * Why a paid action could not be attempted, in words a customer or a developer
+ * can act on.
+ *
+ * "Check your connection and try again" was the answer to three different
+ * failures, and only one of them was the connection. The address is in the
+ * message because on a phone it is a LAN address derived from the Expo dev host
+ * — so a device on cellular, or one loaded from a different network than the
+ * dispatch server runs on, reads as a phone problem when it is a setup one. The
+ * wallet tab already says it this way; the membership and rewards paths did not.
+ *
+ * The timeout deliberately promises nothing about the money. Both callers here
+ * move a balance server-side, and an abort at eight seconds says only that *this
+ * app* stopped waiting — the transaction may well have committed. Telling
+ * somebody "nothing was charged" and then showing them a debit is worse than
+ * telling them to look.
+ */
+function unreachableMessage(error: unknown): string {
+  if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+    return 'FreshFold took too long to answer, so this may or may not have gone through. Check the Wallet tab before trying again.';
+  }
+  return `Could not reach FreshFold at ${api.baseUrl}. Check that the dispatch server is running and that this device can see it.`;
 }
+
+/**
+ * A visitor's book folded into the account's.
+ *
+ * Somebody books before they register: they save an address as a guest, it goes
+ * to this device's storage because there is no account to put it on, and then
+ * they sign up. Their addresses have to survive that, so both books are read as
+ * one from the moment there is a session — and the first write after it sends
+ * the result, which is what actually moves them onto the account.
+ *
+ * The account's default wins when it has one. The customer chose it on a
+ * surface that knew about their account; a flag on an address saved before they
+ * had one is not a preference about their account at all.
+ */
+function mergedBook(
+  accountBook: SavedAddress[] | undefined,
+  localBook: SavedAddress[]
+): SavedAddress[] {
+  if (localBook.length === 0) return accountBook ?? [];
+
+  const local = accountBook?.length
+    ? localBook.map((address) => ({ ...address, isDefault: false }))
+    : localBook;
+
+  // `withAddress` one at a time rather than concatenating: it is what settles
+  // the single default and the ceiling, and an id already on the account is an
+  // edit of that entry rather than a second copy of it.
+  return local.reduce((book, address) => withAddress(book, address), accountBook ?? []);
+}
+
+/**
+ * The saved address book moved onto the account, and so did its type.
+ *
+ * This was declared here, and the book was kept in AsyncStorage — so it
+ * belonged to a handset rather than to a person, and the same customer on the
+ * website or on a second phone saw none of it. `SavedAddress` now comes from
+ * `@freshfold/core` and travels on `UserAccount`, and is re-exported here so the
+ * screens importing it from this module keep working, exactly as `ActivePlan`
+ * below is.
+ *
+ * A signed-out visitor still gets a book: theirs stays on the device, and is
+ * merged into the account on the first save after they sign in.
+ */
+export type { SavedAddress };
 
 /**
  * The membership lives on the account now, not on the device.
@@ -99,10 +157,19 @@ type PendingWrite =
   | { kind: 'booking:create'; booking: Booking }
   | { kind: 'booking:patch'; id: string; patch: Partial<Booking> }
   | { kind: 'booking:delete'; id: string }
-  | { kind: 'account:upsert'; account: UserAccount }
   | { kind: 'message:post'; message: Message }
   | { kind: 'notification:read'; id: string }
   | { kind: 'transaction:record'; transaction: PaymentTransaction }
+  /**
+   * The whole book, not the entry that changed.
+   *
+   * `PUT /accounts/addresses` replaces the array outright, so what has to
+   * survive a queue is the book as it should end up rather than the edit that
+   * produced it. That also makes a queued save idempotent, and lets `enqueue`
+   * collapse several — a customer who adds three addresses on a plane sends one
+   * write when the plane lands, not three that each overwrite the last.
+   */
+  | { kind: 'addresses:save'; addresses: SavedAddress[] }
   | {
       kind: 'order:status';
       id: string;
@@ -183,6 +250,16 @@ interface ClientState extends Mirror {
   planEndsOn: string | null;
 
   createBooking: (booking: Booking) => Promise<Booking>;
+  /**
+   * Settles a booking's bill against the server's own price. The only path to
+   * `Paid`. Throws — `ApiError` carries `{ reason: 'insufficient-funds', shortfall }`
+   * when the wallet is short.
+   */
+  payForBooking: (
+    id: string,
+    method: 'Wallet' | 'Paystack',
+    reference?: string
+  ) => Promise<Booking>;
   patchBooking: (id: string, patch: Partial<Booking>) => void;
   cancelBooking: (id: string) => void;
   bookingById: (id: string) => Booking | undefined;
@@ -231,9 +308,40 @@ interface ClientState extends Mirror {
   /** Reverses a pending cancellation while the period is still running. */
   resumePlan: () => Promise<boolean>;
 
+  /**
+   * Writes the customer's own name or phone number to their account, and waits
+   * for the answer.
+   *
+   * Not queued, for the reason `payForBooking` gives above: a rejection has to
+   * reach the person who pressed Save. A queued profile write would meet
+   * `isPermanentFailure` on the 409 the server returns for a number already in
+   * use, be dropped without a word, and leave the device showing a phone number
+   * the account does not have.
+   *
+   * Throws. `ApiError.message` is the server's own sentence, and its `body`
+   * carries `reason: 'phone-taken'` for the number clash specifically.
+   */
+  saveProfile: (patch: { name?: string; phone?: string }) => Promise<void>;
+
   saveAddress: (address: SavedAddress) => void;
   removeAddress: (id: string) => void;
   defaultAddress: SavedAddress | null;
+
+  /**
+   * Drops everything this device is holding — orders, messages, alerts,
+   * statement, addresses, tracking grants and any write still queued.
+   *
+   * For account deletion, which is the one case where leaving the mirror in
+   * place is wrong: signing out keeps it deliberately (a guest-booked order is
+   * still readable through its tracking grant), but here the account is gone and
+   * the orders are not the device's to show. Clearing storage alone would not
+   * do — the mirror is held in memory and the next `commit` would write it
+   * straight back.
+   *
+   * Session teardown is `useSession().deleteAccount`, which owns the token and
+   * the profile. This owns the seven keys those two do not.
+   */
+  forgetLocalData: () => Promise<void>;
 
   refresh: () => Promise<void>;
 }
@@ -242,6 +350,7 @@ const ClientContext = createContext<ClientState | null>(null);
 
 export function ClientProvider({ children }: { children: React.ReactNode }) {
   const { account, isAuthenticated, applyAccount, token } = useSession();
+  const { allowsAlert } = usePreferences();
 
   const [mirror, setMirror] = useState<Mirror>(EMPTY_MIRROR);
   const [hydrated, setHydrated] = useState(false);
@@ -257,6 +366,64 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
 
   emailRef.current = account?.email;
   tokenRef.current = token;
+
+  /**
+   * The device's own address book, for the poll and the queue to read.
+   *
+   * A ref beside the state it shadows, because `pull` has to see the current
+   * value and cannot take it as a dependency: the poll timer is keyed on
+   * `pull`'s identity, so rebuilding it whenever an address changed would
+   * restart the interval on every edit.
+   */
+  const localBookRef = useRef<SavedAddress[]>([]);
+  localBookRef.current = mirror.addresses;
+
+  /**
+   * The per-booking grants this device holds, by booking id.
+   *
+   * A ref rather than mirror state: it is a set of credentials, nothing renders
+   * it, and the queue needs to read the latest value from inside a callback that
+   * was created before the token arrived.
+   */
+  const trackingRef = useRef<Record<string, string>>({});
+
+  const rememberTracking = useCallback((bookingId: string, value: string | undefined) => {
+    if (!value || trackingRef.current[bookingId] === value) return;
+    trackingRef.current = { ...trackingRef.current, [bookingId]: value };
+    void writeJson(STORAGE_KEYS.trackingTokens, trackingRef.current);
+  }, []);
+
+  const forgetTracking = useCallback((bookingId: string) => {
+    if (!(bookingId in trackingRef.current)) return;
+    const { [bookingId]: _spent, ...rest } = trackingRef.current;
+    trackingRef.current = rest;
+    void writeJson(STORAGE_KEYS.trackingTokens, trackingRef.current);
+  }, []);
+
+  /**
+   * How this device proves it may touch one booking: the session if there is
+   * one, the booking's own grant if there is not, and both when it holds both —
+   * the server takes the first that works.
+   */
+  const bookingAuth = useCallback(
+    (bookingId?: string): BookingAuth => ({
+      token: tokenRef.current,
+      trackingToken: bookingId ? trackingRef.current[bookingId] : undefined,
+    }),
+    []
+  );
+
+  // Held in refs so `send` — memoised once, with no dependencies, because the
+  // drain loop must not be rebuilt mid-flight — always calls the current one.
+  const bookingAuthRef = useRef(bookingAuth);
+  const forgetTrackingRef = useRef(forgetTracking);
+  const rememberTrackingRef = useRef(rememberTracking);
+  const applyAccountRef = useRef(applyAccount);
+
+  bookingAuthRef.current = bookingAuth;
+  forgetTrackingRef.current = forgetTracking;
+  rememberTrackingRef.current = rememberTracking;
+  applyAccountRef.current = applyAccount;
 
   /** Mutate the mirror and persist the slices that changed. */
   const commit = useCallback((update: (current: Mirror) => Mirror) => {
@@ -280,38 +447,87 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  /**
+   * Retires the device's copy of the address book.
+   *
+   * Called when the server has accepted a book, and only then. The device copy
+   * exists for a visitor with no account to put addresses on; once the account
+   * holds them it is a second, older copy of the same list, and leaving it there
+   * would mean `mergedBook` folding it back in on the next poll — resurrecting
+   * an address the customer had since deleted on the website.
+   */
+  const clearLocalBook = useCallback(() => {
+    commit((current) => (current.addresses.length === 0 ? current : { ...current, addresses: [] }));
+  }, [commit]);
+
+  // Read through a ref for the reason the block above gives: `send` is built
+  // once, and must not be rebuilt while the drain loop is working through it.
+  const clearLocalBookRef = useRef(clearLocalBook);
+  clearLocalBookRef.current = clearLocalBook;
+
   // ------------------------------------------------------------------ queue
 
   const send = useCallback(async (write: PendingWrite): Promise<void> => {
     switch (write.kind) {
-      case 'booking:create':
+      case 'booking:create': {
         // Sent with the session when there is one: the server reads the
         // customer's membership off the token to decide dispatch priority and
         // to spend an included pickup. A queued booking replayed after a
         // sign-out simply goes up as a visitor's.
-        await api.createBooking(write.booking, tokenRef.current);
+        const created = await api.createBooking(write.booking, tokenRef.current);
+
+        // The grant that lets this device read the order back without an account.
+        rememberTrackingRef.current(created.id, created.trackingToken);
         return;
+      }
       case 'booking:patch':
-        await api.updateBooking(write.id, write.patch);
+        await api.updateBooking(write.id, write.patch, bookingAuthRef.current(write.id));
         return;
       case 'booking:delete':
-        await api.deleteBooking(write.id);
-        return;
-      case 'account:upsert':
-        await api.upsertAccount(write.account);
+        await api.deleteBooking(write.id, bookingAuthRef.current(write.id));
+        forgetTrackingRef.current(write.id);
         return;
       case 'message:post':
-        await api.postMessage(write.message);
+        await api.postMessage(
+          {
+            text: write.message.text,
+            orderId: write.message.orderId!,
+            id: write.message.id,
+          },
+          bookingAuthRef.current(write.message.orderId)
+        );
         return;
       case 'notification:read':
-        await api.markNotificationRead(write.id);
+        // The feed is per-session, so there is nothing to mark without one.
+        if (!tokenRef.current) return;
+        await api.markNotificationRead(write.id, tokenRef.current);
         return;
       case 'transaction:record':
-        await api.recordTransaction(write.transaction);
+        if (!tokenRef.current) return;
+        await api.recordTransaction(write.transaction, tokenRef.current);
         return;
       case 'order:status':
-        await api.updateOrderStatus(write.id, write.patch);
+        await api.updateOrderStatus(write.id, write.patch, bookingAuthRef.current(write.id));
         return;
+      case 'addresses:save': {
+        // Nothing to write without a session: a signed-out visitor's book is
+        // the device copy, which `saveAddress` has already kept. A write left
+        // over from before a sign-out is dropped rather than replayed onto
+        // whoever signed in next, like `notification:read` above.
+        if (!tokenRef.current) return;
+
+        // The book the server settled, applied over the optimistic one — it
+        // decides the single default, and it is what the next poll would bring
+        // back anyway.
+        const saved = await api.saveAddresses(write.addresses, tokenRef.current);
+        applyAccountRef.current(saved);
+
+        // Only now, once it is on the account: a device copy dropped when the
+        // write was worked out would have taken the addresses with it if the
+        // write never landed.
+        clearLocalBookRef.current();
+        return;
+      }
     }
   }, []);
 
@@ -355,7 +571,25 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
 
   const enqueue = useCallback(
     (write: PendingWrite) => {
-      queueRef.current = [...queueRef.current, write];
+      /**
+       * A queued book replaces the one queued before it.
+       *
+       * `PUT /accounts/addresses` writes the whole array, so an earlier queued
+       * save is not history — it is a strictly older copy of the same column,
+       * and sending it first only to overwrite it a moment later is two
+       * requests to reach one outcome. Someone who adds three addresses with no
+       * signal sends one write when the signal returns.
+       *
+       * The head of the queue is left alone. `drain` sends `queueRef.current[0]`
+       * and then drops it by position, so removing that entry underneath an
+       * in-flight send would drop somebody else's write instead.
+       */
+      const queued =
+        write.kind === 'addresses:save'
+          ? queueRef.current.filter((earlier, at) => at === 0 || earlier.kind !== 'addresses:save')
+          : queueRef.current;
+
+      queueRef.current = [...queued, write];
       void writeJson(STORAGE_KEYS.queue, queueRef.current);
       void drain();
     },
@@ -368,7 +602,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
 
     (async () => {
-      const [bookings, messages, notifications, transactions, addresses, queue] =
+      const [bookings, messages, notifications, transactions, addresses, queue, tracking] =
         await Promise.all([
           readJson<Booking[]>(STORAGE_KEYS.bookings, []),
           readJson<Message[]>(STORAGE_KEYS.messages, []),
@@ -376,9 +610,14 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
           readJson<PaymentTransaction[]>(STORAGE_KEYS.transactions, []),
           readJson<SavedAddress[]>(STORAGE_KEYS.addresses, []),
           readJson<PendingWrite[]>(STORAGE_KEYS.queue, []),
+          readJson<Record<string, string>>(STORAGE_KEYS.trackingTokens, {}),
         ]);
 
       if (cancelled) return;
+
+      // Before the first poll: the guest read path is driven entirely off these,
+      // so a pull that ran without them would find nothing and clear the mirror.
+      trackingRef.current = tracking;
 
       // The device-local membership this build replaced. Dropping it is the
       // point: the account carries the real one, and a leftover here would show
@@ -411,33 +650,70 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
     mirrorIdsRef.current = new Set(mirror.localIds);
   }, [mirror.localIds]);
 
+  /**
+   * The bookings a signed-out device can still see: the ones it holds a grant for.
+   *
+   * One request each, which is fine — this is the orders booked on this phone, so
+   * it is a handful. A grant the server no longer honours is an order the desk has
+   * removed or a token past its month; it is forgotten rather than re-asked every
+   * four seconds forever.
+   */
+  const readTrackedBookings = useCallback(async (): Promise<Booking[]> => {
+    const held = Object.keys(trackingRef.current);
+    if (held.length === 0) return [];
+
+    const results = await Promise.all(
+      held.map((id) =>
+        api.getBooking(id, { trackingToken: trackingRef.current[id] }).catch((error: unknown) => {
+          if (error instanceof ApiError && (error.status === 404 || error.status === 401)) {
+            forgetTracking(id);
+          }
+          return null;
+        })
+      )
+    );
+
+    return results.filter((booking): booking is Booking => booking !== null);
+  }, [forgetTracking]);
+
   const pull = useCallback(async (): Promise<void> => {
     if (inFlightRef.current > 0) return;
 
-    const email = emailRef.current;
+    const bearer = tokenRef.current;
 
     try {
-      // Bookings are scoped server-side when we know who is signed in; a guest
-      // gets the open list and keeps only the jobs booked on this device.
-      //
-      // The courier roster is deliberately not fetched. Everything the customer
-      // is allowed to know about their rider — name, vehicle, plate, rating,
-      // position, ETA — already rides on `booking.rider`, and pulling the staff
-      // list every four seconds to look up something already in hand is how a
-      // roster leaks to every customer device.
-      const [bookings, notifications] = await Promise.all([
-        api.listBookings(email ? { email } : undefined),
-        api.listNotifications(),
-      ]);
+      /**
+       * Two ways to read a board, and they no longer overlap.
+       *
+       * Signed in, the server scopes the list to this customer — address and
+       * number both — and one request brings the lot. Signed out, there is no list
+       * to scope, so each booking made on this device is read by id with the grant
+       * that came back when it was created.
+       *
+       * The guest path used to be the same unscoped list, filtered against
+       * `localIds` here. That meant a device with one pickup on it downloaded
+       * every order in the ledger every four seconds to find it — and the filter
+       * that hid the rest ran after they had already arrived.
+       *
+       * The courier roster is deliberately not fetched either way. Everything the
+       * customer is allowed to know about their rider — name, vehicle, plate,
+       * rating, position, ETA — already rides on `booking.rider`, and pulling the
+       * staff list every four seconds to look up something already in hand is how
+       * a roster leaks to every customer device.
+       */
+      const bookings = bearer
+        ? await api.listBookings(bearer)
+        : await readTrackedBookings();
+
+      // Notifications need a session — a guest has no feed, and the desk's is not
+      // theirs to read. Scoped to their own orders server-side.
+      const notifications = bearer
+        ? await api.listNotifications(bearer).catch(() => null)
+        : null;
 
       if (inFlightRef.current > 0) return;
 
       commit((current) => {
-        const known = new Set(current.localIds);
-        const visible = email
-          ? bookings
-          : bookings.filter((booking) => known.has(booking.id));
-
         // The list answers without proof photographs, so anything already
         // fetched for the order screen is carried across the refresh rather
         // than blinking out every four seconds.
@@ -445,36 +721,32 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
 
         return {
           ...current,
-          bookings: visible.map((booking) =>
+          bookings: bookings.map((booking) =>
             bookingWithKnownProof(booking, held.get(booking.id))
           ),
-          notifications: notifications.filter(
-            (notification) => !notification.orderId || visible.some((b) => b.id === notification.orderId)
-          ),
-          localIds: Array.from(new Set([...current.localIds, ...visible.map((b) => b.id)])),
+          notifications: notifications ?? current.notifications,
+          localIds: Array.from(new Set([...current.localIds, ...bookings.map((b) => b.id)])),
         };
       });
 
       setOnline(true);
 
-      // The conversation and the ledger are only worth fetching once we know
-      // which jobs are ours, so they ride a second round-trip.
-      const ids = new Set(
-        (email ? bookings : bookings.filter((b) => mirrorIdsRef.current.has(b.id))).map((b) => b.id)
-      );
-
-      if (ids.size > 0) {
+      // The conversation and the ledger ride a second round-trip: a thread is
+      // readable only by a party to its job, so there is one request per order.
+      if (bookings.length > 0) {
         const threads = await Promise.all(
-          Array.from(ids).map((id) =>
-            api.listMessages({ orderId: id }).catch(() => [] as Message[])
+          bookings.map((booking) =>
+            api
+              .listMessages(booking.id, bookingAuth(booking.id))
+              .catch(() => [] as Message[])
           )
         );
         if (inFlightRef.current > 0) return;
         commit((current) => ({ ...current, messages: threads.flat() }));
       }
 
-      if (email) {
-        const transactions = await api.listTransactions({ email }).catch(() => null);
+      if (bearer) {
+        const transactions = await api.listTransactions(bearer).catch(() => null);
         if (transactions && inFlightRef.current === 0) {
           commit((current) => ({ ...current, transactions }));
         }
@@ -487,10 +759,34 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       // the plan lapsing — lands here on the next poll rather than whenever
       // somebody happens to open the plans sheet. It carries the wallet balance
       // the renewal left behind, too.
-      const bearer = tokenRef.current;
+      //
+      // It carries the saved address book as well, which is what makes an
+      // address added on the website appear here — and, the other way round,
+      // what brings back the book this device wrote a moment ago.
       if (bearer && inFlightRef.current === 0) {
         const fresh = await api.me(bearer).catch(() => null);
-        if (fresh && inFlightRef.current === 0) applyAccount(fresh);
+        if (fresh && inFlightRef.current === 0) {
+          applyAccount(fresh);
+
+          /**
+           * A visitor's addresses, moved onto the account they now have.
+           *
+           * Here rather than in a sign-in effect because this is the first place
+           * the account's real book is known: `account` is restored from storage
+           * at launch, so an effect keyed on signing in could merge into a copy
+           * that predates the last write from another device and hand the server
+           * back a book missing whatever that device added.
+           *
+           * Runs on every poll while the device copy is non-empty, which is
+           * harmless — `enqueue` collapses the repeats, and `send` clears the
+           * copy once the write lands. `mergedBook` is what the screens are
+           * already showing, so nothing here changes what the customer sees.
+           */
+          const promoted = mergedBook(fresh.addresses, localBookRef.current);
+          if (!sameAddresses(promoted, fresh.addresses)) {
+            enqueue({ kind: 'addresses:save', addresses: promoted });
+          }
+        }
       }
     } catch {
       // The server is down or we're offline. The mirror stands.
@@ -499,7 +795,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       // Asked and answered, either way — so a negative now means something.
       setProbed(true);
     }
-  }, [commit, applyAccount]);
+  }, [commit, applyAccount, enqueue]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -537,6 +833,49 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       return withId;
     },
     [commit, enqueue]
+  );
+
+  /**
+   * Pays a booking's bill, and waits for the answer.
+   *
+   * Deliberately not queued, unlike `createBooking` above. A booking is worth
+   * showing optimistically — it is real the moment it is made and reaches the
+   * server a round trip later — but a payment must not be applied twice or applied
+   * late from a stale figure, and "did that go through" is a question somebody is
+   * standing there asking. It throws, and the caller says so.
+   *
+   * The queue is drained first because there is nothing to settle until the
+   * booking is actually on the server.
+   *
+   * The amount is not a parameter. This screen used to call `chargeWallet(total)`
+   * with its own arithmetic and then declare the booking `Paid`; the server prices
+   * the job itself now, and takes what the job says is owed.
+   */
+  const payForBooking = useCallback<ClientState['payForBooking']>(
+    async (id, method, reference) => {
+      await drain();
+
+      const settled = await api.payForBooking(
+        id,
+        { method, reference },
+        bookingAuthRef.current(id)
+      );
+
+      commit((current) => ({
+        ...current,
+        bookings: current.bookings.map((booking) => (booking.id === id ? settled : booking)),
+      }));
+
+      // A wallet payment moved the balance and earned points, so the account this
+      // device is holding is a version behind.
+      if (method === 'Wallet' && tokenRef.current) {
+        const fresh = await api.me(tokenRef.current).catch(() => null);
+        if (fresh) applyAccount(fresh);
+      }
+
+      return settled;
+    },
+    [drain, commit, applyAccount]
   );
 
   const patchBooking = useCallback<ClientState['patchBooking']>(
@@ -593,14 +932,25 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
     [commit, enqueue]
   );
 
+  /**
+   * Clears the badge for the alerts the customer can see.
+   *
+   * Kinds they have switched off are left unread on purpose: "mark all read"
+   * answers for what was on screen, and a silenced kind switched back on should
+   * still be able to say something arrived.
+   */
   const markAllNotificationsRead = useCallback(() => {
-    const unread = mirror.notifications.filter((notification) => !notification.read);
+    const unread = mirror.notifications.filter(
+      (notification) => !notification.read && allowsAlert(notification.type)
+    );
     commit((current) => ({
       ...current,
-      notifications: current.notifications.map((notification) => ({ ...notification, read: true })),
+      notifications: current.notifications.map((notification) =>
+        allowsAlert(notification.type) ? { ...notification, read: true } : notification
+      ),
     }));
     for (const notification of unread) enqueue({ kind: 'notification:read', id: notification.id });
-  }, [mirror.notifications, commit, enqueue]);
+  }, [mirror.notifications, allowsAlert, commit, enqueue]);
 
   /**
    * The customer's own pass over the bag manifest.
@@ -785,11 +1135,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
             message: error.message,
           };
         }
-        return {
-          ok: false,
-          reason: 'offline',
-          message: 'Could not reach FreshFold. Check your connection and try again.',
-        };
+        return { ok: false, reason: 'offline', message: unreachableMessage(error) };
       }
     },
     [applyAccount, mergeTransaction]
@@ -833,9 +1179,9 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
 
         // The debit and its ledger row were written server-side; pull the
         // statement so the wallet tab shows them without waiting for a poll.
-        const email = result.account.email;
+        // Scoped by the token, so it is this customer's by construction.
         void api
-          .listTransactions({ email })
+          .listTransactions(token)
           .then((transactions) => commit((current) => ({ ...current, transactions })))
           .catch(() => {});
 
@@ -853,11 +1199,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
           }
           return { ok: false, reason: 'rejected', message: error.message };
         }
-        return {
-          ok: false,
-          reason: 'offline',
-          message: 'Could not reach FreshFold. Check your connection and try again.',
-        };
+        return { ok: false, reason: 'offline', message: unreachableMessage(error) };
       }
     },
     [token, applyAccount, commit]
@@ -893,43 +1235,111 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
     }
   }, [token, applyAccount]);
 
+  // ---------------------------------------------------------------- profile
+
+  const saveProfile = useCallback<ClientState['saveProfile']>(
+    async (patch) => {
+      if (!token || !account) throw new Error('Sign in to change your details.');
+
+      // `PUT /api/accounts` takes the whole record and writes the three fields
+      // it allows, so the current account is the base — sending only the patch
+      // would blank the rest.
+      const saved = await api.upsertAccount({ ...account, ...patch }, token);
+      applyAccount(saved);
+    },
+    [token, account, applyAccount]
+  );
+
   // -------------------------------------------------------------- addresses
 
-  const saveAddress = useCallback<ClientState['saveAddress']>(
-    (address) => {
-      commit((current) => {
-        const others = current.addresses.filter((candidate) => candidate.id !== address.id);
-        // Exactly one default at a time.
-        const normalised = address.isDefault
-          ? others.map((candidate) => ({ ...candidate, isDefault: false }))
-          : others;
-        const next = [...normalised, address];
-        return {
-          ...current,
-          addresses: next.some((candidate) => candidate.isDefault)
-            ? next
-            : next.map((candidate, index) => ({ ...candidate, isDefault: index === 0 })),
-        };
-      });
-    },
-    [commit]
+  /**
+   * The book the screens read, whoever is looking.
+   *
+   * Signed in, it is the account's — the same array the website's patron portal
+   * shows, arriving on the `/auth/me` poll — with anything still sitting in this
+   * device's copy folded in, so a guest who registers does not watch their
+   * addresses vanish while the promoting write is in flight.
+   *
+   * Signed out, it is the device's copy and nothing else. A visitor with no
+   * account has nowhere else for it to live, and the settings screen is usable
+   * signed out precisely so they can keep one.
+   */
+  const addresses = useMemo(
+    () => (account ? mergedBook(account.addresses, mirror.addresses) : mirror.addresses),
+    [account, mirror.addresses]
   );
 
+  /**
+   * Saves an address, or edits the one it shares an id with.
+   *
+   * Optimistic on the account rather than through `commit` when there is a
+   * session, because the account is where the book is read from then — the
+   * server's answer arrives on the queue a moment later and replaces it. Still
+   * synchronous: the callers are toggles and sheet buttons, and a book of a
+   * dozen entries is not something to put a spinner on.
+   *
+   * Does nothing when the book is full and this would be a new entry. Every
+   * caller checks `MAX_SAVED_ADDRESSES` first and says so, which is a better
+   * answer than a Save button that silently declines.
+   */
+  const saveAddress = useCallback<ClientState['saveAddress']>(
+    (address) => {
+      const next = withAddress(addresses, address);
+      if (sameAddresses(next, addresses)) return;
+
+      if (!account) {
+        commit((current) => ({ ...current, addresses: next }));
+        return;
+      }
+
+      applyAccount({ ...account, addresses: next });
+      enqueue({ kind: 'addresses:save', addresses: next });
+    },
+    [account, addresses, applyAccount, commit, enqueue]
+  );
+
+  /** Deletes an address. The default passes to whatever is left. */
   const removeAddress = useCallback<ClientState['removeAddress']>(
     (id) => {
-      commit((current) => {
-        const next = current.addresses.filter((address) => address.id !== id);
-        return {
-          ...current,
-          addresses:
-            next.length > 0 && !next.some((address) => address.isDefault)
-              ? next.map((address, index) => ({ ...address, isDefault: index === 0 }))
-              : next,
-        };
-      });
+      const next = withoutAddress(addresses, id);
+      if (sameAddresses(next, addresses)) return;
+
+      if (!account) {
+        commit((current) => ({ ...current, addresses: next }));
+        return;
+      }
+
+      applyAccount({ ...account, addresses: next });
+      enqueue({ kind: 'addresses:save', addresses: next });
     },
-    [commit]
+    [account, addresses, applyAccount, commit, enqueue]
   );
+
+  // ------------------------------------------------------- leaving for good
+
+  const forgetLocalData = useCallback<ClientState['forgetLocalData']>(async () => {
+    // The queue first, and by assignment rather than by draining: a pending
+    // write replayed against a deleted account is a request that can only fail,
+    // and `send` reads this ref rather than a captured copy, so emptying it here
+    // stops a drain already in progress from finding anything more to send.
+    queueRef.current = [];
+    trackingRef.current = {};
+
+    // `setMirror`, not `commit` — commit's whole job is to persist what changed,
+    // which is the opposite of what is wanted here. The keys go in one call
+    // below instead.
+    setMirror(EMPTY_MIRROR);
+
+    await remove(
+      STORAGE_KEYS.bookings,
+      STORAGE_KEYS.messages,
+      STORAGE_KEYS.notifications,
+      STORAGE_KEYS.transactions,
+      STORAGE_KEYS.addresses,
+      STORAGE_KEYS.queue,
+      STORAGE_KEYS.trackingTokens
+    );
+  }, []);
 
   // -------------------------------------------------------------- selectors
 
@@ -960,15 +1370,25 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
     )[0];
   }, [activeBookings]);
 
-  const unreadCount = useMemo(
-    () => mirror.notifications.filter((notification) => !notification.read).length,
-    [mirror.notifications]
+  /**
+   * The alerts the customer actually wants, newest kept in place.
+   *
+   * Filtered here rather than at the point of display so the feed and the bell
+   * badge cannot disagree, and filtered rather than deleted so switching a kind
+   * back on brings its history with it — the records stay in the mirror and on
+   * the server either way.
+   */
+  const notifications = useMemo(
+    () => mirror.notifications.filter((notification) => allowsAlert(notification.type)),
+    [mirror.notifications, allowsAlert]
   );
 
-  const defaultAddress = useMemo(
-    () => mirror.addresses.find((address) => address.isDefault) ?? mirror.addresses[0] ?? null,
-    [mirror.addresses]
+  const unreadCount = useMemo(
+    () => notifications.filter((notification) => !notification.read).length,
+    [notifications]
   );
+
+  const defaultAddress = useMemo(() => firstAddress(addresses), [addresses]);
 
   const bookingById = useCallback(
     (id: string) => mirror.bookings.find((booking) => booking.id === id),
@@ -984,7 +1404,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
    */
   const loadBookingProof = useCallback(async (id: string) => {
     try {
-      const full = await api.getBooking(id);
+      const full = await api.getBooking(id, bookingAuth(id));
       commit((current) => ({
         ...current,
         bookings: current.bookings.map((booking) =>
@@ -994,7 +1414,9 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Offline, or the order is gone. The poll will say which.
     }
-  }, []);
+    // Both are stable — `commit` and `bookingAuth` are memoised with no
+    // dependencies of their own and read through refs.
+  }, [bookingAuth, commit]);
 
   const messagesFor = useCallback(
     (orderId: string) => mirror.messages.filter((message) => message.orderId === orderId),
@@ -1009,6 +1431,11 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<ClientState>(
     () => ({
       ...mirror,
+      // After the spread: the filtered feed, not the stored one.
+      notifications,
+      // After the spread too: the account's book when there is a session, not
+      // this device's copy of it.
+      addresses,
       hydrated,
       online,
       probed,
@@ -1022,6 +1449,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       includedPickupsLeft,
       planEndsOn,
       createBooking,
+      payForBooking,
       patchBooking,
       cancelBooking,
       bookingById,
@@ -1040,13 +1468,17 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       subscribeToPlan,
       cancelPlan,
       resumePlan,
+      saveProfile,
       saveAddress,
       removeAddress,
       defaultAddress,
+      forgetLocalData,
       refresh,
     }),
     [
       mirror,
+      notifications,
+      addresses,
       hydrated,
       online,
       probed,
@@ -1060,6 +1492,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       includedPickupsLeft,
       planEndsOn,
       createBooking,
+      payForBooking,
       patchBooking,
       cancelBooking,
       bookingById,
@@ -1078,9 +1511,11 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       subscribeToPlan,
       cancelPlan,
       resumePlan,
+      saveProfile,
       saveAddress,
       removeAddress,
       defaultAddress,
+      forgetLocalData,
       refresh,
     ]
   );

@@ -59,6 +59,11 @@ booked it — on the website or in the customer app.
    employee ID — `0244567801`, `0209114402`, `0553370915`.
    Face ID reopens a session on a device that has already signed in; it cannot
    create one, because a face is not something the server can check.
+
+   Those three are seeded for local development only. A production server starts
+   with an empty roster: couriers are hired from the supervisor's console, which
+   issues a random one-time PIN that expires in 48 hours and has to be changed on
+   first sign-in.
 2. **Profile.** A rider without a complete profile lands here and stays until name,
    vehicle and plate are all on the record. Jobs cannot be accepted before that —
    the customer is shown those details at the door. Only the name is the

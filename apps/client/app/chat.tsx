@@ -27,7 +27,9 @@ import { colors, courierName, radius, shadow, tints } from '../src/theme';
  * The rider writes into this thread from the companion app, dispatch narrates
  * every status transition into it server-side, and the customer writes here.
  * There is no separate customer-support inbox for exactly that reason — the
- * courier, the hub and the customer are already talking in one place.
+ * courier, the hub and the customer are already talking in one place, and the
+ * desk reads these same threads from its own Inbox pane rather than a channel
+ * of its own.
  */
 
 const QUICK_REPLIES = [

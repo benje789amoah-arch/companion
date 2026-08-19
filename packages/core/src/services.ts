@@ -52,6 +52,16 @@ export interface ServiceDefinition {
   /** What that price buys: a load, a set, a ride. Builds the advert. */
   unit: string;
   /**
+   * Whether a fabric finish — scent, starch — means anything here.
+   *
+   * A car, a sofa and an office do not take one. Neither does a bare courier
+   * run: `Fast Pickup & Delivery` advertises "Complimentary" and was quoting ₵5,
+   * because the finish pickers applied to anything that was not on the old
+   * blacklist of three, and moving a bag is not garment care. Stated per service
+   * rather than inferred from the name, which is how that was missed.
+   */
+  garment: boolean;
+  /**
    * Whether this can be the service on a booking.
    *
    * False for work that is only ever sold alongside something else, or that is
@@ -70,6 +80,7 @@ export interface ServiceDefinition {
 export const SERVICE_CATALOGUE: ServiceDefinition[] = [
   {
     id: 'washing',
+    garment: true,
     name: 'Washing (Machine & Hand Wash)',
     description:
       'Bespoke hand-care treatments for fine silks and cashmere, alongside temperature-regulated drum-washing for designer garments.',
@@ -80,6 +91,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
   },
   {
     id: 'drying',
+    garment: true,
     name: 'Gentle Air drying',
     description:
       'Controlled low-heat dehydration that prevents thermal shrinkage, restoring original fabric lift and wool elasticity.',
@@ -91,6 +103,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
   },
   {
     id: 'ironing-folding',
+    garment: true,
     name: 'Ironing & Folding',
     description:
       'Crisp hand-pressed steam finishes and pristine laser-line boutique folding, ready for direct closet placement.',
@@ -101,6 +114,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
   },
   {
     id: 'stain-removal',
+    garment: true,
     name: 'Advanced Stain Removal',
     description:
       'Targeted eco-friendly enzyme treatment of individual spots that safely releases red wine, oil, and coffee stains.',
@@ -111,6 +125,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
   },
   {
     id: 'bedding-linens',
+    garment: true,
     name: 'Bed Sheets & Linens Care',
     description:
       'Sanitizing hot-water cycles paired with ultra-soft, organic floral-extract formulas for high-thread-count sheets.',
@@ -121,6 +136,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
   },
   {
     id: 'express-laundry',
+    garment: true,
     name: 'Express Same-Day Laundry',
     description:
       'A dedicated expedited sequence. Collected from your home by 9:00 AM, delivered freshly pressed by 7:30 PM.',
@@ -131,6 +147,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
   },
   {
     id: 'pickup-delivery',
+    garment: false,
     name: 'Fast Pickup & Delivery',
     description:
       'Convenient, reliable, on time, every time. Direct real-time GPS-tracked logistics ensuring your orders are received and returned exactly on your clock.',
@@ -142,6 +159,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
   },
   {
     id: 'car-detailing',
+    garment: false,
     name: 'Bespoke Car Detailing',
     description:
       'We restore, shine and protect your ride. High-end hand steam, polymer sealant wax coating, and deep interior/exterior detailing.',
@@ -152,6 +170,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
   },
   {
     id: 'home-office-cleaning',
+    garment: false,
     name: 'Home & Office Cleaning',
     description:
       'Spotless spaces, and healthier living. Deep-steam surface sanitizing, precise dust eradication, and natural aromatherapy allergen-free deodorizing.',
@@ -162,6 +181,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
   },
   {
     id: 'sofa-carpet-cleaning',
+    garment: false,
     name: 'Sofa & Carpet Cleaning',
     description:
       'Deep clean for a fresher, safer home. Heavy-duty hot water extraction, stain neutralization, and antibacterial fabric protectants for all upholstery.',
@@ -172,6 +192,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
   },
   {
     id: 'corporate',
+    garment: false,
     name: 'Corporate Contracts',
     description:
       'Continuous logistics and custom care protocols for boutique hotels, premium spas, high-end fitness studios, and corporate offices.',

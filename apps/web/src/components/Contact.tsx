@@ -40,7 +40,7 @@ export default function Contact() {
 
 — ${inquiryName}${inquiryEmail ? ` (${inquiryEmail})` : ''}`
     );
-    window.location.href = `mailto:concierge@freshfold.com?subject=${subject}&body=${body}`;
+    window.location.href = `mailto:laundry.freshfold@gmail.com?subject=${subject}&body=${body}`;
 
     setFormSent(true);
     setTimeout(() => {
@@ -55,7 +55,7 @@ export default function Contact() {
   // below can be restored without rebuilding the message.
   // const triggerWhatsAppDirect = () => {
   //   const encoded = encodeURIComponent("Hello FreshFold! I'd like to ask a general question about your luxury dry care options.");
-  //   window.open(`https://wa.me/233257880675?text=${encoded}`, '_blank');
+  //   window.open(`https://wa.me/233200957165?text=${encoded}`, '_blank');
   // };
 
   return (
@@ -149,7 +149,7 @@ export default function Contact() {
                       Concierge Support Line
                     </h5>
                     <p className="font-sans text-stone-400 mt-1 font-light">
-                      +233 257880675
+                      +233 200957165
                     </p>
                   </div>
                 </div>
@@ -161,7 +161,7 @@ export default function Contact() {
                       Director of Craft
                     </h5>
                     <p className="font-sans text-stone-400 mt-1 font-light">
-                      freshfold@gmail.com
+                      laundry.freshfold@gmail.com
                     </p>
                   </div>
                 </div>

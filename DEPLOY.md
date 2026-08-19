@@ -9,15 +9,20 @@ to a CDN. This is the split:
 | `apps/server` — dispatch API | Render | Needs a long-lived process. See below. |
 | `apps/mobile`, `apps/client` — Expo apps | EAS / app stores | Native. Not covered here. |
 
-**The server is not on Vercel on purpose.** `startHubCycle()` in
-[`apps/server/src/hub.ts`](apps/server/src/hub.ts) sweeps every 15 seconds to
-walk jobs `In Care → Ironing & Folding → Quality Check`, and `start()` in
+**The server is not on Vercel on purpose.** `start()` in
 [`apps/server/src/index.ts`](apps/server/src/index.ts) pings Postgres and seeds
-the roster *before* the port opens. A serverless function has no process
-between requests, so the sweep would never fire and jobs would sit at In Care
-forever. Vercel Cron is the serverless answer and it tops out at one run per
-minute on Pro, once per *day* on Hobby — slower than the 2-minute default dwell
-and a rewrite of the hub besides.
+the supervisor *before* the port opens, and the API holds sessions, a rider
+board and a message log that every surface polls. A serverless function has no
+process between requests, so none of that has anywhere to live.
+
+`startHubCycle()` in [`apps/server/src/hub.ts`](apps/server/src/hub.ts) also
+wants a long-lived process, but it is no longer the reason for one: in production
+the timed sweep is **off** unless you set a dwell, because the two hub stages are
+confirmed by a person from the desk's Hub tab. If you do turn it on — see
+`HUB_WASH_MINUTES` in the Render environment list below — note that Vercel Cron,
+the serverless answer, tops out at one run per minute on Pro and once per *day*
+on Hobby, slower than the 2-minute default dwell and a rewrite of the hub
+besides.
 
 The website reaches the API through a rewrite in
 [`vercel.json`](vercel.json), so `/api/*` is proxied to Render server-side. That
@@ -65,10 +70,23 @@ Render reads [`render.yaml`](render.yaml) from the repo root.
      it must be what a customer actually sees, never the `onrender.com` URL.
    - `CORS_ORIGINS` — the Expo web origins, if any. The website does not need
      listing; its calls arrive same-origin via the Vercel proxy.
+   - `SEED_SUPERVISOR_PASSWORD` — the password the first supervisor account
+     (`supervisor@freshfold.com`) is created with. **The first boot against an
+     empty database fails without it**, on purpose: that account can read every
+     customer's address and phone number and settle any bill, and it will not be
+     created with a default password. Read only while the `supervisors` table is
+     empty, so later deploys ignore it. Nothing else is seeded in production —
+     couriers are hired from the desk and customers register themselves.
    - `BREVO_API_KEY`, `RESEND_API_KEY`, `EMAIL_FROM` — leave these until step 4.
    - `GEMINI_API_KEY`, `PAYSTACK_SECRET_KEY`, `GOOGLE_MAPS_PLATFORM_KEY`.
-   - `HUB_WASH_MINUTES`, `HUB_FINISH_MINUTES` — both default to 2 minutes, which
-     is a demo value. Set them to what the laundry actually takes.
+   - `HUB_WASH_MINUTES`, `HUB_FINISH_MINUTES` — **leave both unset.** In
+     production the hub's timed sweep does not run unless one of them is set, and
+     the two stages it would advance — In Care → Ironing & Folding → Quality
+     Check — are confirmed from the desk's Hub tab by the person who knows the
+     load is done. Setting either turns the sweep back on for both stages, which
+     means the server telling customers their laundry is washed on the evidence
+     that a clock passed a number. If you do it anyway, every advance is filed in
+     the audit trail against `system`, saying so.
 
 3. Apply the migrations in `supabase/migrations` if you have not:
 

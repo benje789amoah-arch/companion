@@ -23,6 +23,7 @@ export type {
   MomoNetwork,
   PaymentStatus,
   PaymentTransaction,
+  SavedAddress,
   ServiceItem,
   StatItem,
   SubscriptionPlan,

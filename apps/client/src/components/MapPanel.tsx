@@ -50,11 +50,16 @@ export default function MapPanel({
             <Text style={styles.rowCoords}>{formatCoords(courier)}</Text>
           </View>
           <View style={{ alignItems: 'flex-end' }}>
+            {/*
+              The stage, not a minute count. What stood here was
+              `rider.etaMinutes` — the straight-line distance to the destination
+              divided by an assumed 18 km/h. This panel holds no route (it is the
+              fallback for when the map cannot draw one), so it has nothing to
+              derive an arrival time from and says where the job is instead. The
+              address row below carries the live distance.
+            */}
             <Text style={styles.rowEta}>
-              {booking.rider?.etaMinutes !== undefined ? `${booking.rider.etaMinutes} min` : '—'}
-            </Text>
-            <Text style={styles.rowStage}>
-              {booking.rider ? humanizeStatus(booking.rider.jobStatus) : ''}
+              {booking.rider ? humanizeStatus(booking.rider.jobStatus) : '—'}
             </Text>
           </View>
         </View>

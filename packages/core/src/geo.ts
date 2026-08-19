@@ -8,19 +8,29 @@ import type { Coords } from './types';
 /**
  * One geography for both apps.
  *
- * The web build and the rider build had drifted onto different hub
- * coordinates (Bomso Junction vs. the KNUST Commercial Area), which meant the
- * customer's live map and the rider's map disagreed about where the garments
- * were going. Bomso Junction wins — it is the address the marketing site,
- * the route polylines and the landmark table were all already built around.
+ * The web build and the rider build once drifted onto different hub
+ * coordinates, which meant the customer's live map and the rider's map
+ * disagreed about where the garments were going. Everything downstream —
+ * route polylines, the landmark table, every ETA — reads the hub from here so
+ * that cannot happen again. Change it in one place or not at all.
+ *
+ * The operation runs out of Wagyingo Opal Hostel on the Ayeduase–Kotei road,
+ * beside the Benab filling station. It was at Bomso Junction until then.
+ *
+ * NOTE: the pin below is an estimate — the midpoint of the existing Ayeduase
+ * and Kotei anchors, which lands on the right stretch of road but was not
+ * surveyed to the building. Every distance and ETA in the system is measured
+ * from it, so replace it with a pin dropped on the actual forecourt when
+ * somebody is standing there.
  */
 export const LAUNDRY_HUB: Coords & { name: string } = {
-  lat: 6.6852,
-  lng: -1.5815,
+  lat: 6.6625,
+  lng: -1.552,
   name: 'FreshFold Care Headquarters',
 };
 
-export const LAUNDRY_HUB_ADDRESS = 'FreshFold Laundry Hub (Bomso Junction)';
+export const LAUNDRY_HUB_ADDRESS =
+  'FreshFold Laundry Hub (Wagyingo Opal Hostel, Ayeduase-Kotei)';
 
 /** Suburbs FreshFold collects from, and the anchor pin for each. */
 export const SUBURB_COORDS: Record<string, Coords> = {
@@ -68,7 +78,7 @@ export interface Landmark {
 }
 
 export const LANDMARKS: Landmark[] = [
-  { name: 'FreshFold Laundry Hub', lat: 6.6852, lng: -1.5815, suburb: 'Bomso', type: 'hub', description: 'FreshFold Premium Apparel Processing & Steam-Press Sanctuary' },
+  { name: 'FreshFold Laundry Hub (Wagyingo Opal)', lat: 6.6625, lng: -1.552, suburb: 'Ayeduase', type: 'hub', description: 'FreshFold Premium Apparel Processing & Steam-Press Sanctuary, beside the Benab filling station' },
   { name: 'Evandy Hostel', lat: 6.6685, lng: -1.5524, suburb: 'Ayeduase', type: 'hostel', description: 'Popular private student residency with luxury care dropoff lockers' },
   { name: 'Frontline Hostel', lat: 6.6695, lng: -1.5511, suburb: 'Ayeduase', type: 'hostel', description: 'Major student hostel equipped with standard FreshFold pickup service' },
   { name: 'Wundua Hostel', lat: 6.6692, lng: -1.5539, suburb: 'Ayeduase', type: 'hostel', description: 'High-density student accommodation off the Ayeduase high street' },
@@ -332,10 +342,3 @@ export function hasArrivedAt(position: Coords, target: Coords, accuracyM?: numbe
  * courier's arrow into a spinner.
  */
 export const MIN_HEADING_SPEED_KMH = 4;
-
-/** Average scooter speed on campus roads, used for every ETA in the system. */
-export const AVERAGE_SPEED_KMH = 18;
-
-export function etaMinutes(from: Coords, to: Coords): number {
-  return Math.max(1, Math.round((distanceKm(from, to) / AVERAGE_SPEED_KMH) * 60));
-}

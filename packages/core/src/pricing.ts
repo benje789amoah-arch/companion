@@ -98,6 +98,14 @@ export function isFragranceFree(scent: string): boolean {
  * cover the work — see {@link isPlanCoverable}.
  */
 export function isGarmentService(serviceType: string): boolean {
+  const listed = serviceByName(serviceType ?? '');
+  if (listed) return listed.garment;
+
+  // Legacy names only — see the note on LEGACY_BASE_PRICES. This was the whole
+  // test, and being a blacklist it answered "garment" for anything it had not
+  // heard of. `Fast Pickup & Delivery` is the one that got away: a courier run
+  // advertised as complimentary, quoted at ₵5, because a scent surcharge
+  // applied to it.
   const name = serviceType ?? '';
   return (
     !name.includes('Car Detailing') &&

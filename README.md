@@ -137,29 +137,43 @@ workflow now carry a *Customer sees:* pill derived through the same
 `toBookingStatus` mapping, and a stage change from any surface reaches the other
 two on the next poll — about a second in practice, four at worst.
 
-**The workflow is semi-automatic.** The three points where the bags physically
-change hands are confirmed by a person, and everything between them advances on
-its own. A courier scans the customer's collection code at the door, types the
-desk's code at the hub, and takes the customer's code back at the end; once a
-leg is finished in full the next stage follows without anybody pressing
-anything. Finishing the collection leg is what puts a job In Care, and from
-there the customer's timeline keeps moving on the hub's own clock.
+**Somebody confirms every stage.** The three points where the bags physically
+change hands are confirmed by a person, and so are the two stages between them.
+A courier scans the customer's collection code at the door, types the desk's code
+at the hub, and takes the customer's code back at the end; finishing the
+collection leg is what puts a job In Care. From there the desk's **Hub** tab is
+the path forward — a supervisor confirms *Washed*, which moves the job to Ironing
+& Folding, and *Finished & folded*, which moves it to Quality Check. Each
+confirmation is a claim a named person is making, recorded as theirs in the audit
+trail.
 
-That cycle passes through every stage — `dropped_off` → `processing` →
+That matters because the alternative was a clock. Both stages used to advance on
+elapsed time — two minutes each — and each expiry fired the real customer message
+and the real timeline entry. "Your laundry is being pressed" on the evidence that
+a number had passed. Nothing anywhere recorded that a garment had been washed,
+because nothing knew.
+
+The stages are still walked in order — `dropped_off` → `processing` →
 `ready_for_delivery` — rather than jumping the middle one. Ironing & Folding was
-unreachable except by a supervisor selecting it by hand, which on a laundry
-service is the stage the customer is actually paying for. Reaching Quality Check
-files an alert for the courier holding the job, or for the whole roster if none
-is, because that is the one moment in the hub's leg somebody has to act on.
+otherwise unreachable except by a supervisor selecting it by hand, which on a
+laundry service is the stage the customer is actually paying for. Reaching
+Quality Check files an alert for the courier holding the job, or for the whole
+roster if none is, because that is the one moment in the hub's leg somebody has
+to act on.
 
-It runs in the server (`apps/server/src/hub.ts`), on a sweep, not on the
-courier's phone. A `setTimeout` in the rider app made the laundry's progress a
-property of one device being awake: a courier who dropped bags off and then
-closed the app, lost signal or ended their shift left the job at In Care
-permanently, and whichever phone got there first stamped its own `riderId` onto
-stages it had not worked. `HUB_WASH_MINUTES` and `HUB_FINISH_MINUTES` set the
-two dwells — a stand-in for a hub console nobody has built yet, and its fallback
-once somebody does.
+**The timed sweep survives as a development convenience.** It lives in the server
+(`apps/server/src/hub.ts`), not on the courier's phone: a `setTimeout` in the
+rider app made the laundry's progress a property of one device being awake — a
+courier who dropped bags off and then closed the app, lost signal or ended their
+shift left the job at In Care permanently, and whichever phone got there first
+stamped its own `riderId` onto stages it had not worked.
+
+It is **off in production** unless `HUB_WASH_MINUTES` or `HUB_FINISH_MINUTES` is
+set, and on everywhere else, so `npm run dev` can still show a job going round
+once without three people and a press table. Every advance it makes is filed in
+the audit trail against `system`, with the dwell that expired and the plain
+admission that nobody confirmed the work — so the answer to "who said this load
+was washed" is always either a supervisor's name or *nobody*.
 
 **Every job on the phone's board is scoped by `riderId`.** The server sends each
 courier their own jobs *plus the open pool*, so the rider app has to tell the
@@ -233,12 +247,13 @@ rider app over the LAN.
 | `POST /orders/:id/accept`, `/decline` | Claiming a job (409 if already taken) |
 | `PATCH /orders/:id/status` | Workflow transitions, proof photos, signatures |
 | `POST /admin/login`, `GET /admin/me`, `POST /admin/logout` | Supervisor desk sign-in |
+| `GET /admin/audit` | The append-only trail of desk actions, newest first. Supervisor only |
 | `POST /riders` | Provision a courier; returns a one-time PIN. Supervisor only |
 | `PATCH /riders/:id/active` | Take a courier off the roster, or put them back. Supervisor only |
 | `POST /riders/login`, `GET /riders/me`, `POST /riders/logout` | Courier sign-in against the roster |
 | `POST /riders/change-pin` | Replace a temporary PIN. Courier only |
 | `GET /riders`, `GET/PATCH /riders/:id` | Roster, presence and live telemetry — all behind a courier session; a rider may only PATCH their own record |
-| `GET/POST /messages` | One conversation per job, all three surfaces |
+| `GET/POST /messages` | One conversation per job, all three surfaces. `?orderId=` is any party to that job; without it, the whole board's traffic, supervisor only and paged (`?limit=`, default 500) |
 | `GET/POST /notifications`, `POST /notifications/:id/read` | Rider alerts |
 | `GET/PUT /accounts` | Customer accounts |
 | `GET/POST /transactions` | Payment ledger; `?email=` scopes it to one customer |
@@ -294,20 +309,39 @@ longer exists, drops expired sessions, and prints what it moved.
 **A fresh install has no jobs.** There is no demo data: every order in the
 system is one somebody booked, so the rider's board and the supervisor's ledger
 only ever show real work, and all three apps open on empty states until you
-book something. Three things are created on first boot, and none of them is a
+book something. What is created on first boot is identity, and none of it is a
 job — see [`apps/server/src/seed.ts`](apps/server/src/seed.ts). Each is seeded
 only while its table is still empty, so restarting against a database that
-already has a roster does nothing:
+already has a roster does nothing.
+
+**In production, one thing is seeded:**
+
+- **A supervisor**, `supervisor@freshfold.com`, whose password comes from
+  `SEED_SUPERVISOR_PASSWORD`. Somebody has to be able to sign in and put the first
+  courier on the roster. A fresh production database with that variable unset
+  refuses to start, which is deliberate — this account can read every customer's
+  address and phone number and settle any bill, and it used to be created with the
+  password `password` on any deployment that met an empty database. Existing
+  deployments need no new configuration: the variable is read only when the
+  `supervisors` table is empty.
+
+The roster and the customer directory start empty there and fill with real
+people — couriers are hired through the supervisor desk, which issues a random
+temporary PIN, and customers register themselves.
+
+**In development, two more, for a door into each app:**
 
 - **A courier roster** of three provisioned riders. Couriers are never
   self-registered — these are employment records carrying an id, an employee
   number, a contact number and a hashed PIN. Name, vehicle and plate are blank
   until the courier enters them, and every performance figure starts at zero.
-- **One supervisor**, `supervisor@freshfold.com` / `password`. Somebody has to
-  be able to sign in and put the first courier on the roster.
 - **Three sign-in accounts**, so there is a door into the customer app before
   you have registered one. Identity and password only: no points, no wallet, no
   history.
+
+Both use the password `password`, and so does the supervisor unless
+`SEED_SUPERVISOR_PASSWORD` says otherwise. The startup banner prints the desk
+address and password it used, so there is nothing to look up.
 
 | Courier | Employee ID | Phone | PIN |
 | --- | --- | --- | --- |
@@ -316,6 +350,36 @@ already has a roster does nothing:
 | `FF-R-337` | `RIDER-337` | `0553370915` | `1234` |
 
 Signing in with the phone number on the record works too.
+
+### The audit trail
+
+Every action a supervisor takes from the desk that changes somebody's order,
+money or standing is written to `audit_events` — a stage confirmed, a cash
+payment settled or reversed, an order deleted, points adjusted, a patron blocked
+or removed, a courier hired, reassigned or deactivated. The Settings tab reads it
+back through `GET /api/admin/audit`, newest first.
+
+Entries are **written by the route that performs the action**, not by the
+browser, and inside the same transaction wherever the action has one: a
+rolled-back change leaves no trail, and a committed one always has one. The table
+is append-only, has no `order_id` foreign key — deleting an order must not delete
+the record that somebody deleted it — and nothing prunes it.
+
+This replaces a log the desk kept in its own `localStorage`. That version was
+capped at fifty entries by an array `slice`, visible only to the browser that
+made it, erased by clearing site data, and keyed on `LOG-` plus four random
+digits, which collide. A colleague could not see what you had changed, which is
+the one thing an audit trail is for.
+
+Two things are deliberately absent. A **courier's** stage advance is not
+recorded, because it is already on the customer's timeline with the hand-off code
+and proof photo attached, and twenty routine taps per job would bury the
+overrides this pane exists to show. And `POST /api/reset` writes nothing, because
+it truncates the table it would write to — and refuses to run in production
+anyway.
+
+The hub's timed sweep, when it runs at all, files its advances against `system`
+rather than a name, so the trail can say plainly that nobody confirmed a load.
 
 ### Phone numbers
 
@@ -409,9 +473,41 @@ the maps draw it dashed rather than pretending it is a route. Set
 `GOOGLE_MAPS_PLATFORM_KEY` in `apps/server/.env` (Routes API enabled) to turn
 real routing on.
 
+**An arrival time comes from a road or it is not shown.** `routeEtaMinutes()`
+answers only for a leg the routing engine computed, and returns `null` for the
+straight-line fallback — so the customer's tracking map, the courier's
+navigation strip and the desk's live map all show the same figure, from the same
+cached answer, or no figure at all. Every one of them used to show the chord
+between two points divided by an assumed 18 km/h, which is where the 60% came
+from. The surfaces with no route in scope show the stage the job is at instead;
+there is no stored duration on a job any more, only the distance, which is a
+real measurement.
+
 Re-routing is deliberately lazy — a new route only when the destination changes
 or the courier has strayed 80 m from the road they were given, at most once
 every 20 seconds. That is roughly four to six billed calls per job.
+
+### The dispatch desk
+
+A courier writing to dispatch used to get an answer in three seconds, composed
+on their own phone: a `setTimeout` picked one of four sentences — "Copy that.
+Operational details synchronized with the Admin Dashboard." — so the console
+would feel staffed. Because `POST /messages` derives a sender from the token and
+ignores one in the body, that reply was stored as the *courier's own words*, and
+the customer read it in their portal attributed to the person carrying their
+laundry.
+
+The desk's **Inbox** tab is a person instead. It reads every thread on the board
+and replies into them as Dispatch, through the same `POST /messages` the customer
+and the courier use. A desk reply files a notification, so it reaches both of
+them rather than waiting to be found; a message *to* the desk does not, because
+`Notification` has no recipient and an order-scoped notice goes to everybody on
+the job.
+
+There is no unread count, on the tab or in the pane. `Message` carries no read
+state, so the figure beside the tab is the number of threads a customer or a
+courier spoke into last — which is a fact about the rows, not a guess at who is
+owed an answer.
 
 ## Configuration
 
@@ -420,6 +516,7 @@ need; nothing is required to run the demo locally.
 
 | Variable | App | Needed for |
 | --- | --- | --- |
+| `SEED_SUPERVISOR_PASSWORD` | server | The first desk account. Required on a fresh **production** database; in development the seed falls back to `password` |
 | `GEMINI_API_KEY` | server | The concierge chatbot |
 | `GEMINI_MODEL` | server | Overriding the chatbot model (default `gemini-3.5-flash`) |
 | `PAYSTACK_SECRET_KEY` | server | Real MoMo / card payments |
@@ -448,9 +545,11 @@ bearer token; the browser stores the token and a profile, never a credential.
 `GET /api/accounts` returns profile fields only, and `PUT /api/accounts` writes
 through an allow-list, so a password cannot be set by including one in the body.
 
-The three sign-in accounts created on first run all use the password
-`password`: `ama.serwaah@st.knust.edu.gh`, `kofi.mensah@gmail.com` and
+In development, the three sign-in accounts created on first run all use the
+password `password`: `ama.serwaah@st.knust.edu.gh`, `kofi.mensah@gmail.com` and
 `adwoa.osei@outlook.com`. They start empty — no orders, no points, no wallet.
+They are not created in production, where the customer directory starts empty and
+fills with people who registered; see [The database](#the-database).
 
 ## Known limitations
 

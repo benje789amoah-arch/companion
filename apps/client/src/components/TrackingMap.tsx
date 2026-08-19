@@ -10,7 +10,7 @@ import MapView, { Marker, Polyline, type Region } from 'react-native-maps';
 import { LAUNDRY_HUB, routeEtaMinutes, type Booking, type Coords } from '@freshfold/core';
 import { MAP_PROVIDER } from '@freshfold/rn-maps';
 import { useRoadRoute } from '../hooks/useRoadRoute';
-import { colors, courierName, courierVehicle, radius, shadow, tints } from '../theme';
+import { colors, courierName, courierVehicle, humanizeStatus, radius, shadow, tints } from '../theme';
 import MapPanel from './MapPanel';
 
 /**
@@ -114,6 +114,9 @@ function NativeTrackingMap({ booking }: TrackingMapProps) {
 
   /** The road the courier is on, drawn from wherever they are to wherever they are going. */
   const route = useRoadRoute(courier ?? null, courier ? destination : null);
+
+  /** Minutes, or null when the leg on screen is the dashed fallback. */
+  const etaMinutes = route ? routeEtaMinutes(route) : null;
 
   const region = useMemo<Region>(() => {
     const points = [pickup, HUB, courier].filter(Boolean) as Coords[];
@@ -220,14 +223,14 @@ function NativeTrackingMap({ booking }: TrackingMapProps) {
         <View style={styles.etaChip}>
           <View style={styles.etaDot} />
           <Text style={styles.etaText}>
-            {/* The routing engine's own estimate once it has one: it counts
-                the roads and the traffic, where the server's fallback divides
-                a straight line by an average speed. */}
-            {route?.source === 'roads'
-              ? `${routeEtaMinutes(route)} min away`
-              : booking.rider.etaMinutes !== undefined
-                ? `${booking.rider.etaMinutes} min away`
-                : 'En route'}
+            {/* The routing engine's own estimate, or nothing. `routeEtaMinutes`
+                returns null for the server's straight-line fallback — that leg's
+                duration is the chord divided by an assumed speed, which is what
+                every arrival time in this app used to be. With no route to read,
+                the stage is the honest answer. */}
+            {etaMinutes !== null
+              ? `${etaMinutes} min away`
+              : humanizeStatus(booking.rider.jobStatus)}
           </Text>
         </View>
       )}

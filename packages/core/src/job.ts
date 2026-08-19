@@ -8,7 +8,6 @@ import {
   LAUNDRY_HUB_ADDRESS,
   coordsForAddress,
   distanceKm,
-  etaMinutes,
   isOutsideServiceArea,
 } from './geo';
 import { fromBookingStatus, toBookingStatus } from './status';
@@ -239,7 +238,6 @@ export function bookingToJob(booking: Booking, now = new Date().toISOString()): 
       priority,
       bags: bagsForJob(id, amount, booking.serviceType),
       distanceKm: Number(distance.toFixed(2)),
-      estDurationMins: etaMinutes(LAUNDRY_HUB, pickupCoords),
       pickupOtp: newHandoffCode(),
       dropoffOtp: newHandoffCode(),
       deliveryOtp: newHandoffCode(),
@@ -302,15 +300,17 @@ export function jobToBooking(job: Job, rider?: RiderState): Booking {
   };
 }
 
-/** The subset of rider telemetry the customer's live map is allowed to render. */
+/**
+ * The subset of rider telemetry the customer's live map is allowed to render.
+ *
+ * No arrival time. This used to work out which leg the courier was riding, take
+ * the straight-line distance to the end of it and divide by 18 km/h — a number
+ * that ignored roads, traffic and which way the one-way street ran, presented to
+ * the customer as "8 min away". The minute count on a live map now comes from
+ * the `RouteLeg` that map already fetches from `/api/directions`, and a surface
+ * without one shows `jobStatus`.
+ */
 export function riderViewFor(job: Job, rider: RiderState): BookingRiderView {
-  const destination =
-    job.status === 'navigating_to_delivery' || job.status === 'arrived_at_delivery'
-      ? job.location.pickupCoords
-      : job.status === 'navigating_to_laundry'
-        ? { lat: LAUNDRY_HUB.lat, lng: LAUNDRY_HUB.lng }
-        : job.location.pickupCoords;
-
   return {
     id: rider.id,
     name: rider.name,
@@ -319,7 +319,6 @@ export function riderViewFor(job: Job, rider: RiderState): BookingRiderView {
     rating: rider.rating,
     coords: rider.coords,
     jobStatus: job.status,
-    etaMinutes: etaMinutes(rider.coords, destination),
   };
 }
 
@@ -344,7 +343,6 @@ export function jobToOrder(job: Job): Order {
     status: job.status,
     riderId: job.dispatch.riderId,
     distance: job.dispatch.distanceKm,
-    estDuration: job.dispatch.estDurationMins,
     price: job.payment.amount,
     deadline: job.schedule.deadline ?? `Pickup ${job.schedule.pickupTime}`,
     specialInstructions: [job.service.specialInstructions, job.service.riderNote]
@@ -452,7 +450,6 @@ export function orderToJob(order: Order, now = new Date().toISOString()): Job {
       bags: order.bags,
       riderId: order.riderId,
       distanceKm: order.distance,
-      estDurationMins: order.estDuration,
       pickupOtp: order.pickupOtp ?? newHandoffCode(),
       // The rider's view never carried either of these, so folding an order
       // back into a job mints fresh ones rather than inventing a shared
@@ -604,7 +601,6 @@ export function applyBookingPatch(
     next.dispatch.distanceKm = Number(
       distanceKm(LAUNDRY_HUB, next.location.pickupCoords).toFixed(2)
     );
-    next.dispatch.estDurationMins = etaMinutes(LAUNDRY_HUB, next.location.pickupCoords);
   }
   if (patch.city !== undefined) next.location.city = patch.city;
 

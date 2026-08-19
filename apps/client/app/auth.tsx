@@ -34,6 +34,7 @@ import {
 } from '@freshfold/core';
 import { KeyboardAvoider } from '../src/components/KeyboardAvoider';
 import { Button, Card, Divider, Field, Segmented } from '../src/components/ui';
+import { usePreferences } from '../src/store/PreferencesStore';
 import { useSession } from '../src/store/SessionStore';
 import { colors, radius, shadow, tints } from '../src/theme';
 
@@ -56,9 +57,9 @@ export default function AuthScreen() {
     checkContact,
     requestPasswordReset,
     biometricAvailable,
-    biometricEnabled,
     promptBiometric,
   } = useSession();
+  const { biometricEnabled } = usePreferences();
 
   const [mode, setMode] = useState<Mode>(params.mode === 'register' ? 'register' : 'signin');
   const [identifier, setIdentifier] = useState('');

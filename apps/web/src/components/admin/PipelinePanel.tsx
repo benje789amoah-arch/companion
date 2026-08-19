@@ -34,6 +34,7 @@ import HandoffCode from '../HandoffCode';
 import LiveDispatchMap from '../LiveDispatchMap';
 import ProofOfService from './ProofOfService';
 import { Badge, Button, EmptyState, TableHead, formatCedis, type Tone } from './ui';
+import { displayAmount } from '../../services/amount';
 
 /**
  * When the hub's drop-off code is worth putting on screen.
@@ -86,7 +87,7 @@ export default function PipelinePanel({
   stageSequence: BookingStatus[];
   riderPhones: Record<string, string>;
   onUpdateStatus: (bookingId: string, status: BookingStatus) => void;
-  onTogglePayment: (bookingId: string) => void;
+  onTogglePayment: (bookingId: string) => Promise<void>;
   onDelete: (bookingId: string) => void;
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -122,6 +123,10 @@ export default function PipelinePanel({
         {bookings.map((b) => {
           const isExpanded = expandedId === b.id;
           const paid = b.paymentStatus === 'Paid';
+          // A cash collection is the desk's own record, so the desk can take it
+          // back. A wallet debit or a Paystack charge moved money and needs a
+          // refund — the server refuses to reverse either.
+          const reversible = b.paymentMethod === 'Cash';
           const stageIndex = stageSequence.indexOf(b.status);
 
           return (
@@ -174,7 +179,7 @@ export default function PipelinePanel({
                 </span>
 
                 <span className="order-2 block font-mono text-[13px] font-medium tabular-nums text-admin-fg md:order-none md:text-right">
-                  {formatCedis(b.amount ?? 50)}
+                  {formatCedis(displayAmount(b))}
                 </span>
 
                 <ChevronRight
@@ -232,10 +237,16 @@ export default function PipelinePanel({
                                 )}
                               </span>
                               <span className="block font-mono text-admin-fg-2">
+                                {/*
+                                  No ETA here. This line used to end "· ETA 9m",
+                                  from the courier's coordinates in a straight
+                                  line to the door at an assumed 18 km/h — and
+                                  the stage stepper immediately below says where
+                                  the job actually is.
+                                */}
                                 {[b.rider.vehicle?.trim(), b.rider.vehiclePlate?.trim()]
                                   .filter(Boolean)
                                   .join(' · ') || 'Vehicle pending'}
-                                {b.rider.etaMinutes !== undefined && ` · ETA ${b.rider.etaMinutes}m`}
                               </span>
                             </>
                           ) : (
@@ -290,9 +301,17 @@ export default function PipelinePanel({
                         <Button
                           size="sm"
                           variant={paid ? 'secondary' : 'primary'}
-                          onClick={() => onTogglePayment(b.id)}
+                          onClick={() => void onTogglePayment(b.id)}
+                          disabled={paid && !reversible}
+                          title={
+                            paid
+                              ? reversible
+                                ? 'Undo the cash collection recorded on this order'
+                                : `Paid by ${b.paymentMethod ?? 'gateway'} — that needs a refund, not a reversal`
+                              : 'Record that a courier collected this bill in cash'
+                          }
                         >
-                          {paid ? 'Mark unpaid / COD' : 'Mark paid'}
+                          {paid ? 'Undo cash collection' : 'Record cash collected'}
                         </Button>
 
                         <Button size="sm" icon={MapPin} onClick={() => setMapOpenFor(mapOpenFor === b.id ? null : b.id)}>

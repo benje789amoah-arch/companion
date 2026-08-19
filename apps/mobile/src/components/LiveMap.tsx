@@ -153,6 +153,15 @@ function NativeLiveMap({
    */
   const route = useRoadRoute(navigationTarget ? rider.coords : null, navigationTarget?.coords ?? null);
 
+  /**
+   * Minutes to the destination, or nothing.
+   *
+   * `routeEtaMinutes` answers only for a leg a routing engine actually
+   * computed — so this is null while the first answer is in flight, and null
+   * for good when the server had to fall back to the straight line.
+   */
+  const navEtaMinutes = route ? routeEtaMinutes(route) : null;
+
   const routeCoordinates = route
     ? route.coordinates.map((point) => ({ latitude: point.lat, longitude: point.lng }))
     : navigationTarget
@@ -428,8 +437,16 @@ function NativeLiveMap({
           </Text>
 
           <View style={styles.detailStatsRow}>
+            {/*
+              Distance, load and fare — the three things that decide whether to
+              take a job. The middle figure was the job's stored `estDuration`,
+              a straight line divided by an assumed scooter speed; a bag count
+              is something the courier can verify at the door.
+            */}
             <Text style={styles.detailStat}>{selectedOrder.distance} km</Text>
-            <Text style={styles.detailStat}>{selectedOrder.estDuration} min</Text>
+            <Text style={styles.detailStat}>
+              {selectedOrder.bagCount} {selectedOrder.bagCount === 1 ? 'bag' : 'bags'}
+            </Text>
             <Text style={[styles.detailStat, { color: colors.brandSage, fontWeight: '700' }]}>
               {formatCedis(selectedOrder.price)}
             </Text>
@@ -471,6 +488,10 @@ function NativeLiveMap({
             route. `activeOrder.distance` is the job's hub-to-pickup figure,
             fixed when it was booked — it does not shrink as the courier gets
             closer, and it was measured in a straight line anyway.
+
+            The minutes come from the routing engine or not at all. What used to
+            stand in was the job's stored `estDuration`, which was that same
+            straight line divided by an assumed 18 km/h.
           */}
           <View style={styles.navMetrics}>
             <Text style={styles.navDistance}>
@@ -478,9 +499,9 @@ function NativeLiveMap({
                 ? `${(route.distanceMeters / 1000).toFixed(1)} km`
                 : `${activeOrder.distance} km`}
             </Text>
-            <Text style={styles.navEta}>
-              Est. {route ? routeEtaMinutes(route) : activeOrder.estDuration} min
-            </Text>
+            {navEtaMinutes !== null && (
+              <Text style={styles.navEta}>Est. {navEtaMinutes} min</Text>
+            )}
           </View>
         </View>
       )}

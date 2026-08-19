@@ -8,14 +8,18 @@ import {
   applyStatus,
   isTerminal,
   orderToJob,
+  toBookingStatus,
   type Job,
   type JobStatus,
   type JobStatusPatch,
   type LaundryBag,
   type Order,
 } from '@freshfold/core';
+import { requireRider, requireStaff, requireSupervisor } from '../auth';
+import { recordAudit } from '../audit';
+import { resolveBookingAccess } from '../booking-access';
 import { store, type Repositories } from '../store';
-import { guard, nowLabel, notFound, orderView } from '../helpers';
+import { guard, nowLabel, notFound, orderView, writtenOrderView } from '../helpers';
 
 /**
  * The dispatch half of the API — what the rider app reads and writes.
@@ -23,6 +27,14 @@ import { guard, nowLabel, notFound, orderView } from '../helpers';
  * Every transition funnels through `applyStatus` from `@freshfold/core`, so a
  * job's timestamps and proof-of-service attachments are recorded identically
  * no matter which surface triggered the change.
+ *
+ * All of it is behind a staff session now, and every courier id is read off that
+ * session rather than out of a request body. This file used to be open, which on
+ * a dispatch API means rather more than a data leak: `?riderId=` decided whose
+ * board you were shown, `{ riderId }` in an accept decided who the job was
+ * assigned to, and `PATCH /:id/status` moved any job to any stage — so a
+ * stranger could take somebody else's pickup, hand it back, or mark it
+ * delivered, and the customer would be told so.
  */
 export const ordersRouter = Router();
 
@@ -45,11 +57,19 @@ const STATUS_SCRIPT: Partial<Record<JobStatus, string>> = {
   cancelled: 'This order has been cancelled. Please contact us if this was unexpected.',
 };
 
+/**
+ * The board.
+ *
+ * A courier gets the open pool plus everything already theirs; the desk gets
+ * everything. Whose board it is comes from the session — `?riderId=` used to
+ * decide, which meant any caller could ask for any courier's assignments by
+ * naming them.
+ */
 ordersRouter.get(
   '/',
+  requireStaff,
   guard(async (req, res) => {
-    const riderId = typeof req.query.riderId === 'string' ? req.query.riderId : null;
-    const jobs = await store.jobs.list({ riderId });
+    const jobs = await store.jobs.list({ riderId: req.rider?.id ?? null });
     res.json(jobs.map(orderView));
   })
 );
@@ -59,23 +79,43 @@ ordersRouter.get(
  *
  * The list above returns every order without its proof-of-service photographs,
  * which is what keeps a four-second poll cheap. This is where a courier's
- * history screen gets the picture back when it needs to draw one.
+ * history screen gets the picture back when it needs to draw one — including the
+ * proof they captured themselves, which is why a courier may read a job they
+ * have since handed on. What they may not do is read one that was never theirs.
  */
 ordersRouter.get(
   '/:id',
+  requireStaff,
   guard(async (req, res) => {
     const job = await store.jobs.find(req.params.id);
     if (!job) {
       notFound(res, 'Order');
       return;
     }
+
+    // The desk sees any job. A courier sees their own and anything still in the
+    // open pool, which is the same board `GET /` would have offered them.
+    const rider = req.rider;
+    if (rider && job.dispatch.riderId && job.dispatch.riderId !== rider.id) {
+      notFound(res, 'Order');
+      return;
+    }
+
     res.json(orderView(job));
   })
 );
 
-/** The rider console's simulation hub injecting a job into the backlog. */
+/**
+ * Injects a job into the backlog without a booking behind it.
+ *
+ * The rider console's simulation hub, and behind the desk's session: this writes
+ * a dispatchable job from a request body, with the customer's name, address and
+ * price all taken on the caller's word. Open, it was a way to put fabricated
+ * work on the board.
+ */
 ordersRouter.post(
   '/',
+  requireSupervisor,
   guard(async (req, res) => {
     const incoming = req.body as Order;
     if (!incoming?.id) {
@@ -90,12 +130,12 @@ ordersRouter.post(
 
 ordersRouter.post(
   '/:id/accept',
+  requireRider,
   guard(async (req, res) => {
-    const { riderId } = req.body as { riderId?: string };
-    if (!riderId) {
-      res.status(400).json({ error: 'A riderId is required to accept a job.' });
-      return;
-    }
+    // Whoever the token says, never whoever the body says. This was read off
+    // `req.body.riderId`, so a caller could assign a job to a courier who had
+    // not accepted it — or to a courier id that did not exist.
+    const riderId = req.rider!.id;
 
     /**
      * The whole check-then-claim runs inside one transaction, on a locked row.
@@ -145,17 +185,34 @@ ordersRouter.post(
         res.status(409).json({ error: 'That job is already closed.' });
         return;
       default:
-        res.json(orderView(outcome.job));
+        res.json(writtenOrderView(outcome.job));
     }
   })
 );
 
 ordersRouter.post(
   '/:id/decline',
+  requireRider,
   guard(async (req, res) => {
-    const job = await store.tx(async (t) => {
+    const riderId = req.rider!.id;
+
+    const outcome = await store.tx(async (t) => {
       const existing = await t.jobs.find(req.params.id, { lock: true });
-      if (!existing) return null;
+      if (!existing) return { kind: 'missing' } as const;
+
+      /**
+       * Only the courier holding it may hand it back.
+       *
+       * There was no check at all here, and the route sets `unassigned`
+       * unconditionally — so a caller could return somebody else's job to the
+       * pool mid-leg, with the customer watching a courier who was suddenly no
+       * longer assigned. Declining something already in the pool is a no-op
+       * rather than an error: the app fires it on a card it has just been
+       * offered, and the pool is where that card already lives.
+       */
+      if (existing.dispatch.riderId && existing.dispatch.riderId !== riderId) {
+        return { kind: 'notYours' } as const;
+      }
 
       const declined = await transition(t, existing, { status: 'unassigned' });
 
@@ -169,14 +226,19 @@ ordersRouter.post(
         read: false,
       });
 
-      return declined;
+      return { kind: 'ok', job: declined } as const;
     });
 
-    if (!job) {
-      notFound(res, 'Order');
-      return;
+    switch (outcome.kind) {
+      case 'missing':
+        notFound(res, 'Order');
+        return;
+      case 'notYours':
+        res.status(409).json({ error: 'That job belongs to another courier.' });
+        return;
+      default:
+        res.json(writtenOrderView(outcome.job));
     }
-    res.json(orderView(job));
   })
 );
 
@@ -243,6 +305,18 @@ const HANDOFF_GATES: Partial<
   },
 };
 
+/**
+ * Advances a job.
+ *
+ * Mostly a courier's route, but not only: the customer's own app completes the
+ * delivery leg — they sign for it and read out their code — and attaches a photo
+ * when reporting a problem. So the caller may be the courier holding the job, the
+ * desk, or the customer it belongs to, and what each is allowed to do differs.
+ *
+ * What none of them may do is act on somebody else's job, which is what this
+ * route allowed: no session at all, so any caller could drive any order to any
+ * stage, and `delivered` was reachable by supplying a sentence instead of a code.
+ */
 ordersRouter.patch(
   '/:id/status',
   guard(async (req, res) => {
@@ -272,6 +346,65 @@ ordersRouter.patch(
     const outcome = await store.tx(async (t) => {
       const existing = await t.jobs.find(req.params.id, { lock: true });
       if (!existing) return { kind: 'missing' } as const;
+
+      const access = await resolveBookingAccess(req, existing);
+      if (!access) return { kind: 'missing' } as const;
+
+      /**
+       * A courier may only move a job they are holding.
+       *
+       * A job still in the pool is allowed through so that the claim-by-moving
+       * path keeps working: the app pairs an accept with the first leg, and a
+       * supervisor can leave a job in flight with nobody on it for the console to
+       * pick up where it stands. `resolveBookingAccess` has already refused a
+       * courier who holds neither this job nor nothing.
+       */
+      const riderId = access.kind === 'rider' ? access.rider.id : undefined;
+
+      /**
+       * What the customer's own app is allowed to do here.
+       *
+       * Two things, and only these two. It completes the delivery leg — the
+       * signature is theirs to give and the code is theirs to read out — and it
+       * attaches a photograph when reporting a problem, at whatever stage the job
+       * is already in.
+       *
+       * The override path is closed to them, which is the point of separating
+       * this from the courier's rules: a hand-off completed without a code is an
+       * exception somebody has to answer for, and letting the party who holds the
+       * code waive it is the same as having no code. A customer sending one is
+       * refused rather than quietly ignored — they have their code, and the
+       * courier's app has the escape hatch.
+       */
+      if (access.kind === 'customer' || access.kind === 'tracking') {
+        if (patch.overrideReason) {
+          return {
+            kind: 'refused',
+            status: 403,
+            error: 'Enter the delivery code to confirm this order.',
+          } as const;
+        }
+
+        // Anything about the dispatch itself is the courier's to report.
+        if (patch.bags || patch.riderId) {
+          return {
+            kind: 'refused',
+            status: 403,
+            error: 'That part of the order is updated by your courier.',
+          } as const;
+        }
+
+        const completing = status === 'delivered';
+        const annotating = status === existing.status && !!patch.photo;
+
+        if (!completing && !annotating) {
+          return {
+            kind: 'refused',
+            status: 403,
+            error: 'Your courier reports this order’s progress.',
+          } as const;
+        }
+      }
 
       /**
        * The two transitions a courier's phone cannot make on its own say-so.
@@ -325,7 +458,48 @@ ordersRouter.patch(
         }
       }
 
-      const job = await transition(t, existing, patch as JobStatusPatch);
+      /**
+       * The courier comes from the session, never from the body.
+       *
+       * `riderId` was read straight off the request, so a caller could stamp a
+       * transition — and with it the whole job, since `applyStatus` assigns on
+       * any patch carrying one — onto a courier who had never seen it. Left
+       * undefined for a customer or the desk, which `applyStatus` reads as "do
+       * not touch the assignment": the customer confirming their delivery must
+       * not un-assign the courier who made it.
+       */
+      const job = await transition(t, existing, {
+        ...(patch as JobStatusPatch),
+        riderId,
+      });
+
+      /**
+       * The desk's moves are recorded; the courier's are not.
+       *
+       * A courier advancing a job they are holding is already on the customer's
+       * timeline, with the codes and photos that back it up, and twenty routine
+       * taps per job would bury the thing this trail is for. What it is for is
+       * the desk reaching into a job from outside that flow — the Hub tab
+       * confirming a wash, the stage stepper putting a stuck order where it
+       * belongs — because that is the move nothing else attributes to anybody.
+       */
+      if (access.kind === 'supervisor' && existing.status !== job.status) {
+        const reason = patch.overrideReason?.trim();
+
+        await recordAudit(t, {
+          actor: access.supervisor.email,
+          actorName: access.supervisor.name,
+          action: 'Stage confirmed',
+          details:
+            `Moved ${job.reference} from ${toBookingStatus(existing.status)} to ` +
+            `${toBookingStatus(job.status)} from the desk` +
+            (reason ? `, without the hand-off code: ${reason}` : ''),
+          type: 'stage',
+          orderId: job.id,
+          subject: job.customer.email,
+        });
+      }
+
       return { kind: 'ok', job } as const;
     });
 
@@ -337,7 +511,7 @@ ordersRouter.patch(
         res.status(outcome.status).json({ error: outcome.error });
         return;
       default:
-        res.json(orderView(outcome.job));
+        res.json(writtenOrderView(outcome.job));
     }
   })
 );
@@ -417,6 +591,37 @@ export async function transition(
       text: line,
       timestamp: nowLabel(),
       orderId: updated.id,
+    });
+  }
+
+  /**
+   * The one point in the round trip somebody has to act on.
+   *
+   * The customer is told at every stage by the script above, but the courier is
+   * not watching a timeline — they need to know a job they left at the hub hours
+   * ago is now bagged and waiting for the ride back. The title says when nobody
+   * is holding it: a job that reached this stage without a courier named goes
+   * back to the open pool, where the whole roster can see it.
+   *
+   * Lives here rather than in `../hub` because the hub cycle is no longer the
+   * only thing that makes this move. A supervisor confirming the press table has
+   * finished a load has to send the same notification, and a notification that
+   * only fires when a timer moved the job would have been the courier's silence
+   * for every load a person confirmed.
+   */
+  if (updated.status === 'ready_for_delivery' && previous.status !== 'ready_for_delivery') {
+    await t.notifications.insert({
+      id: `notif-ready-${updated.id}-${Date.now()}`,
+      title: updated.dispatch.riderId
+        ? 'Ready for delivery'
+        : 'Ready for delivery — no courier assigned',
+      body:
+        `${updated.reference} for ${updated.customer.name} has passed quality check ` +
+        `and is packed for the ride back to ${updated.location.deliveryAddress}.`,
+      timestamp: nowLabel(),
+      type: 'order',
+      orderId: updated.id,
+      read: false,
     });
   }
 

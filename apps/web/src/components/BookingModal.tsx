@@ -2,17 +2,28 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Calendar, MapPin, Sparkles, Clock, ShieldCheck, CheckCircle, Smartphone, CreditCard, Wallet, Banknote, Lock, CheckCircle2, QrCode } from 'lucide-react';
 import {
+  DEFAULT_SCENT,
+  DEFAULT_STARCH,
   PHONE_DIGITS,
   PHONE_LENGTH_MESSAGE,
+  PICKUP_TIME_SLOTS,
+  SCENTS,
+  STARCH_LEVELS,
+  encodeFinish,
   isCompletePhone,
+  isGarmentService,
   limitPhoneInput,
+  newJobId,
+  quoteBooking,
   samePhone,
   deriveSuburb,
   type Coords,
+  type UserAccount,
 } from '@freshfold/core';
+import { ApiError } from '@freshfold/core';
 import { Booking } from '../types';
 import * as store from '../services/store';
-import { SERVICES } from '../data';
+import { BOOKABLE_SERVICE_ITEMS } from '../data';
 import AddressAutocomplete from './AddressAutocomplete';
 import PickupPinField, { type PinOrigin } from './PickupPinField';
 
@@ -48,19 +59,44 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
    * reconciled them.
    */
   const suburb = useMemo(() => deriveSuburb(pickupPin, address), [pickupPin, address]);
-  const [service, setService] = useState(SERVICES[0]?.name || 'Washing (Machine & Hand Wash)');
+  const [service, setService] = useState(BOOKABLE_SERVICE_ITEMS[0]?.name || 'Washing (Machine & Hand Wash)');
   const [pickupDate, setPickupDate] = useState('');
-  const [pickupTimeSlot, setPickupTimeSlot] = useState('08:00 AM - 11:00 AM (Morning Concierge)');
-  const [specialScent, setSpecialScent] = useState('Organic Lavender');
-  const [starchLevel, setStarchLevel] = useState('None');
+  const [pickupTimeSlot, setPickupTimeSlot] = useState<string>(PICKUP_TIME_SLOTS[0]);
+  const [specialScent, setSpecialScent] = useState(DEFAULT_SCENT);
+  const [starchLevel, setStarchLevel] = useState(DEFAULT_STARCH);
   const [specialInstructions, setSpecialInstructions] = useState('');
   const [riderNote, setRiderNote] = useState('');
 
+  /**
+   * The booking's id, allocated before anything is paid.
+   *
+   * It used to be minted at the bottom of `handleSubmit`, which was too late:
+   * Paystack checkout happens *before* the form is submitted, and the server will
+   * only settle a payment whose `metadata.booking_id` names the booking it is
+   * settling. Without that binding a customer could pay for one ₵30 wash and quote
+   * its reference against every other booking they hold.
+   *
+   * So the id exists from the moment the form opens and travels into the checkout.
+   * A fresh one per booking — see the reset in the `isOpen` effect.
+   */
+  const [bookingId, setBookingId] = useState(() => newJobId());
+
   // Payment states
   const [paymentMethod, setPaymentMethod] = useState<'Paystack' | 'Wallet' | 'Pay on Pickup'>('Paystack');
+  /**
+   * Whether Paystack has confirmed the money arrived.
+   *
+   * A gate on *offering* to submit, and no longer a claim that gets written down:
+   * the booking's `paymentStatus` is the server's, settled through
+   * `store.payForBooking`. This used to be set by selecting the wallet tab and by
+   * a "Mark Paid" button, and then sent as `paymentStatus: 'Paid'` — so the record
+   * said settled because the browser said so.
+   */
   const [isPaid, setIsPaid] = useState(false);
   const [transactionRef, setTransactionRef] = useState('');
-  const [walletBalance, setWalletBalance] = useState(0);
+  /** Where the settle call's failure is reported, so it is never silent. */
+  const [settleError, setSettleError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   // Paystack states
   const [paystackLoading, setPaystackLoading] = useState(false);
@@ -84,6 +120,10 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
           // for everyone not running the site on the machine it names.
           callback_url: `${window.location.origin}/#paystack-success`,
           metadata: {
+            // What binds this payment to this booking. The server refuses to
+            // settle a bill with a reference that names a different one, so
+            // without this the payment cannot be applied at all.
+            booking_id: bookingId,
             customer_name: name || 'Patron',
             phone: phone,
             service: service,
@@ -131,11 +171,28 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
     }
   };
   
-  // Estimate calculations
-  const [estimatedPrice, setEstimatedPrice] = useState(35);
   const [isSuccess, setIsSuccess] = useState(false);
   const [createdBooking, setCreatedBooking] = useState<Booking | null>(null);
-  const [loggedInUser, setLoggedInUser] = useState<any | null>(null);
+  /**
+   * The signed-in customer, kept in step with the store.
+   *
+   * Typed, and subscribed rather than read once. The wallet balance below comes
+   * off this: it used to be a `useState(0)` that nothing ever wrote to, so the
+   * wallet tab advertised "Bal: ₵0.00" to every customer regardless of what they
+   * actually held, and the guard in `handleSubmit` rejected every wallet payment
+   * for any service that cost anything. A top-up made in the customer app now
+   * lands here on the next poll.
+   */
+  const [loggedInUser, setLoggedInUser] = useState<UserAccount | null>(null);
+
+  useEffect(() => {
+    const sync = () => setLoggedInUser(store.readCurrentUser());
+    sync();
+    return store.subscribe(sync);
+  }, []);
+
+  /** The real balance, from the account. Never a local subtraction. */
+  const walletBalance = loggedInUser?.walletBalance ?? 0;
 
   /**
    * Whether the booking on the confirmation screen has reached the server yet.
@@ -158,6 +215,16 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
   // Check for active logged in session on open and pre-fill credentials & logistics
   useEffect(() => {
     if (isOpen) {
+      // A fresh id per booking, and the payment state that hangs off it. Without
+      // the reset a second booking in the same session would carry the first
+      // one's id and its Paystack reference.
+      setBookingId(newJobId());
+      setIsPaid(false);
+      setTransactionRef('');
+      setPaystackRef('');
+      setPaystackAuthUrl('');
+      setSettleError('');
+
       try {
         const user = store.readCurrentUser();
         if (user) {
@@ -210,26 +277,38 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
     }
   }, [preselectedService, isOpen]);
 
-  // Dynamically estimate prices for a high-end feel
-  useEffect(() => {
-    let basePrice = 25;
-    if (service.includes('Washing')) basePrice = 30;
-    else if (service.includes('Bed Sheets') || service.includes('Linen')) basePrice = 45;
-    else if (service.includes('Executive') || service.includes('Pro') || service.includes('Premium')) basePrice = 55;
-    else if (service.includes('Express') || service.includes('Same-Day')) basePrice = 50;
-    else if (service.includes('Car Detailing') || service.includes('Detailing')) basePrice = 150;
-    else if (service.includes('Home & Office') || service.includes('Office Cleaning')) basePrice = 180;
-    else if (service.includes('Sofa & Carpet') || service.includes('Carpet Cleaning')) basePrice = 90;
-    else if (service.includes('Fast Pickup') || service.includes('Pickup & Delivery')) basePrice = 0; // Complimentary
-
-    if (specialScent !== 'Fragrance-Free' && !service.includes('Car Detailing') && !service.includes('Home & Office') && !service.includes('Sofa & Carpet')) {
-      basePrice += 5;
-    }
-    if (starchLevel !== 'None' && !service.includes('Car Detailing') && !service.includes('Home & Office') && !service.includes('Sofa & Carpet')) {
-      basePrice += 5;
-    }
-    setEstimatedPrice(basePrice);
-  }, [service, specialScent, starchLevel]);
+  /**
+   * The quote, from the shared table.
+   *
+   * This used to be a cascade of `service.includes(…)` branches with the scent
+   * and starch surcharges bolted on, duplicating the customer app's
+   * `priceBreakdown` — and disagreeing with it, because the test for the
+   * unscented option was `specialScent !== 'Fragrance-Free'` while the option's
+   * value is `'Fragrance-Free (Pure Hypoallergenic Soap)'`. The two are never
+   * equal, so the website charged ₵5 for the one scent that is free and the app
+   * did not. Same selections, two prices, depending on where you booked.
+   *
+   * `quoteBooking` rather than `priceBreakdown`, and with the same two arguments
+   * the server passes: this showed the list price while the server recorded the
+   * discounted total, so a member was quoted one number and billed another. It
+   * was not only cosmetic — `handlePaystackInit` sends this figure to Paystack,
+   * so a member paying by card was charged the gross for a booking the ledger
+   * had already marked down.
+   *
+   * The plan and the points come off the signed-in account, which is where the
+   * server reads them too. Signed out, neither is passed and the answer is the
+   * list price, which is what a guest pays.
+   */
+  const estimate = useMemo(
+    () =>
+      quoteBooking({
+        selections: { serviceType: service, scent: specialScent, starch: starchLevel },
+        plan: loggedInUser?.plan ?? null,
+        points: loggedInUser ? (loggedInUser.points ?? 0) : undefined,
+      }),
+    [service, specialScent, starchLevel, loggedInUser]
+  );
+  const estimatedPrice = estimate.total;
 
   // Set default tomorrow date on open
   useEffect(() => {
@@ -239,7 +318,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
     setPickupDate(tomorrowStr);
   }, [isOpen]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name || !phone || !address || !pickupDate) {
       alert('Please fill out all required physical details to coordinate transport.');
@@ -261,8 +340,18 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
       return;
     }
 
+    /**
+     * A wallet that cannot cover it is worth saying up front.
+     *
+     * Advisory only now — the server checks the balance again when it takes the
+     * money, on a locked row, against the price it worked out itself. This is here
+     * so the customer is told before they commit rather than after.
+     */
     if (paymentMethod === 'Wallet' && walletBalance < estimatedPrice) {
-      alert(`Insufficient wallet balance (₵${walletBalance}.00 GHS). Please select Mobile Money or Card to complete your booking.`);
+      alert(
+        `Insufficient wallet balance (₵${walletBalance.toFixed(2)} GHS) for this ₵${estimatedPrice.toFixed(2)} booking. ` +
+          'Top up from the patron portal, or pay by card or mobile money.'
+      );
       return;
     }
 
@@ -271,13 +360,8 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
     delivDate.setDate(delivDate.getDate() + 1);
     const deliveryDateStr = delivDate.toISOString().split('T')[0];
 
-    const isNowPaid = isPaid || paymentMethod === 'Wallet';
-    const finalTxnRef = isNowPaid 
-      ? (transactionRef || 'TXN-' + Math.floor(100000 + Math.random() * 900000))
-      : undefined;
-
     const newBooking: Booking = {
-      id: 'FFC-' + Math.floor(100000 + Math.random() * 900000),
+      id: bookingId,
       name,
       email: email.trim(),
       phone,
@@ -285,7 +369,12 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
       pickupDate,
       pickupTime: pickupTimeSlot,
       deliveryDate: deliveryDateStr,
-      specialInstructions: `${specialScent} scent, ${starchLevel} starch. ${specialInstructions}`,
+      specialInstructions: encodeFinish({
+        serviceType: service,
+        scent: specialScent,
+        starch: starchLevel,
+        notes: specialInstructions,
+      }),
       riderNote: riderNote.trim() || undefined,
       address,
       city: city || 'Boutique Care District',
@@ -295,26 +384,63 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
       pickupCoords: pickupPin ?? undefined,
       status: 'Scheduled',
       createdAt: new Date().toISOString(),
-      paymentStatus: isNowPaid ? 'Paid' : (paymentMethod === 'Pay on Pickup' ? 'Pay on Pickup' : 'Pending'),
+      /**
+       * How they intend to pay. Not whether they have.
+       *
+       * `paymentStatus`, `amount`, `paidAt` and `transactionRef` are all the
+       * server's now and are dropped from anything sent here — it prices the
+       * booking with `quoteBooking` and will not mark one `Paid` outside
+       * `POST /bookings/:id/payment`. This screen used to send
+       * `paymentStatus: 'Paid'` with a reference it had generated locally
+       * (`'TXN-' + Math.random()`), which is a record of a payment that never
+       * happened anywhere.
+       */
       paymentMethod,
-      amount: estimatedPrice,
-      transactionRef: finalTxnRef,
-      paidAt: isNowPaid ? new Date().toISOString() : undefined
     };
 
-    // If wallet was used, deduct balance
-    if (paymentMethod === 'Wallet') {
-      setWalletBalance(prev => Math.max(0, prev - estimatedPrice));
-    }
-
     // Hand the booking to the dispatch server. It derives the pickup pin, bag
-    // manifest and priority, and the job appears on the rider app's board.
+    // manifest, priority and price, and the job appears on the rider app's board.
     store.createBooking(newBooking);
 
-    // Callback
     onBookingCreated(newBooking);
     setCreatedBooking(newBooking);
     setIsSuccess(true);
+
+    /**
+     * Now settle it, if anything is owed up front.
+     *
+     * After the optimistic create rather than before, so the confirmation screen
+     * appears immediately and the pickup is never lost to a payment that failed —
+     * the booking is real and dispatchable either way, and an unpaid one reads
+     * `Pending` to the desk, which is true.
+     *
+     * `payForBooking` drains the write queue first, so the booking is on the
+     * server before anything tries to pay for it.
+     */
+    if (paymentMethod === 'Pay on Pickup') return;
+    if (paymentMethod === 'Paystack' && !isPaid) return;
+
+    setSubmitting(true);
+    setSettleError('');
+
+    try {
+      const settled = await store.payForBooking(
+        newBooking.id,
+        paymentMethod,
+        paymentMethod === 'Paystack' ? (transactionRef || paystackRef) : undefined
+      );
+      setCreatedBooking(settled);
+    } catch (error) {
+      // Said out loud on the confirmation screen. The pickup stands; the bill
+      // does not, and the customer needs to know which.
+      setSettleError(
+        error instanceof ApiError
+          ? error.message
+          : 'Your pickup is booked, but we could not take the payment just now. Settle it from the patron portal.'
+      );
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   // Compile WhatsApp redirect URL based on form data.
@@ -341,7 +467,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
   //   ].filter(Boolean).join('\n');
   //
   //   const encoded = encodeURIComponent(formatMsg);
-  //   window.open(`https://wa.me/233257880675?text=${encoded}`, '_blank');
+  //   window.open(`https://wa.me/233200957165?text=${encoded}`, '_blank');
   // };
 
   if (!isOpen) return null;
@@ -553,13 +679,20 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                       onChange={(e) => setService(e.target.value)}
                       className="w-full bg-[#161616] text-white rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors text-left"
                     >
-                      {SERVICES.map((srv) => (
+                      {BOOKABLE_SERVICE_ITEMS.map((srv) => (
                         <option key={srv.id} value={srv.name}>
                           {srv.name} ({srv.priceInfo})
                         </option>
                       ))}
                     </select>
                   </div>
+                  {/*
+                    A car detail and an office clean take no fabric finish, and
+                    the app hides these pickers for them. The website used to
+                    show them, charge for them, and write "Organic Lavender
+                    scent, None starch" onto the courier's card for a car.
+                  */}
+                  {isGarmentService(service) && (
                   <div>
                     <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
                       Earthy Essential Oil Scent
@@ -569,11 +702,15 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                       onChange={(e) => setSpecialScent(e.target.value)}
                       className="w-full bg-[#161616] text-white rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors text-left"
                     >
-                      <option value="Organic Lavender">Organic Lavender (+ ₵5.00)</option>
-                      <option value="Bespoke Eucalyptus & Tea-Tree">Bespoke Eucalyptus & Tea-Tree (+ ₵5.00)</option>
-                      <option value="Fragrance-Free (Pure Hypoallergenic Soap)">Fragrance-Free (Pure Organic Soap)</option>
+                      {SCENTS.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.id}
+                          {option.surcharge > 0 ? ` (+ ₵${option.surcharge.toFixed(2)})` : ''}
+                        </option>
+                      ))}
                     </select>
                   </div>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -598,35 +735,37 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                       onChange={(e) => setPickupTimeSlot(e.target.value)}
                       className="w-full bg-[#161616] text-white rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors text-left"
                     >
-                      <option value="08:00 AM - 11:00 AM (Morning Concierge)">08:00 AM - 11:00 AM (Morning Concierge)</option>
-                      <option value="12:00 PM - 03:00 PM (Afternoon Transit)">12:00 PM - 03:00 PM (Afternoon Transit)</option>
-                      <option value="05:30 PM - 08:30 PM (Sunset Concierge)">05:30 PM - 08:30 PM (Sunset Concierge)</option>
+                      {PICKUP_TIME_SLOTS.map((slot) => (
+                        <option key={slot} value={slot}>{slot}</option>
+                      ))}
                     </select>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {isGarmentService(service) && (
                   <div>
                     <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
                       Starch Level Treatment (Ironed items)
                     </label>
                     <div className="flex gap-2.5">
-                      {['None', 'Light', 'Medium'].map((starch) => (
+                      {STARCH_LEVELS.map((level) => (
                         <button
                           type="button"
-                          key={starch}
-                          onClick={() => setStarchLevel(starch)}
+                          key={level.id}
+                          onClick={() => setStarchLevel(level.id)}
                           className={`flex-1 py-2 text-xs rounded-xl border cursor-pointer transition-all duration-300 ${
-                            starchLevel === starch
+                            starchLevel === level.id
                               ? 'bg-brand-sage border-brand-sage text-white font-bold'
                               : 'bg-[#161616] border-white/10 text-[#8E9299] hover:text-white'
                           }`}
                         >
-                          {starch}
+                          {level.label}
                         </button>
                       ))}
                     </div>
                   </div>
+                  )}
                   <div>
                     <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
                       Special Garment instructions ?
@@ -681,9 +820,15 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                     </div>
                   </button>
 
+                  {/*
+                    Selecting the wallet tab used to set `isPaid`, which then went
+                    out as `paymentStatus: 'Paid'` — so choosing how to pay was
+                    the same act as having paid. The debit happens in
+                    `payForBooking`, after the booking exists.
+                  */}
                   <button
                     type="button"
-                    onClick={() => { setPaymentMethod('Wallet'); setIsPaid(true); }}
+                    onClick={() => { setPaymentMethod('Wallet'); setIsPaid(false); }}
                     className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
                       paymentMethod === 'Wallet'
                         ? 'bg-brand-sage/15 border-brand-sage text-white'
@@ -730,7 +875,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                     </div>
 
                     <p className="text-xs text-stone-300">
-                      Amount to settle via Paystack: <strong className="text-emerald-400 font-mono font-bold">₵{estimatedPrice}.00 GHS</strong>
+                      Amount to settle via Paystack: <strong className="text-emerald-400 font-mono font-bold">₵{estimatedPrice.toFixed(2)} GHS</strong>
                     </p>
 
                     {paystackError && (
@@ -748,7 +893,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                           className="w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer shadow-lg flex items-center justify-center gap-2"
                         >
                           <Lock className="w-4 h-4 text-white" />
-                          <span>{paystackLoading ? 'Connecting to Paystack...' : `Pay ₵${estimatedPrice}.00 GHS via Paystack`}</span>
+                          <span>{paystackLoading ? 'Connecting to Paystack...' : `Pay ₵${estimatedPrice.toFixed(2)} GHS via Paystack`}</span>
                         </button>
 
                         {paystackAuthUrl && (
@@ -765,6 +910,15 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                               Open Paystack Checkout Link ↗
                             </a>
                             <div className="pt-2 flex gap-2">
+                              {/*
+                                "Verify" asks Paystack. There used to be a
+                                "Mark Paid" button beside it that simply set the
+                                flag, and the flag went out as
+                                `paymentStatus: 'Paid'` — a settled booking on
+                                nobody's word at all. Asking is the only option
+                                now, and the server asks again before it takes
+                                anything.
+                              */}
                               <button
                                 type="button"
                                 onClick={handlePaystackVerify}
@@ -772,13 +926,6 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                                 className="flex-1 py-2 bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 rounded-xl text-xs font-mono font-bold hover:bg-emerald-500/30 transition-all cursor-pointer"
                               >
                                 {paystackLoading ? 'Checking...' : 'Verify Paystack Payment'}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setIsPaid(true)}
-                                className="px-3 py-2 bg-white/10 hover:bg-white/20 text-stone-300 rounded-xl text-xs font-mono font-bold transition-all cursor-pointer"
-                              >
-                                Mark Paid
                               </button>
                             </div>
                           </div>
@@ -799,11 +946,11 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                   <div className="bg-[#161616] p-4 rounded-xl border border-brand-gold/30 space-y-2 text-left">
                     <div className="flex justify-between items-center text-xs">
                       <span className="text-stone-300 font-medium">FreshFold Digital Wallet Balance:</span>
-                      <span className="font-mono font-bold text-brand-gold">₵{walletBalance}.00 GHS</span>
+                      <span className="font-mono font-bold text-brand-gold">₵{walletBalance.toFixed(2)} GHS</span>
                     </div>
                     <div className="flex justify-between items-center text-xs pt-1 border-t border-white/10">
                       <span className="text-stone-400">Amount to deduct:</span>
-                      <span className="font-mono font-bold text-brand-sage">- ₵{estimatedPrice}.00 GHS</span>
+                      <span className="font-mono font-bold text-brand-sage">- ₵{estimatedPrice.toFixed(2)} GHS</span>
                     </div>
                     <p className="text-[10px] text-stone-400 pt-1">
                       Payment will be automatically debited from your patron wallet balance on confirmation.
@@ -821,7 +968,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                   </span>
                   <span className="font-serif text-lg text-white font-medium mt-1 inline-flex items-center gap-1">
                     <Sparkles className="w-4 h-4 text-brand-sage" />
-                    Estimated: <span className="text-brand-sage font-bold">₵{estimatedPrice}.00 GHS</span>
+                    Estimated: <span className="text-brand-sage font-bold">₵{estimatedPrice.toFixed(2)} GHS</span>
                   </span>
                 </div>
                 <div className="text-right">
@@ -915,15 +1062,43 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                 </div>
                 <div className="flex justify-between">
                   <span className="text-stone-400">Payment Status:</span>
+                  {/*
+                    Read off the record the server returned, not off what this
+                    form intended. It used to say PAID whenever the browser had
+                    set its own flag, and anything else was labelled
+                    "PAY ON PICKUP" — including a card payment that was still
+                    pending, and a wallet debit that had never happened.
+                  */}
                   <span className={`font-mono font-bold ${createdBooking?.paymentStatus === 'Paid' ? 'text-emerald-400' : 'text-amber-400'}`}>
-                    {createdBooking?.paymentStatus === 'Paid' ? `PAID (${createdBooking.transactionRef || 'ONLINE'})` : 'PAY ON PICKUP'}
+                    {submitting
+                      ? 'SETTLING…'
+                      : createdBooking?.paymentStatus === 'Paid'
+                        ? `PAID (${createdBooking.transactionRef || 'ONLINE'})`
+                        : (createdBooking?.paymentStatus ?? 'PENDING').toUpperCase()}
                   </span>
                 </div>
                 <div className="flex justify-between border-t border-white/10 pt-2 font-serif text-sm">
-                  <span className="text-stone-400">Estimated Total:</span>
-                  <span className="text-brand-sage font-bold">₵{estimatedPrice}.00 GHS</span>
+                  <span className="text-stone-400">Total:</span>
+                  {/*
+                    The server's figure once it has answered. `estimatedPrice` is
+                    this form's arithmetic, and the two agree — same
+                    `quoteBooking` — but only one of them is what the customer
+                    owes, and a member's discount is applied server-side.
+                  */}
+                  <span className="text-brand-sage font-bold">
+                    ₵{(createdBooking?.amount ?? estimatedPrice).toFixed(2)} GHS
+                  </span>
                 </div>
               </div>
+
+              {settleError && (
+                <div className="mt-3 p-3 bg-amber-500/15 border border-amber-500/40 rounded-xl text-left">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-amber-400 mb-1">
+                    Pickup booked — payment outstanding
+                  </p>
+                  <p className="text-[11px] leading-relaxed text-amber-200/90">{settleError}</p>
+                </div>
+              )}
 
               {/* Portal setup link section */}
               <div className="max-w-md mx-auto bg-brand-sage/5 border border-brand-sage/20 rounded-2xl p-4 text-xs text-left space-y-2 mt-4">

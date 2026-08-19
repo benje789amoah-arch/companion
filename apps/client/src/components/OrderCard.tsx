@@ -89,11 +89,14 @@ export default function OrderCard({
         <View style={styles.footRow}>
           <Text style={styles.amount}>{formatCedis(booking.amount ?? 0)}</Text>
           {booking.rider ? (
+            /*
+              Just the name. What followed it was "· 8 min away", computed from
+              the courier's coordinates in a straight line to the door at an
+              assumed 18 km/h. The timeline above this row carries the stage, and
+              the tracking screen carries the routed arrival time.
+            */
             <Text style={styles.riderLine} numberOfLines={1}>
               {courierName(booking.rider)}
-              {booking.rider.etaMinutes !== undefined
-                ? ` · ${booking.rider.etaMinutes} min away`
-                : ''}
             </Text>
           ) : (
             <Text style={styles.riderLinePending}>Awaiting courier</Text>

@@ -5,6 +5,9 @@
 
 import { Platform, TextStyle } from 'react-native';
 
+import { intlTag, type Locale } from './i18n/locales';
+import { translate } from './i18n/translate';
+
 /**
  * Brand palette for the customer app.
  *
@@ -188,20 +191,61 @@ export const DEFAULT_AVATAR =
  */
 export { humanizeStatus } from '@freshfold/core';
 
-export function formatCedis(amount: number): string {
-  return `GH₵ ${amount.toFixed(2)}`;
+/**
+ * Money, dates and ages, in one of the app's languages.
+ *
+ * Every one of these takes `locale` as an optional last argument defaulting to
+ * `'en'`. That is what lets the ~25 screens that call them convert to `useT()`
+ * one at a time with the app building at every step — the same tactic the
+ * appearance work uses for the palette. A call site that has not been converted
+ * yet reads in English, which is where it already was.
+ *
+ * They are here rather than in `src/i18n/` because that is where the call sites
+ * already import them from, and moving 60-odd imports to say the same thing is
+ * churn. What they take from `src/i18n/` is the dictionary and the `Intl` tag.
+ */
+
+/**
+ * `12.5` -> `GH₵ 12.50`, or `12,50 GH₵` in French.
+ *
+ * Formatted by hand rather than through `Intl.NumberFormat`'s currency mode. On
+ * Hermes the ICU data for `GHS` is not reliably present, so that route renders
+ * the symbol as the letters `GHS` on some handsets and as `GH₵` on others — and
+ * a price whose shape depends on the phone is worse than one formatted here.
+ * French moves the symbol after the figure and writes the separator as a comma,
+ * which is the whole of the difference.
+ */
+export function formatCedis(amount: number, locale: Locale = 'en'): string {
+  const figure = amount.toFixed(2);
+  return locale === 'fr' ? `${figure.replace('.', ',')} GH₵` : `GH₵ ${figure}`;
 }
 
-export function nowLabel(): string {
-  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+/**
+ * The current time of day, e.g. `09:24`.
+ *
+ * Formatted on the language's tag rather than the handset's, so two customers
+ * reading the same screen in the same language are shown the same thing.
+ */
+export function nowLabel(locale: Locale = 'en'): string {
+  return new Date().toLocaleTimeString(intlTag(locale), { hour: '2-digit', minute: '2-digit' });
 }
 
-/** `2026-08-11` -> `Tue, 11 Aug`. Falls back to the raw string if unparseable. */
-export function formatDate(value?: string): string {
-  if (!value) return '—';
+/**
+ * `2026-08-11` -> `Tue, 11 Aug` (`mar. 11 août` in French). Falls back to the raw
+ * string if unparseable.
+ *
+ * Twi, Ga and Ewe fall through to English day and month names — see
+ * {@link intlTag} for why, and for what a native speaker could improve.
+ */
+export function formatDate(value?: string, locale: Locale = 'en'): string {
+  if (!value) return translate(locale, 'common.blank');
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+  return date.toLocaleDateString(intlTag(locale), {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+  });
 }
 
 /**
@@ -212,25 +256,38 @@ export function formatDate(value?: string): string {
  * courier assigned before their name has landed. A placeholder beats an empty
  * string with the separator still hanging off it.
  */
-export function courierName(rider?: { name?: string }): string {
-  return rider?.name?.trim() || 'Your courier';
+export function courierName(rider?: { name?: string }, locale: Locale = 'en'): string {
+  return rider?.name?.trim() || translate(locale, 'courier.unnamed');
 }
 
 /** `Honda PCX · GR 4821-24`, or an honest placeholder while telemetry is pending. */
-export function courierVehicle(rider?: { vehicle?: string; vehiclePlate?: string }): string {
+export function courierVehicle(
+  rider?: { vehicle?: string; vehiclePlate?: string },
+  locale: Locale = 'en'
+): string {
   const parts = [rider?.vehicle?.trim(), rider?.vehiclePlate?.trim()].filter(Boolean);
-  return parts.length > 0 ? parts.join(' · ') : 'Vehicle details pending';
+  return parts.length > 0 ? parts.join(' · ') : translate(locale, 'courier.vehiclePending');
 }
 
-/** Relative age for a timestamp, e.g. `4m ago`. */
-export function relativeTime(iso?: string): string {
+/**
+ * Relative age for a timestamp, e.g. `4m ago`.
+ *
+ * Coarse on purpose, and the same four buckets in every language — the exact
+ * second a courier's telemetry landed is not something anybody acts on. The
+ * wording comes from `time.*` keys so a language can put the number where its
+ * grammar wants it: English trails the unit, French leads with `il y a`, Twi
+ * closes with `a atwam`.
+ */
+export function relativeTime(iso?: string, locale: Locale = 'en'): string {
   if (!iso) return '';
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return iso;
 
   const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
-  if (seconds < 60) return 'just now';
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return `${Math.floor(seconds / 86400)}d ago`;
+  if (seconds < 60) return translate(locale, 'time.justNow');
+  if (seconds < 3600) return translate(locale, 'time.minutes', { count: Math.floor(seconds / 60) });
+  if (seconds < 86400) {
+    return translate(locale, 'time.hours', { count: Math.floor(seconds / 3600) });
+  }
+  return translate(locale, 'time.days', { count: Math.floor(seconds / 86400) });
 }

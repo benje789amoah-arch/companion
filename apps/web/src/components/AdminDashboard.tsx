@@ -33,6 +33,7 @@ import {
   LayoutList,
   LogOut,
   Menu,
+  MessageSquare,
   Receipt,
   RefreshCw,
   Search,
@@ -41,14 +42,17 @@ import {
   Truck,
   Users,
   Wallet,
+  WashingMachine,
   X,
 } from 'lucide-react';
-import { BOOKING_STAGE_SEQUENCE } from '@freshfold/core';
+import { BOOKING_STAGE_SEQUENCE, type AuditEvent, type Message } from '@freshfold/core';
 import type { Booking, UserAccount } from '../types';
-import type { AuditLog } from '../services/store';
 import * as store from '../services/store';
+import { displayAmount } from '../services/amount';
 import RosterPanel from './RosterPanel';
 import PipelinePanel, { filterBookings, useSuburbs } from './admin/PipelinePanel';
+import HubPanel from './admin/HubPanel';
+import MessagesPanel, { inboundThreadCount } from './admin/MessagesPanel';
 import PatronsPanel from './admin/PatronsPanel';
 import FinancialsPanel from './admin/FinancialsPanel';
 import SettingsPanel from './admin/SettingsPanel';
@@ -63,17 +67,17 @@ interface AdminDashboardProps {
   onUpdateBookings: (bookings: Booking[]) => void;
 }
 
-type TabId = 'pipeline' | 'patrons' | 'financials' | 'roster' | 'settings';
+type TabId = 'pipeline' | 'hub' | 'inbox' | 'patrons' | 'financials' | 'roster' | 'settings';
 
 const TABS: { id: TabId; label: string; icon: typeof LayoutList }[] = [
   { id: 'pipeline', label: 'Pipeline', icon: LayoutList },
+  { id: 'hub', label: 'Hub', icon: WashingMachine },
+  { id: 'inbox', label: 'Inbox', icon: MessageSquare },
   { id: 'patrons', label: 'Patrons', icon: Users },
   { id: 'financials', label: 'Settlement', icon: Receipt },
   { id: 'roster', label: 'Couriers', icon: Bike },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
-
-const DEFAULT_AMOUNT = 50;
 
 export default function AdminDashboard({
   isOpen,
@@ -105,54 +109,51 @@ export default function AdminDashboard({
   const [receiptModalBooking, setReceiptModalBooking] = useState<Booking | null>(null);
 
   const [accounts, setAccounts] = useState<UserAccount[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [successNotif, setSuccessNotif] = useState('');
+
+  /**
+   * The trail, and whether we managed to read it.
+   *
+   * Three pieces of state rather than one array, because the failure matters.
+   * The old log was local, so it was always readable and always complete; this
+   * one is a request that can fail, and a trail that came back empty because the
+   * server was unreachable must not render as a trail with nothing in it.
+   *
+   * `auditNonce` is bumped by every handler that writes an entry, which is what
+   * re-runs the fetch. The desk no longer composes entries, so this is how the
+   * pane learns about the one the server just filed.
+   */
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const [auditNonce, setAuditNonce] = useState(0);
+  const bumpAudit = () => setAuditNonce((n) => n + 1);
+
+  /**
+   * The board's message threads, for the Inbox pane and the figure beside its
+   * tab.
+   *
+   * Held here rather than in the pane, and read on every dashboard open rather
+   * than when the tab is selected — the opposite of the audit trail below. The
+   * whole point of an inbox is that the desk notices somebody is waiting without
+   * clicking into it, and a count fetched only once the pane is mounted would
+   * read "nobody is waiting" until you had already looked.
+   *
+   * The failure is held for the same reason the trail's is: an empty inbox and an
+   * inbox that could not be read are different answers.
+   */
+  const [inboxMessages, setInboxMessages] = useState<Message[]>([]);
+  const [inboxError, setInboxError] = useState<string | null>(null);
+  const [inboxLoading, setInboxLoading] = useState(true);
+  const [inboxNonce, setInboxNonce] = useState(0);
+  const bumpInbox = () => setInboxNonce((n) => n + 1);
 
   // Master stage cycle — shared with the client portal and with the mapping
   // that turns a rider's dispatch status into one of these stages.
   const statusCycle = BOOKING_STAGE_SEQUENCE;
 
-  const logAuditAction = (action: string, details: string, type: AuditLog['type']) => {
-    const newEntry: AuditLog = {
-      id: `LOG-${Math.floor(1000 + Math.random() * 9000)}`,
-      timestamp: new Date().toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-      }),
-      action,
-      details,
-      supervisor: currentSupervisor,
-      type,
-    };
-    const updated = [newEntry, ...auditLogs].slice(0, 50); // Keep last 50
-    setAuditLogs(updated);
-    try {
-      store.writeAuditLogs(updated);
-    } catch (e) {
-      console.warn(e);
-    }
-  };
-
   const loadDatabase = () => {
     try {
       const savedAccounts: UserAccount[] = store.readAccounts();
-      const savedLogs: AuditLog[] = store.readAuditLogs();
-
-      if (savedLogs.length > 0) {
-        setAuditLogs(savedLogs);
-      } else {
-        setAuditLogs([
-          {
-            id: 'LOG-1001',
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            action: 'Desk bootup',
-            details: 'Supervisor desk initialised for Kumasi operations',
-            supervisor: currentSupervisor,
-            type: 'system',
-          },
-        ]);
-      }
 
       /**
        * The directory is whatever the server says it is.
@@ -190,10 +191,10 @@ export default function AdminDashboard({
   /**
    * Courier contact numbers, by rider id.
    *
-   * The jobs themselves carry `rider` — name, vehicle, plate, rating, ETA —
-   * but deliberately not a phone number: that object is sent to the customer
-   * too, and a courier's personal number is not the customer's to have. This
-   * desk administers the roster, so it reads the numbers from there.
+   * The jobs themselves carry `rider` — name, vehicle, plate, rating, dispatch
+   * status — but deliberately not a phone number: that object is sent to the
+   * customer too, and a courier's personal number is not the customer's to have.
+   * This desk administers the roster, so it reads the numbers from there.
    */
   const [riderPhones, setRiderPhones] = useState<Record<string, string>>({});
 
@@ -219,6 +220,87 @@ export default function AdminDashboard({
     };
   }, [isOpen]);
 
+  /**
+   * The audit trail, from the server.
+   *
+   * Fetched when the Settings tab is opened rather than on every dashboard load:
+   * it is a few hundred rows nobody is looking at from the Pipeline pane, and
+   * `auditNonce` brings it back the moment a handler writes to it.
+   *
+   * A failure is held, not swallowed. This pane's whole claim is that it shows
+   * what happened; "nothing happened" and "we could not find out what happened"
+   * are different answers and the panel says which one it has.
+   */
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'settings') return;
+
+    const token = store.readAdminToken();
+    if (!token) {
+      setAuditError('This desk is not signed in, so the trail cannot be read.');
+      return;
+    }
+
+    let cancelled = false;
+    store.api
+      .listAuditEvents(token)
+      .then((events) => {
+        if (cancelled) return;
+        setAuditEvents(events);
+        setAuditError(null);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setAuditError(
+          e instanceof Error ? e.message : 'The trail could not be read from the server.',
+        );
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, activeTab, auditNonce]);
+
+  /**
+   * The message threads.
+   *
+   * `listAllMessages` is the supervisor-scoped `GET /messages`, which answers a
+   * page of the most recent traffic across the whole ledger — the table gets a
+   * line for every status change on every job, so it is paged rather than read
+   * whole. `inboxNonce` brings it back after the desk replies.
+   */
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const token = store.readAdminToken();
+    if (!token) {
+      setInboxError('This desk is not signed in, so the threads cannot be read.');
+      setInboxLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    store.api
+      .listAllMessages(token)
+      .then((threads) => {
+        if (cancelled) return;
+        setInboxMessages(threads);
+        setInboxError(null);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setInboxError(
+          e instanceof Error ? e.message : 'The threads could not be read from the server.',
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setInboxLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, inboxNonce]);
+
   const triggerFlashNotification = (msg: string) => {
     setSuccessNotif(msg);
     setTimeout(() => setSuccessNotif(''), 4000);
@@ -233,46 +315,60 @@ export default function AdminDashboard({
       store.writeBookings(updated);
       onUpdateBookings(updated);
       triggerFlashNotification(`${bookingId} moved to ${newStatus}`);
-      logAuditAction('Stage advance', `Order ${bookingId} transitioned to ${newStatus}`, 'stage');
+      bumpAudit();
     } catch (e) {
       console.error(e);
     }
   };
 
-  const handleTogglePaymentStatus = (bookingId: string) => {
-    let generatedTxn = '';
-    const updated = activeBookings.map((b) => {
-      if (b.id === bookingId) {
-        const isPaid = b.paymentStatus === 'Paid';
-        generatedTxn = 'TXN-ADMIN-' + Math.floor(100000 + Math.random() * 900000);
-        return {
-          ...b,
-          paymentStatus: isPaid ? ('Pay on Pickup' as const) : ('Paid' as const),
-          paymentMethod: isPaid ? b.paymentMethod : b.paymentMethod || 'Settlement Override',
-          transactionRef: isPaid ? undefined : generatedTxn,
-          paidAt: isPaid ? undefined : new Date().toISOString(),
-        };
-      }
-      return b;
-    });
+  /**
+   * Records that a courier was handed cash for an order, or takes that record
+   * back.
+   *
+   * Both directions ask the server and report what it says. This used to flip
+   * `paymentStatus` in the local mirror and stamp `TXN-ADMIN-######` on the way
+   * past — a gateway confirmation for a payment no gateway ever saw — and
+   * because the sync queue diffs whole records and this desk holds a supervisor
+   * token, that invented reference landed in the real ledger.
+   *
+   * Cash is the one payment a supervisor can actually attest to, so it is the
+   * one this button records: `POST /bookings/:id/payment` with `Cash`, which
+   * writes a statement row naming whoever recorded it and leaves
+   * `transactionRef` empty, because nothing outside this building confirmed
+   * anything. The reversal is cash-only for the same reason — money that moved
+   * through Paystack or a wallet needs a refund, not a flag flip, and the
+   * server will refuse.
+   *
+   * Nothing is written locally on failure. A settlement that did not happen must
+   * not look like one, which is the reasoning in `ClientPortal`'s payment path
+   * too.
+   */
+  const handleTogglePaymentStatus = async (bookingId: string) => {
+    const target = activeBookings.find((b) => b.id === bookingId);
+    if (!target) return;
 
-    store.writeBookings(updated);
-    onUpdateBookings(updated);
+    const wasPaid = target.paymentStatus === 'Paid';
 
-    const targetBooking = activeBookings.find((b) => b.id === bookingId);
-    const wasPaid = targetBooking?.paymentStatus === 'Paid';
+    try {
+      const settled = wasPaid
+        ? await store.reverseCashPayment(bookingId)
+        : await store.payForBooking(bookingId, 'Cash');
 
-    triggerFlashNotification(
-      wasPaid ? `${bookingId} set to unpaid / COD` : `${bookingId} marked paid`,
-    );
+      onUpdateBookings(activeBookings.map((b) => (b.id === bookingId ? settled : b)));
 
-    logAuditAction(
-      'Payment settlement',
-      wasPaid
-        ? `Order ${bookingId} marked unpaid / COD`
-        : `Order ${bookingId} settled paid with ${generatedTxn}`,
-      'payment',
-    );
+      triggerFlashNotification(
+        wasPaid
+          ? `${bookingId} back to pay on pickup — cash collection reversed`
+          : `${bookingId} settled — ${formatCedis(displayAmount(settled))} collected in cash`,
+      );
+
+      bumpAudit();
+    } catch (e) {
+      triggerFlashNotification(
+        e instanceof Error ? e.message : `Could not reach the server. ${bookingId} is unchanged.`,
+      );
+      console.warn(e);
+    }
   };
 
   const handleDeleteBooking = (bookingId: string) => {
@@ -284,7 +380,7 @@ export default function AdminDashboard({
       store.writeBookings(updated);
       onUpdateBookings(updated);
       triggerFlashNotification(`${bookingId} removed from the ledger`);
-      logAuditAction('Order deleted', `Supervisor deleted order ${bookingId}`, 'system');
+      bumpAudit();
     } catch (e) {
       console.error(e);
     }
@@ -326,12 +422,7 @@ export default function AdminDashboard({
         `${action === 'add' ? '+' : '−'}${amount} pts for ${patronName} — now ${updated.points ?? 0}`,
       );
 
-      logAuditAction(
-        'Points adjusted',
-        `${action === 'add' ? 'Awarded +' : 'Deducted −'}${amount} pts for ${patronName} (${email}). Reason: ${pointsReason}`,
-        'points',
-      );
-
+      bumpAudit();
       setSelectedPatronEmail(null);
     } catch (e) {
       triggerFlashNotification(
@@ -360,13 +451,7 @@ export default function AdminDashboard({
     loadDatabase();
 
     triggerFlashNotification(blocked ? `${who} blocked` : `${who} reinstated`);
-    logAuditAction(
-      blocked ? 'Patron blocked' : 'Patron reinstated',
-      blocked
-        ? `${who} (${email}) blocked — sessions revoked. Reason: ${reason.trim() || 'none given'}`
-        : `${who} (${email}) restored to good standing`,
-      'system',
-    );
+    bumpAudit();
   };
 
   /** Erases the account. Their orders stay in the ledger; the identity goes. */
@@ -389,7 +474,7 @@ export default function AdminDashboard({
     loadDatabase();
 
     triggerFlashNotification(`${who} deleted`);
-    logAuditAction('Patron deleted', `Supervisor deleted the account ${email}`, 'system');
+    bumpAudit();
   };
 
   const suburbs = useSuburbs(activeBookings);
@@ -404,11 +489,15 @@ export default function AdminDashboard({
     [activeBookings, searchQuery, statusFilter, suburbFilter, paymentFilter],
   );
 
+  // `displayAmount`, not `amount || 50`. The fallback used to be a different
+  // invented number on every pane, and `||` counted a genuinely free order — a
+  // complimentary `Fast Pickup & Delivery` is ₵0 — as a booking with no price,
+  // adding ₵50 of money nobody was ever charged to both totals.
   const totalRevenue = activeBookings
     .filter((b) => b.paymentStatus === 'Paid')
-    .reduce((sum, b) => sum + (b.amount || DEFAULT_AMOUNT), 0);
+    .reduce((sum, b) => sum + displayAmount(b), 0);
   const unpaid = activeBookings.filter((b) => b.paymentStatus !== 'Paid');
-  const outstanding = unpaid.reduce((sum, b) => sum + (b.amount || DEFAULT_AMOUNT), 0);
+  const outstanding = unpaid.reduce((sum, b) => sum + displayAmount(b), 0);
   const inTransit = activeBookings.filter(
     (b) => b.status !== 'Delivered' && b.status !== 'Cancelled' && b.status !== 'Scheduled',
   ).length;
@@ -445,11 +534,15 @@ export default function AdminDashboard({
         const count =
           tab.id === 'pipeline'
             ? activeBookings.length
-            : tab.id === 'patrons'
-              ? accounts.length
-              : tab.id === 'financials'
-                ? unpaid.length
-                : undefined;
+            : tab.id === 'inbox'
+              ? // Threads a customer or a courier spoke into last. Not an unread
+                // count — `Message` has no read state, so there is none to show.
+                inboundThreadCount(inboxMessages)
+              : tab.id === 'patrons'
+                ? accounts.length
+                : tab.id === 'financials'
+                  ? unpaid.length
+                  : undefined;
 
         return (
           <button
@@ -718,6 +811,31 @@ export default function AdminDashboard({
             />
           )}
 
+          {activeTab === 'hub' && (
+            <HubPanel
+              onConfirmed={(message) => {
+                triggerFlashNotification(message);
+                bumpAudit();
+              }}
+            />
+          )}
+
+          {activeTab === 'inbox' && (
+            <MessagesPanel
+              messages={inboxMessages}
+              error={inboxError}
+              loading={inboxLoading}
+              bookings={activeBookings}
+              onRefresh={bumpInbox}
+              onReplied={(message) => {
+                triggerFlashNotification(message);
+                // The pane keeps no copy of what it sent, so the thread it wrote
+                // into comes back from the server with the desk's line in it.
+                bumpInbox();
+              }}
+            />
+          )}
+
           {activeTab === 'financials' && (
             <FinancialsPanel
               bookings={activeBookings}
@@ -732,7 +850,11 @@ export default function AdminDashboard({
           {activeTab === 'roster' && <RosterPanel />}
 
           {activeTab === 'settings' && (
-            <SettingsPanel supervisor={currentSupervisor} auditLogs={auditLogs} />
+            <SettingsPanel
+              supervisor={currentSupervisor}
+              auditEvents={auditEvents}
+              auditError={auditError}
+            />
           )}
         </main>
       </div>

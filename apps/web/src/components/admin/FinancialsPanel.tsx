@@ -14,14 +14,13 @@
 import { useMemo } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Printer, Receipt, Wallet, X } from 'lucide-react';
+import { decodeFinish, priceBreakdown } from '@freshfold/core';
 import type { Booking } from '../../types';
 import { Badge, Button, EmptyState, Panel, TableHead, formatCedis } from './ui';
+import { displayAmount } from '../../services/amount';
 
 const COLS =
   'md:grid md:grid-cols-[112px_minmax(140px,1.4fr)_minmax(150px,1.4fr)_100px_96px_76px] md:items-center md:gap-3';
-
-/** Delivery is billed separately from the care package on the receipt. */
-const DISPATCH_FEE = 10;
 
 export default function FinancialsPanel({
   bookings,
@@ -36,7 +35,7 @@ export default function FinancialsPanel({
   outstanding: number;
   receiptFor: Booking | null;
   onOpenReceipt: (booking: Booking | null) => void;
-  onTogglePayment: (bookingId: string) => void;
+  onTogglePayment: (bookingId: string) => Promise<void>;
 }) {
   const ordered = useMemo(() => {
     // Unpaid first, then by amount descending — the biggest debt at the top.
@@ -44,7 +43,7 @@ export default function FinancialsPanel({
       const aPaid = a.paymentStatus === 'Paid' ? 1 : 0;
       const bPaid = b.paymentStatus === 'Paid' ? 1 : 0;
       if (aPaid !== bPaid) return aPaid - bPaid;
-      return (b.amount ?? 50) - (a.amount ?? 50);
+      return displayAmount(b) - displayAmount(a);
     });
   }, [bookings]);
 
@@ -86,6 +85,11 @@ export default function FinancialsPanel({
             <div className="divide-y divide-admin-line">
               {ordered.map((b) => {
                 const paid = b.paymentStatus === 'Paid';
+                // Only a cash collection is the desk's to take back. A wallet
+                // debit or a Paystack charge moved real money and needs a
+                // refund, which the server enforces — so don't offer a button
+                // that can only 409.
+                const reversible = b.paymentMethod === 'Cash';
                 return (
                   <div key={b.id} className={`px-5 py-3 hover:bg-admin-hover ${COLS}`}>
                     <span className="font-mono text-[12px] tabular-nums text-admin-accent">
@@ -108,7 +112,7 @@ export default function FinancialsPanel({
                     </span>
 
                     <span className="mt-1 block font-mono text-[13px] tabular-nums text-admin-fg md:mt-0 md:text-right">
-                      {formatCedis(b.amount ?? 50)}
+                      {formatCedis(displayAmount(b))}
                     </span>
 
                     <div className="mt-1.5 md:mt-0">
@@ -121,8 +125,15 @@ export default function FinancialsPanel({
                       <Button
                         size="sm"
                         variant={paid ? 'ghost' : 'primary'}
-                        onClick={() => onTogglePayment(b.id)}
-                        title={paid ? 'Revert to unpaid / COD' : 'Record payment'}
+                        onClick={() => void onTogglePayment(b.id)}
+                        disabled={paid && !reversible}
+                        title={
+                          paid
+                            ? reversible
+                              ? 'Undo the cash collection recorded on this order'
+                              : `Paid by ${b.paymentMethod ?? 'gateway'} — that needs a refund, not a reversal`
+                            : 'Record that a courier collected this bill in cash'
+                        }
                       >
                         {paid ? 'Revert' : 'Settle'}
                       </Button>
@@ -184,21 +195,61 @@ export default function FinancialsPanel({
                   value={`${receiptFor.address}, ${receiptFor.suburb}`}
                 />
 
-                <div className="space-y-2 border-t border-admin-line pt-3">
-                  <ReceiptRow
-                    label="Care package"
-                    value={formatCedis((receiptFor.amount ?? 50) - DISPATCH_FEE)}
-                    mono
-                  />
-                  <ReceiptRow label="Dispatch fee" value={formatCedis(DISPATCH_FEE)} mono />
-                </div>
+                {/*
+                  Itemised from the booking. This used to print a "Care package"
+                  of the total minus ten and a flat "Dispatch fee" of ₵10.00 on
+                  every order — a split that matched no booking and no fee this
+                  business charges. These are the lines the quote was built from.
+                */}
+                {(() => {
+                  const finish = decodeFinish(receiptFor.specialInstructions);
+                  const lines = priceBreakdown({
+                    serviceType: receiptFor.serviceType,
+                    scent: finish.scent,
+                    starch: finish.starch,
+                    addonIds: receiptFor.specialtyAddons,
+                  });
+                  const total = displayAmount(receiptFor);
+                  // Below list price means an included pickup, the member rate
+                  // or a loyalty tier took its cut. Its own line, not folded in.
+                  const reduction = Math.max(0, lines.gross - total);
 
-                <div className="flex items-baseline justify-between border-t border-admin-line pt-3">
-                  <span className="text-[13px] font-medium text-admin-fg">Total</span>
-                  <span className="font-mono text-[15px] font-semibold tabular-nums text-admin-accent">
-                    {formatCedis(receiptFor.amount ?? 50)}
-                  </span>
-                </div>
+                  return (
+                    <>
+                      <div className="space-y-2 border-t border-admin-line pt-3">
+                        <ReceiptRow label="Care package" value={formatCedis(lines.base)} mono />
+                        {lines.finishes > 0 && (
+                          <ReceiptRow
+                            label="Scent & starch"
+                            value={formatCedis(lines.finishes)}
+                            mono
+                          />
+                        )}
+                        {lines.addons > 0 && (
+                          <ReceiptRow
+                            label="Specialty add-ons"
+                            value={formatCedis(lines.addons)}
+                            mono
+                          />
+                        )}
+                        {reduction > 0 && (
+                          <ReceiptRow
+                            label="Membership & loyalty"
+                            value={`-${formatCedis(reduction)}`}
+                            mono
+                          />
+                        )}
+                      </div>
+
+                      <div className="flex items-baseline justify-between border-t border-admin-line pt-3">
+                        <span className="text-[13px] font-medium text-admin-fg">Total</span>
+                        <span className="font-mono text-[15px] font-semibold tabular-nums text-admin-accent">
+                          {formatCedis(total)}
+                        </span>
+                      </div>
+                    </>
+                  );
+                })()}
 
                 <div className="flex items-center justify-between">
                   <span className="text-admin-fg-2">Status</span>

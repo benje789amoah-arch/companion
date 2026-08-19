@@ -37,7 +37,7 @@ import {
   INITIAL_RIDER,
   LAUNDRY_HUB_COORDS,
 } from '../data/initialState';
-import { api } from '../services/api';
+import { api, patientApi } from '../services/api';
 import { canAcceptMore, goingSpare, heldBy, ridingLeg } from './workload';
 import { useSession } from './SessionStore';
 import { nowLabel } from '../theme';
@@ -90,13 +90,6 @@ export interface NavigationTarget {
   /** Status the order moves to once the rider reaches this point. */
   arrivalStatus: OrderStatus;
 }
-
-/**
- * Who the courier meant a message for. The thread itself is shared — customer,
- * dispatch and the hub all read one conversation per job — but the simulated
- * dispatch desk only answers what was actually addressed to it.
- */
-export type ChatTarget = 'dispatcher' | 'customer';
 
 interface AppState {
   hydrated: boolean;
@@ -171,10 +164,11 @@ interface AppState {
     signature?: string
   ) => void;
   /**
-   * Posts a message from the courier. `to` says who they were addressing;
-   * only dispatch answers back.
+   * Posts a message from the courier into the active job's thread. The customer,
+   * the desk and the hub all read that one thread, so there is nobody to address
+   * it to.
    */
-  sendRiderMessage: (text: string, to?: ChatTarget) => void;
+  sendRiderMessage: (text: string) => void;
   markNotificationRead: (notifId: string) => void;
   /**
    * Fetches one job's proof-of-service photographs into the board.
@@ -276,7 +270,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     ...INITIAL_NOTIFICATIONS,
   ]);
 
-  const replyTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   /**
    * Non-zero while a write is on the wire. A poll that lands mid-write carries
    * a snapshot from before the change, and applying it would visibly rewind
@@ -308,14 +301,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const myOrdersRef = useRef<Order[]>([]);
   const pushNotificationRef = useRef<(notif: Omit<Notification, 'timestamp'>) => void>(
     () => {}
-  );
-
-  useEffect(
-    () => () => {
-      replyTimers.current.forEach(clearTimeout);
-      replyTimers.current = [];
-    },
-    []
   );
 
   /**
@@ -454,13 +439,33 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const writesAtStart = boardWrites.current;
 
     try {
-      const [serverOrders, serverMessages, serverNotifications, serverRider] =
-        await Promise.all([
-          api.listOrders({ riderId: riderIdRef.current }),
-          api.listMessages(),
-          api.listNotifications(),
-          api.riderMe(tokenRef.current!),
-        ]);
+      /**
+       * The board, the conversations on it, the feed and this courier's own record.
+       *
+       * `listOrders` no longer names a courier: the server reads it off the token,
+       * so a device cannot ask for somebody else's assignments. The notification
+       * feed is scoped the same way — this courier's board plus the desk-wide
+       * alerts, rather than every notification in the system.
+       *
+       * Messages are fetched per order rather than in one unscoped call. That call
+       * used to return every conversation FreshFold has, including customers
+       * talking to other couriers, on a four-second timer.
+       */
+      const token = tokenRef.current!;
+
+      const [serverOrders, serverNotifications, serverRider] = await Promise.all([
+        api.listOrders(token),
+        api.listNotifications(token),
+        api.riderMe(token),
+      ]);
+
+      const serverMessages = (
+        await Promise.all(
+          serverOrders.map((order) =>
+            api.listMessages(order.id, { token }).catch(() => [] as Message[])
+          )
+        )
+      ).flat();
 
       // Anything that moved a job while these requests were out makes them
       // stale, whether it is still on the wire or has already landed. Applying
@@ -694,7 +699,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const pushNotification = useCallback(
     (notif: Omit<Notification, 'timestamp'>) => {
       setNotifications((prev) => [{ ...notif, timestamp: nowLabel() }, ...prev]);
-      void push(() => api.postNotification({ ...notif, timestamp: nowLabel() }));
+      void push(() =>
+        api.postNotification({ ...notif, timestamp: nowLabel() }, tokenRef.current!)
+      );
     },
     [push]
   );
@@ -781,7 +788,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       void (async () => {
         try {
-          await trackBoard(() => api.acceptOrder(orderId, riderIdRef.current));
+          // The token, not the rider id — the server reads who is accepting off
+          // the session now, and both happen to be strings, so nothing but this
+          // comment stands between the two.
+          await trackBoard(() => patientApi.acceptOrder(orderId, tokenRef.current!));
         } catch (error) {
           // Two very different failures land here and they need opposite
           // handling: a 409 means another rider has the job and this phone must
@@ -810,7 +820,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const declineOrder = useCallback(
     (orderId: string) => {
       patchOrder(orderId, { status: 'unassigned', riderId: undefined });
-      void pushBoard(() => api.declineOrder(orderId, riderIdRef.current));
+      // The token, not the rider id — see `acceptOrder`.
+      void pushBoard(() => patientApi.declineOrder(orderId, tokenRef.current!));
 
       pushNotification({
         id: `notif-${Date.now()}`,
@@ -864,8 +875,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       // The customer-facing narration for each step is written by the server,
       // so both the rider's chat and the client portal show the same thread.
+      //
+      // On the patient connection: this may be the only copy of a photograph
+      // that will ever leave the phone, and even a bare status write against a
+      // job that already holds one can outrun the poll's six seconds. A write
+      // cut off there leaves the console a step ahead of the board, and the
+      // next poll rewinds the leg the courier just finished.
+      // `riderId` is gone from the patch: the server takes it off the token now,
+      // so the courier a transition is stamped for is the one who sent it.
       void pushBoard(() =>
-        api.updateOrderStatus(orderId, { status, riderId: riderIdRef.current, photo, signature })
+        patientApi.updateOrderStatus(
+          orderId,
+          { status, photo, signature },
+          { token: tokenRef.current }
+        )
       );
     },
     [connected, orders, pushBoard]
@@ -886,7 +909,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     proofRequested.current.add(orderId);
 
     try {
-      const full = await api.getOrder(orderId);
+      const full = await patientApi.getOrder(orderId, tokenRef.current!);
       setOrders((prev) =>
         prev.map((order) => (order.id === orderId ? orderWithKnownProof(order, full) : order))
       );
@@ -968,14 +991,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // the doorstep looks like the app losing the delivery.
       const sent = await sendHandoff(
         () =>
-          api.updateOrderStatus(orderId, {
-            status: 'delivered',
-            riderId: riderIdRef.current,
-            photo: handover.photo,
-            signature: handover.signature,
-            deliveryCode: handover.code,
-            overrideReason: handover.overrideReason,
-          }),
+          patientApi.updateOrderStatus(
+            orderId,
+            {
+              status: 'delivered',
+              photo: handover.photo,
+              signature: handover.signature,
+              deliveryCode: handover.code,
+              overrideReason: handover.overrideReason,
+            },
+            { token: tokenRef.current }
+          ),
         'Could not reach dispatch to confirm the handover. Check your signal.'
       );
 
@@ -1023,12 +1049,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // does above and for the same reason.
       const sent = await sendHandoff(
         () =>
-          api.updateOrderStatus(orderId, {
-            status: 'dropped_off',
-            riderId: riderIdRef.current,
-            dropoffCode: handover.code,
-            overrideReason: handover.overrideReason,
-          }),
+          patientApi.updateOrderStatus(
+            orderId,
+            {
+              status: 'dropped_off',
+              dropoffCode: handover.code,
+              overrideReason: handover.overrideReason,
+            },
+            { token: tokenRef.current }
+          ),
         'Could not reach dispatch to check the bags in. Check your signal.'
       );
 
@@ -1255,69 +1284,45 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const postMessage = useCallback(
     (message: Message) => {
       setMessages((prev) => [...prev, message]);
-      void push(() => api.postMessage(message));
+      void push(() =>
+        api.postMessage(
+          { text: message.text, orderId: message.orderId!, id: message.id },
+          { token: tokenRef.current }
+        )
+      );
     },
     [push]
   );
 
+  /**
+   * Sends a message into the active job's thread.
+   *
+   * There used to be a second half to this. Three seconds after the courier
+   * wrote to `dispatcher`, a `setTimeout` picked one of four canned sentences —
+   * "Copy that. Operational details synchronized with the Admin Dashboard." —
+   * and posted it, so the console would feel staffed. Two things made that worse
+   * than a placeholder. `api.postMessage` sends no `sender`; the server derives
+   * it from the token, so the reply was filed as the *courier's* own words, and
+   * the next poll replaced the local `dispatcher` bubble with a `rider` one that
+   * the customer could read in their portal. And one of the four sentences —
+   * "ETA updated in customer client portal" — described work no desk had done.
+   *
+   * The desk now has an inbox (`MessagesPanel` on the supervisor dashboard), so
+   * a message sent here waits for a person, and the thread is empty until one
+   * answers. The `to` argument is gone with the canned reply: the server routes
+   * by job, and every party to a job reads the same thread.
+   */
   const sendRiderMessage = useCallback(
-    (text: string, to: ChatTarget = 'dispatcher') => {
-      const orderId = activeOrder?.id;
-
+    (text: string) => {
       postMessage({
         id: `msg-rider-${Date.now()}`,
         sender: 'rider',
         text,
         timestamp: nowLabel(),
-        orderId,
+        orderId: activeOrder?.id,
       });
-
-      // Only dispatch answers. A message to the customer used to draw the same
-      // canned dispatcher reply, so asking someone for their delivery code got
-      // "Digital receipt ledger is open. Signature received successfully." back
-      // from a desk nobody had written to — and the courier at the door was
-      // told the handover had gone through before it had.
-      if (to !== 'dispatcher') return;
-
-      // Dispatch "replies" a few seconds later so the console feels staffed.
-      // The reply is posted to the server too, so the customer sees the same
-      // exchange in their portal.
-      const timer = setTimeout(() => {
-        const lowered = text.toLowerCase();
-        let replyText = 'Copy that. Operational details synchronized with the Admin Dashboard.';
-
-        if (lowered.includes('arrived') || lowered.includes('lobby')) {
-          replyText =
-            'Understood. The customer has been alerted and will receive you in the lounge. Safe handling requested.';
-        } else if (lowered.includes('delay') || lowered.includes('traffic')) {
-          replyText =
-            'Coordinates received. ETA updated in customer client portal. Continue with caution.';
-        } else if (lowered.includes('sig') || lowered.includes('otp')) {
-          replyText = 'Digital receipt ledger is open. Signature received successfully.';
-        }
-
-        postMessage({
-          id: `msg-dispatcher-${Date.now()}`,
-          sender: 'dispatcher',
-          text: replyText,
-          timestamp: nowLabel(),
-          orderId,
-        });
-
-        pushNotification({
-          id: `notif-chat-${Date.now()}`,
-          title: 'New Dispatch Message',
-          body: replyText,
-          type: 'message',
-          read: false,
-        });
-
-        replyTimers.current = replyTimers.current.filter((t) => t !== timer);
-      }, 3000);
-
-      replyTimers.current.push(timer);
     },
-    [activeOrder?.id, postMessage, pushNotification]
+    [activeOrder?.id, postMessage]
   );
 
   /**
@@ -1333,7 +1338,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setNotifications((prev) =>
         prev.map((n) => (n.id === notifId ? { ...n, read: true } : n))
       );
-      void push(() => api.markNotificationRead(notifId));
+      void push(() => api.markNotificationRead(notifId, tokenRef.current!));
     },
     [push]
   );

@@ -11,9 +11,10 @@ import express from 'express';
 import { closeDatabase, ping } from './db';
 import { emailProvider } from './email';
 import { store } from './store';
-import { ensureSeeded } from './seed';
+import { developmentCredentials, ensureSeeded, SeedError } from './seed';
 import { startHubCycle } from './hub';
 import { guard } from './helpers';
+import { requireSupervisor } from './auth';
 import { adminRouter } from './routes/admin';
 import { authRouter } from './routes/auth';
 import { bookingsRouter } from './routes/bookings';
@@ -141,17 +142,49 @@ app.use('/api/transactions', transactionsRouter);
 app.use('/api/chat', chatRouter);
 app.use('/api/paystack', paystackRouter);
 
-/** The canonical records, for debugging and for the admin dashboard. */
+/**
+ * The canonical records, for debugging and for the admin dashboard.
+ *
+ * Behind the desk's session. A `Job` is the unprojected record — every
+ * customer's name, address and phone number, all three hand-off codes, and the
+ * base64 proof-of-service photographs — and this handed the lot to anybody who
+ * asked for it.
+ */
 app.get(
   '/api/jobs',
+  requireSupervisor,
   guard(async (_req, res) => {
     res.json(await store.jobs.list());
   })
 );
 
+/**
+ * Wipes every table and re-seeds the bootstrap identities.
+ *
+ * Two locks, because one is not enough for a route whose entire job is
+ * destroying the database. It was open: a single unauthenticated POST from
+ * anywhere on the internet took out every booking, courier, account and payment
+ * record, and the root `package.json` ships an `npm run reset` that curls it.
+ *
+ * The session is the first lock. Refusing outright in production is the second —
+ * there is no circumstance in which the live laundry's records should be
+ * truncated over HTTP, and a supervisor's token is a week-long bearer credential
+ * on a phone, not something to stand between a real ledger and `truncate`.
+ */
 app.post(
   '/api/reset',
+  requireSupervisor,
   guard(async (_req, res) => {
+    if (process.env.NODE_ENV === 'production') {
+      res.status(403).json({
+        error:
+          'Resetting the database is disabled in production. Run it against a development ' +
+          'instance, or truncate deliberately from the Supabase SQL editor.',
+        code: 'RESET_DISABLED',
+      });
+      return;
+    }
+
     await store.reset();
     await ensureSeeded();
     res.json({ ok: true });
@@ -230,13 +263,36 @@ async function start(): Promise<void> {
     process.exit(1);
   }
 
-  const seeded = await ensureSeeded();
+  let seeded: { riders: number; supervisors: number; accounts: number };
+  try {
+    seeded = await ensureSeeded();
+  } catch (error) {
+    // A seed that cannot be performed safely. The only case is a fresh
+    // production database with no SEED_SUPERVISOR_PASSWORD, and the alternative
+    // to stopping here is a live desk account whose password is in a public
+    // repository — so this is fatal, like an unreachable database above.
+    if (error instanceof SeedError) {
+      console.error(`[seed] ${error.message}`);
+      process.exit(1);
+    }
+    throw error;
+  }
+
   const total = seeded.riders + seeded.supervisors + seeded.accounts;
   if (total > 0) {
     console.log(
       `[seed] bootstrapped ${seeded.riders} riders, ${seeded.supervisors} supervisors, ` +
         `${seeded.accounts} accounts`
     );
+
+    // Outside production the desk was created with a known password, so say what
+    // it is rather than making somebody read it out of seed.ts. In production
+    // this is null: the operator supplied it, and a log aggregator should not
+    // have a copy.
+    const credentials = seeded.supervisors > 0 ? developmentCredentials() : null;
+    if (credentials) {
+      console.log(`[seed] desk: ${credentials.email} / ${credentials.password}`);
+    }
   }
 
   const server = app.listen(PORT, '0.0.0.0', () => {

@@ -8,6 +8,7 @@ import type { PlaceDetail, PlaceSuggestion } from './places';
 import type { RouteLeg } from './route';
 import type {
   AdminSession,
+  AuditEvent,
   AuthSession,
   Booking,
   Coords,
@@ -20,6 +21,7 @@ import type {
   RiderSession,
   RiderState,
   RiderTelemetry,
+  SavedAddress,
   SupervisorProfile,
   UserAccount,
 } from './types';
@@ -66,6 +68,43 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
 }
+
+/**
+ * The header a per-booking tracking grant travels in.
+ *
+ * Must match `TRACKING_HEADER` on the server. A header rather than a query
+ * parameter: this is only ever sent by application code, and a token in a URL is
+ * a token in browser history, in the referrer of anything the page loads, and in
+ * every access log between here and Supabase.
+ */
+export const TRACKING_HEADER = 'X-FreshFold-Tracking';
+
+/**
+ * How a caller proves it may see a booking.
+ *
+ * Either a session — customer, courier or supervisor, the server works out which
+ * — or the tracking token handed back when the booking was created. A guest who
+ * booked without an account has only the second; a signed-in customer has the
+ * first; the desk has the first and sees everything.
+ *
+ * Both optional so a caller can pass whichever it holds, and both sent when it
+ * holds both: the server takes the first one that grants access, so a customer
+ * who also has a stale tracking token for the same order is not penalised for it.
+ */
+export interface BookingAuth {
+  token?: string | null;
+  trackingToken?: string | null;
+}
+
+/** What `POST /bookings` answers with: the booking, plus the guest's grant. */
+export type BookingCreated = Booking & {
+  /**
+   * The right to read this booking back without an account. Absent when the
+   * server could not mint one, which is not fatal — a signed-in customer never
+   * needed it, and a guest can ask for the setup link instead.
+   */
+  trackingToken?: string;
+};
 
 /**
  * What a wallet movement produced: the account as the server now has it, and
@@ -135,6 +174,14 @@ export function createClient(options: ClientOptions) {
 
   const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
 
+  /** Whichever of the two grants the caller is holding, as headers. */
+  const authHeaders = (auth: BookingAuth): Record<string, string> => {
+    const headers: Record<string, string> = {};
+    if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
+    if (auth.trackingToken) headers[TRACKING_HEADER] = auth.trackingToken;
+    return headers;
+  };
+
   return {
     baseUrl: root,
 
@@ -147,10 +194,20 @@ export function createClient(options: ClientOptions) {
     // draws, but not the proof-of-service photographs, which are megabytes that
     // no list renders. `getBooking` is the full record, and is what a surface
     // calls when it is about to show the proof for one order.
-    listBookings: (params?: { email?: string }) =>
-      request<Booking[]>('/bookings', { query: { email: params?.email } }),
 
-    getBooking: (id: string) => request<Booking>(`/bookings/${encodeURIComponent(id)}`),
+    /**
+     * The caller's own orders, or the whole board for a supervisor's token.
+     *
+     * There is no `email` parameter any more. It used to scope this, which meant
+     * the scope was whatever the caller typed — so the route answered anybody's
+     * history to anybody, and the whole ledger to a caller who passed nothing.
+     * The server reads the address off the token instead.
+     */
+    listBookings: (token: string) =>
+      request<Booking[]>('/bookings', { headers: bearer(token) }),
+
+    getBooking: (id: string, auth: BookingAuth) =>
+      request<Booking>(`/bookings/${encodeURIComponent(id)}`, { headers: authHeaders(auth) }),
 
     /**
      * Books a job.
@@ -159,39 +216,109 @@ export function createClient(options: ClientOptions) {
      * customer should send it, because that is how the server knows whether
      * this booking is under a membership. `planId` in the body is ignored:
      * dispatch priority is decided from the account, not from the request.
+     *
+     * The response carries a `trackingToken`: the right to read this one booking
+     * back without an account. Store it — for a guest it is the only claim they
+     * have on the order until they set a password from the emailed link.
      */
     createBooking: (booking: Booking, token?: string | null) =>
-      request<Booking>('/bookings', {
+      request<BookingCreated>('/bookings', {
         ...json('POST', booking),
         headers: token ? bearer(token) : undefined,
       }),
 
-    updateBooking: (id: string, patch: Partial<Booking>) =>
-      request<Booking>(`/bookings/${encodeURIComponent(id)}`, json('PATCH', patch)),
+    /**
+     * Settles a booking's bill. The only way it becomes `Paid`.
+     *
+     * The amount is not a parameter: the server reads what is owed off the job,
+     * where its own quote put it. `Wallet` needs a customer session and debits the
+     * balance server-side; `Paystack` needs the reference, which the server
+     * re-verifies and checks was made for this booking; `Cash` needs a supervisor
+     * token, and records that the desk says the money was handed over — there is
+     * nothing external to verify, so the ledger notes who recorded it.
+     *
+     * Throws `ApiError` 409 with `{ reason: 'insufficient-funds', shortfall }` when
+     * the wallet cannot cover it, 402 when Paystack says the payment has not
+     * settled, and 403 `{ reason: 'cash-needs-supervisor' }` for a cash settlement
+     * from anyone but the desk.
+     */
+    payForBooking: (
+      id: string,
+      payload: { method: 'Wallet' | 'Paystack' | 'Cash'; reference?: string },
+      auth: BookingAuth
+    ) =>
+      request<Booking>(`/bookings/${encodeURIComponent(id)}/payment`, {
+        ...json('POST', payload),
+        headers: authHeaders(auth),
+      }),
 
-    deleteBooking: (id: string) =>
-      request<{ ok: true }>(`/bookings/${encodeURIComponent(id)}`, json('DELETE')),
+    /**
+     * Takes back a cash settlement, returning the booking to `Pay on Pickup`.
+     *
+     * Supervisor only, and cash only. A wallet or Paystack payment moved real
+     * money and cannot be undone by changing a status — that needs a refund — so
+     * this throws `ApiError` 409 `{ reason: 'not-a-cash-settlement' }` on one.
+     */
+    reverseCashPayment: (id: string, auth: BookingAuth) =>
+      request<Booking>(`/bookings/${encodeURIComponent(id)}/payment`, {
+        ...json('DELETE'),
+        headers: authHeaders(auth),
+      }),
+
+    updateBooking: (id: string, patch: Partial<Booking>, auth: BookingAuth) =>
+      request<Booking>(`/bookings/${encodeURIComponent(id)}`, {
+        ...json('PATCH', patch),
+        headers: authHeaders(auth),
+      }),
+
+    deleteBooking: (id: string, auth: BookingAuth) =>
+      request<{ ok: true }>(`/bookings/${encodeURIComponent(id)}`, {
+        ...json('DELETE'),
+        headers: authHeaders(auth),
+      }),
 
     // -- Orders: the rider's view -----------------------------------------
-    listOrders: (params?: { riderId?: string }) =>
-      request<Order[]>('/orders', { query: { riderId: params?.riderId } }),
+    //
+    // Staff only, and every courier id is taken from the token rather than sent.
+    // `riderId` used to be a query parameter and a body field, which is to say
+    // the caller chose whose board they saw and who a job was assigned to.
+
+    /** The courier's own board plus the open pool, or everything for the desk. */
+    listOrders: (token: string) => request<Order[]>('/orders', { headers: bearer(token) }),
 
     /** One order with its proof photographs, which the list leaves behind. */
-    getOrder: (id: string) => request<Order>(`/orders/${encodeURIComponent(id)}`),
+    getOrder: (id: string, token: string) =>
+      request<Order>(`/orders/${encodeURIComponent(id)}`, { headers: bearer(token) }),
 
-    createOrder: (order: Order) => request<Order>('/orders', json('POST', order)),
+    /** Injects a job with no booking behind it. Supervisor only. */
+    createOrder: (order: Order, token: string) =>
+      request<Order>('/orders', { ...json('POST', order), headers: bearer(token) }),
 
-    acceptOrder: (id: string, riderId: string) =>
-      request<Order>(`/orders/${encodeURIComponent(id)}/accept`, json('POST', { riderId })),
+    acceptOrder: (id: string, token: string) =>
+      request<Order>(`/orders/${encodeURIComponent(id)}/accept`, {
+        ...json('POST'),
+        headers: bearer(token),
+      }),
 
-    declineOrder: (id: string, riderId: string) =>
-      request<Order>(`/orders/${encodeURIComponent(id)}/decline`, json('POST', { riderId })),
+    declineOrder: (id: string, token: string) =>
+      request<Order>(`/orders/${encodeURIComponent(id)}/decline`, {
+        ...json('POST'),
+        headers: bearer(token),
+      }),
 
+    /**
+     * Advances a job.
+     *
+     * Takes a {@link BookingAuth} rather than a bare rider token because the
+     * customer's own app uses this too — it completes the delivery leg with their
+     * signature and code, and attaches a photo when reporting a problem. The
+     * server applies a tighter rule set to a customer than to the courier holding
+     * the job: no override, no bag manifest, and no stage but those two.
+     */
     updateOrderStatus: (
       id: string,
       patch: {
         status: JobStatus;
-        riderId?: string;
         photo?: string;
         signature?: string;
         bags?: LaundryBag[];
@@ -212,8 +339,13 @@ export function createClient(options: ClientOptions) {
          * whichever leg the `status` names.
          */
         overrideReason?: string;
-      }
-    ) => request<Order>(`/orders/${encodeURIComponent(id)}/status`, json('PATCH', patch)),
+      },
+      auth: BookingAuth
+    ) =>
+      request<Order>(`/orders/${encodeURIComponent(id)}/status`, {
+        ...json('PATCH', patch),
+        headers: authHeaders(auth),
+      }),
 
     // -- Auth --------------------------------------------------------------
     //
@@ -333,6 +465,20 @@ export function createClient(options: ClientOptions) {
     adminLogout: (token: string) =>
       request<{ ok: true }>('/admin/logout', { method: 'POST', headers: bearer(token) }),
 
+    /**
+     * The desk's audit trail, newest first.
+     *
+     * Server-owned and shared: there is no write counterpart here, because an
+     * entry is filed by the route that performs the action rather than claimed
+     * by the browser that asked for it. Nothing is pruned server-side, so
+     * `limit` is a page size — 200 by default, 500 at most.
+     */
+    listAuditEvents: (token: string, limit?: number) =>
+      request<AuditEvent[]>(
+        limit ? `/admin/audit?limit=${limit}` : '/admin/audit',
+        { headers: bearer(token) }
+      ),
+
     // -- Riders ------------------------------------------------------------
     //
     // Couriers are provisioned, never self-registered, so there is no register
@@ -443,30 +589,113 @@ export function createClient(options: ClientOptions) {
       }),
 
     // -- Messaging ---------------------------------------------------------
-    listMessages: (params?: { orderId?: string }) =>
-      request<Message[]>('/messages', { query: { orderId: params?.orderId } }),
+    //
+    // A thread belongs to a job, and reading or writing one means being a party
+    // to that job. `orderId` is required for everything but a supervisor's
+    // whole-ledger read: an unscoped list used to answer anybody with every
+    // conversation in the system.
 
-    postMessage: (message: Omit<Message, 'id' | 'timestamp'> & Partial<Message>) =>
-      request<Message>('/messages', json('POST', message)),
+    /** One job's thread. Any party to the job may read it. */
+    listMessages: (orderId: string, auth: BookingAuth) =>
+      request<Message[]>('/messages', {
+        query: { orderId },
+        headers: authHeaders(auth),
+      }),
 
-    listNotifications: (params?: { riderId?: string }) =>
-      request<Notification[]>('/notifications', { query: { riderId: params?.riderId } }),
+    /**
+     * Every thread, newest traffic first. Supervisor only.
+     *
+     * Paged rather than capped: the server answers the most recent `limit`
+     * messages across the whole ledger, oldest-first within that page. This
+     * table gets a line for every status change on every job, so the desk's
+     * inbox asks for a page of it rather than all of history.
+     */
+    listAllMessages: (token: string, limit?: number) =>
+      request<Message[]>('/messages', {
+        query: { limit: limit === undefined ? undefined : String(limit) },
+        headers: bearer(token),
+      }),
 
-    postNotification: (notification: Omit<Notification, 'id' | 'timestamp'> & Partial<Notification>) =>
-      request<Notification>('/notifications', json('POST', notification)),
+    /**
+     * Writes into a job's thread.
+     *
+     * `sender` is no longer part of this: the server derives it from the token,
+     * because a client that declares its own could write to a customer as
+     * `dispatcher` — which is the voice they read as FreshFold's.
+     */
+    postMessage: (
+      message: Omit<Message, 'id' | 'timestamp' | 'sender'> & { orderId: string } & Partial<Message>,
+      auth: BookingAuth
+    ) => request<Message>('/messages', { ...json('POST', message), headers: authHeaders(auth) }),
 
-    markNotificationRead: (id: string) =>
-      request<Notification>(`/notifications/${encodeURIComponent(id)}/read`, json('POST')),
+    /**
+     * The caller's notifications: the desk's whole feed, a courier's board, or a
+     * customer's own orders. Scoped server-side per audience.
+     */
+    listNotifications: (token: string) =>
+      request<Notification[]>('/notifications', { headers: bearer(token) }),
+
+    postNotification: (
+      notification: Omit<Notification, 'id' | 'timestamp'> & Partial<Notification>,
+      token: string
+    ) =>
+      request<Notification>('/notifications', {
+        ...json('POST', notification),
+        headers: bearer(token),
+      }),
+
+    markNotificationRead: (id: string, token: string) =>
+      request<Notification>(`/notifications/${encodeURIComponent(id)}/read`, {
+        ...json('POST'),
+        headers: bearer(token),
+      }),
 
     // -- Accounts ----------------------------------------------------------
     //
     // Profile data only. Credentials are not readable or writable here; see
     // the auth routes above.
 
-    listAccounts: () => request<UserAccount[]>('/accounts'),
+    /** The patron table. Supervisor only. */
+    listAccounts: (token: string) =>
+      request<UserAccount[]>('/accounts', { headers: bearer(token) }),
 
-    upsertAccount: (account: UserAccount) =>
-      request<UserAccount>('/accounts', json('PUT', account)),
+    /**
+     * Saves the signed-in customer's own profile.
+     *
+     * The address comes off the token server-side, so this cannot be pointed at
+     * somebody else's account — which is what it was for, before there was a
+     * token to read.
+     */
+    upsertAccount: (account: UserAccount, token: string) =>
+      request<UserAccount>('/accounts', { ...json('PUT', account), headers: bearer(token) }),
+
+    /**
+     * Replaces the signed-in customer's saved address book.
+     *
+     * Its own call rather than a field on `upsertAccount`, and for the reason
+     * the wallet has its own: that route takes a whole account object, so both
+     * apps send every field they are holding whenever a name or a number
+     * changes. A book carried along on those writes would be the book as that
+     * device last saw it — which is how saving a name on a phone that had not
+     * polled in the last few seconds would delete an address added on the
+     * website. Nothing but this call moves the book, so nothing else can lose
+     * it.
+     *
+     * The whole array, not a delta. One entry is the default and the server
+     * decides which, so a change to any entry is a statement about all of them;
+     * sending the book is what lets that be settled in one round trip. Build the
+     * array with `withAddress` / `withoutAddress` so the client's copy and the
+     * server's agree on the outcome.
+     *
+     * Returns the saved account, with the book the server actually stored —
+     * capped at `MAX_SAVED_ADDRESSES` and normalised. Apply the response rather
+     * than the array that was sent.
+     */
+    saveAddresses: (addresses: SavedAddress[], token: string) =>
+      request<UserAccount>('/accounts/addresses', {
+        ...json('PUT', { addresses }),
+        headers: bearer(token),
+      }),
 
     /**
      * Awards or deducts care points. Supervisor only.
@@ -513,6 +742,24 @@ export function createClient(options: ClientOptions) {
         method: 'DELETE',
         headers: bearer(token),
       }),
+
+    /**
+     * Closes the signed-in customer's own account.
+     *
+     * The address comes off the token, like `upsertAccount` above, so there is
+     * no email to pass and no way to point this at anybody else. Refused with
+     * 409 `{ code: 'ACCOUNT_HAS_LIVE_ORDERS', orders }` while a pickup is still
+     * out — deleting the account would not call it back, it would only remove
+     * the person the courier rings from the gate.
+     *
+     * On success every session for the account is revoked, this one included, so
+     * the token in hand is dead the moment it resolves. Their past orders stay
+     * in the ledger, for the reason `deleteAccount` gives. A wallet balance or a
+     * running plan is forfeited — there is no refund path — so ask before
+     * calling this, and say so in the asking.
+     */
+    deleteOwnAccount: (token: string) =>
+      request<{ ok: true }>('/accounts/me', { method: 'DELETE', headers: bearer(token) }),
 
     // -- Membership --------------------------------------------------------
     //
@@ -610,15 +857,24 @@ export function createClient(options: ClientOptions) {
 
     // -- Payment ledger ----------------------------------------------------
     //
-    // Scoped by email so a customer app can ask for one person's statement
-    // rather than pulling the whole ledger down to filter it on the device.
+    // Scoped by the token: a customer's own statement, or the whole ledger for a
+    // supervisor. It used to be scoped by `?email=`, so it answered any
+    // customer's payments to anyone who knew their address.
 
-    listTransactions: (params?: { email?: string }) =>
-      request<PaymentTransaction[]>('/transactions', { query: { email: params?.email } }),
+    listTransactions: (token: string) =>
+      request<PaymentTransaction[]>('/transactions', { headers: bearer(token) }),
 
-    /** Upserts by `reference`, so replaying a queued write is safe. */
-    recordTransaction: (transaction: PaymentTransaction) =>
-      request<PaymentTransaction>('/transactions', json('POST', transaction)),
+    /**
+     * Upserts by `reference`, so replaying a queued write is safe.
+     *
+     * `userEmail` is overwritten server-side with the session's address — a row
+     * filed against somebody else is a line on their statement.
+     */
+    recordTransaction: (transaction: PaymentTransaction, token: string) =>
+      request<PaymentTransaction>('/transactions', {
+        ...json('POST', transaction),
+        headers: bearer(token),
+      }),
 
     // -- Integrations ------------------------------------------------------
     chat: (history: ChatMessage[]) =>

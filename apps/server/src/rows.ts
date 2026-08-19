@@ -3,9 +3,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { isMembershipPlanId, membershipPlan } from '@freshfold/core';
+import { isMembershipPlanId, membershipPlan, normaliseAddresses } from '@freshfold/core';
 import type {
   ActivePlan,
+  AuditEvent,
+  AuditEventType,
   Coords,
   Job,
   JobCustomer,
@@ -20,6 +22,7 @@ import type {
   Notification,
   PaymentTransaction,
   RiderState,
+  SavedAddress,
   UserAccount,
 } from '@freshfold/core';
 
@@ -152,6 +155,20 @@ export interface StoredSetupToken {
   expiresAt: string;
 }
 
+/**
+ * An outstanding tracking token — a guest's right to read one booking.
+ *
+ * No email, unlike {@link StoredSetupToken}: this grant is about a booking, not
+ * about a mailbox, and it never turns into an account. Held as a digest for the
+ * same reason.
+ */
+export interface StoredTrackingToken {
+  tokenHash: string;
+  bookingId: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
 // ---------------------------------------------------------------------------
 // Row shapes
 // ---------------------------------------------------------------------------
@@ -205,6 +222,13 @@ export interface AccountRow {
   created_at: string;
   points: number | null;
   wallet_balance: number | null;
+  /**
+   * The saved address book, as jsonb. Never null — the column defaults to `[]`
+   * — but read defensively in `toAccount` all the same, because a row inserted
+   * before the migration ran and read by a server that has it would arrive
+   * without the key.
+   */
+  addresses: SavedAddress[] | null;
   password_salt: string | null;
   password_hash: string | null;
   email_verified: boolean;
@@ -265,6 +289,19 @@ export interface TransactionRow {
   description: string;
 }
 
+export interface AuditEventRow {
+  id: string;
+  /** `timestamptz`, which `./db` parses to an ISO string on the way out. */
+  created_at: string;
+  actor: string;
+  actor_name: string;
+  action: string;
+  details: string;
+  type: AuditEventType;
+  order_id: string | null;
+  subject: string | null;
+}
+
 export interface SessionRow {
   token: string;
   kind: SessionKind;
@@ -277,6 +314,13 @@ export interface SetupTokenRow {
   token_hash: string;
   booking_id: string;
   email: string;
+  created_at: string;
+  expires_at: string;
+}
+
+export interface TrackingTokenRow {
+  token_hash: string;
+  booking_id: string;
   created_at: string;
   expires_at: string;
 }
@@ -344,6 +388,11 @@ export function toAccount(row: AccountRow): StoredAccount {
     createdAt: row.created_at,
     points: opt(row.points),
     walletBalance: opt(row.wallet_balance),
+    // Normalised on the way out as well as on the way in. The column is a jsonb
+    // blob, so what is in it is whatever the last writer put there — including a
+    // row repaired by hand, or one written by a build whose rules differed — and
+    // a client should not be the first thing to discover that.
+    addresses: normaliseAddresses(row.addresses),
     passwordSalt: opt(row.password_salt),
     passwordHash: opt(row.password_hash),
     emailVerified: row.email_verified,
@@ -432,6 +481,20 @@ export function toTransaction(row: TransactionRow): PaymentTransaction {
   };
 }
 
+export function toAuditEvent(row: AuditEventRow): AuditEvent {
+  return {
+    id: row.id,
+    at: row.created_at,
+    actor: row.actor,
+    actorName: row.actor_name,
+    action: row.action,
+    details: row.details,
+    type: row.type,
+    orderId: opt(row.order_id),
+    subject: opt(row.subject),
+  };
+}
+
 export function toSession(row: SessionRow): StoredSession {
   return {
     token: row.token,
@@ -447,6 +510,15 @@ export function toSetupToken(row: SetupTokenRow): StoredSetupToken {
     tokenHash: row.token_hash,
     bookingId: row.booking_id,
     email: row.email,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+  };
+}
+
+export function toTrackingToken(row: TrackingTokenRow): StoredTrackingToken {
+  return {
+    tokenHash: row.token_hash,
+    bookingId: row.booking_id,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
   };

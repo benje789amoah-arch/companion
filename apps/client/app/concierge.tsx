@@ -89,7 +89,7 @@ export default function ConciergeScreen() {
             id: `a-${Date.now()}`,
             role: 'assistant',
             content:
-              'I cannot reach the concierge service right now. The desk is on +233 55 000 1234, or leave a message on your order and someone will pick it up.',
+              'I cannot reach the concierge service right now. The desk is on +233 200957165, or leave a message on your order and someone will pick it up.',
             failed: true,
           },
         ]);

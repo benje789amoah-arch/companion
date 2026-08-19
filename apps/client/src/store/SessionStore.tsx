@@ -31,11 +31,14 @@ interface SessionState {
   token: string | null;
   isAuthenticated: boolean;
 
-  /** Whether the device can do Face ID / fingerprint at all. */
+  /**
+   * Whether the device can do Face ID / fingerprint at all.
+   *
+   * Whether the customer has *opted into* it is a preference, and lives in
+   * `PreferencesStore` — this store only owns the `expo-local-authentication`
+   * calls.
+   */
   biometricAvailable: boolean;
-  /** Whether the customer has opted into it. */
-  biometricEnabled: boolean;
-  setBiometricEnabled: (enabled: boolean) => void;
   /** Prompts for the device biometric. Resolves false if it fails or is off. */
   promptBiometric: () => Promise<boolean>;
 
@@ -65,14 +68,25 @@ interface SessionState {
    */
   resendVerification: () => Promise<void>;
   signOut: () => Promise<void>;
+  /**
+   * Closes the account on the server, then signs this device out of it.
+   *
+   * Rejects with the server's own `ApiError`: a 409 while a pickup is still out
+   * carries the sentence worth showing, so a caller should surface
+   * `error.message` rather than flatten it. Nothing local is touched unless the
+   * server agreed — a refusal leaves the customer signed into an account that
+   * still exists.
+   *
+   * Clears this store's two keys only. The orders, messages, addresses and
+   * pending writes on the device belong to the client store, which owns those
+   * keys and drops them through `forgetLocalData` — the screen doing the
+   * deleting calls both.
+   */
+  deleteAccount: () => Promise<void>;
   /** Continue without an account — bookings still work. */
   continueAsGuest: () => void;
   /** Local profile update, mirrored to `/api/accounts` by the client store. */
   applyAccount: (account: UserAccount) => void;
-}
-
-interface PersistedPreferences {
-  biometricEnabled: boolean;
 }
 
 const SessionContext = createContext<SessionState | null>(null);
@@ -82,7 +96,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [account, setAccount] = useState<UserAccount | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
-  const [biometricEnabled, setBiometricEnabledState] = useState(false);
 
   // Restore on launch: the cached profile paints immediately, then the token is
   // re-validated. A token the server no longer honours drops the session rather
@@ -91,14 +104,12 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
 
     (async () => {
-      const [storedToken, storedAccount, prefs] = await Promise.all([
+      const [storedToken, storedAccount] = await Promise.all([
         readString(STORAGE_KEYS.token),
         readJson<UserAccount | null>(STORAGE_KEYS.account, null),
-        readJson<PersistedPreferences>(STORAGE_KEYS.preferences, { biometricEnabled: false }),
       ]);
 
       if (cancelled) return;
-      setBiometricEnabledState(prefs.biometricEnabled);
 
       if (!storedToken) {
         setPhase('guest');
@@ -205,16 +216,28 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     }
   }, [token]);
 
-  const continueAsGuest = useCallback(() => setPhase('guest'), []);
+  /**
+   * The server closes the account, and only then does the device let go.
+   *
+   * No `api.logout` afterwards: the delete revoked every session for this
+   * account, the caller's included, so there is nothing left to revoke and the
+   * call would only 401.
+   */
+  const deleteAccount = useCallback<SessionState['deleteAccount']>(async () => {
+    if (!token) throw new Error('Sign in to close your account.');
 
+    await api.deleteOwnAccount(token);
+
+    setAccount(null);
+    setToken(null);
+    setPhase('guest');
+    await remove(STORAGE_KEYS.token, STORAGE_KEYS.account);
+  }, [token]);
+
+  const continueAsGuest = useCallback(() => setPhase('guest'), []);
   const applyAccount = useCallback((next: UserAccount) => {
     setAccount(next);
     void writeJson(STORAGE_KEYS.account, next);
-  }, []);
-
-  const setBiometricEnabled = useCallback((enabled: boolean) => {
-    setBiometricEnabledState(enabled);
-    void writeJson(STORAGE_KEYS.preferences, { biometricEnabled: enabled });
   }, []);
 
   const promptBiometric = useCallback(async () => {
@@ -237,8 +260,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       token,
       isAuthenticated: phase === 'authenticated' && !!account,
       biometricAvailable,
-      biometricEnabled,
-      setBiometricEnabled,
       promptBiometric,
       signIn,
       register,
@@ -246,6 +267,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       requestPasswordReset,
       resendVerification,
       signOut,
+      deleteAccount,
       continueAsGuest,
       applyAccount,
     }),
@@ -254,8 +276,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       account,
       token,
       biometricAvailable,
-      biometricEnabled,
-      setBiometricEnabled,
       promptBiometric,
       signIn,
       register,
@@ -263,6 +283,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       requestPasswordReset,
       resendVerification,
       signOut,
+      deleteAccount,
       continueAsGuest,
       applyAccount,
     ]

@@ -37,3 +37,23 @@ function resolveBaseUrl(): string {
 export const API_BASE_URL = resolveBaseUrl();
 
 export const api = createClient({ baseUrl: API_BASE_URL, timeoutMs: 6000 });
+
+/**
+ * The same server, for the calls that are allowed to take their time.
+ *
+ * Six seconds is the right patience for the four-second poll: a board that has
+ * not arrived by then is one the next tick will fetch anyway. It is the wrong
+ * patience for everything else, for two reasons that compound.
+ *
+ * A write is slow in proportion to the job it lands on, not to what it carries:
+ * the store keeps a job as one document and rewrites the whole of it, base64
+ * proof photographs included, inside the transaction that moves the status. A
+ * measured status write against a job holding a pickup and a delivery photo
+ * took over six seconds *on localhost*, with no network in it at all.
+ *
+ * And a write has no second chance. A poll that gives up is repeated four
+ * seconds later; a hand-off that gives up has already changed the board and
+ * been reported to the courier as lost — which is how a delivery the customer
+ * has been told is complete ends up back on the board asking to be redone.
+ */
+export const patientApi = createClient({ baseUrl: API_BASE_URL, timeoutMs: 30000 });

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { LAUNDRY_HUB } from '@freshfold/core';
 import { hashPassword } from './passwords';
 import { store, type StoredAccount, type StoredRider, type StoredSupervisor } from './store';
 
@@ -18,17 +19,28 @@ import { store, type StoredAccount, type StoredRider, type StoredSupervisor } fr
  * What does exist is identity, because nobody can sign in to a system with no
  * accounts in it, and none of these three can be self-registered:
  *
- *  - **The courier roster.** Employment records: an id, an employee number, a
- *    contact number and a hashed PIN. Name, vehicle and plate are blank until
- *    the courier enters them, and every performance figure starts at zero
- *    rather than inventing a flattering one.
+ *  - **A supervisor.** The bootstrap desk account, and the only thing seeded in
+ *    production. Somebody has to be able to sign in and put the first courier on
+ *    the roster. Its password comes from `SEED_SUPERVISOR_PASSWORD`.
  *
- *  - **A supervisor.** The bootstrap desk account. Somebody has to be able to
- *    sign in and put the first courier on the roster.
+ *  - **The courier roster** — development only. Employment records: an id, an
+ *    employee number, a contact number and a hashed PIN. Name, vehicle and plate
+ *    are blank until the courier enters them, and every performance figure starts
+ *    at zero rather than inventing a flattering one.
  *
- *  - **Sign-in accounts.** Without these there is no way into the customer app
- *    except registering a new account first. They carry an identity and a
- *    password and nothing else: no points, no wallet balance, no history.
+ *  - **Sign-in accounts** — development only. Without these there is no way into
+ *    the customer app except registering a new account first. They carry an
+ *    identity and a password and nothing else: no points, no wallet balance, no
+ *    history.
+ *
+ * The last two are a convenience for whoever is running this locally, and they do
+ * not exist in production. Both used to: a live deployment against a fresh
+ * database got three couriers whose PINs are printed in the README and three
+ * invented customers, `emailVerified`, whose password is the word `password`. A
+ * fabricated person in the customer directory is a fake with a sign-in page
+ * attached, so in production the roster and the directory start empty and fill up
+ * with real people — couriers through `POST /api/riders`, customers by
+ * registering.
  *
  * Seeding is per-table and only fires on an empty one, so restarting the server
  * against a database that already has a roster does nothing at all. It is not
@@ -37,7 +49,16 @@ import { store, type StoredAccount, type StoredRider, type StoredSupervisor } fr
  */
 
 /**
- * The courier roster.
+ * Production seeds the desk account and nothing else.
+ *
+ * Read once, at module load, because it decides which records exist rather than
+ * how one behaves — a value that changed under a running process would mean two
+ * instances of the same deployment disagreeing about what a fresh database holds.
+ */
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
+/**
+ * The courier roster. Development only.
  *
  * Riders are provisioned by the company, never self-registered, so these are
  * employment records rather than sample data: an id, an employee number, a
@@ -46,6 +67,12 @@ import { store, type StoredAccount, type StoredRider, type StoredSupervisor } fr
  * let them accept work until they have.
  *
  * Every performance figure starts at zero. Nobody has driven anywhere yet.
+ *
+ * The PINs below are fixed, and printed in `README.md` and `apps/mobile/README.md`
+ * so the rider app can be signed into without a database client — which is
+ * precisely why this cannot run in production. A real courier is hired through
+ * `POST /api/riders`, which generates a random PIN, hashes it immediately, forces
+ * a replacement on first sign-in and expires it in 48 hours if it goes unused.
  */
 const ROSTER = [
   {
@@ -75,12 +102,18 @@ const ROSTER = [
 ];
 
 /**
- * Sign-in accounts, all with the password `password` — hashed on the way in,
- * like any other account. There is no plaintext credential in the database.
+ * Sign-in accounts. Development only, all with the password `password` — hashed
+ * on the way in, like any other account. There is no plaintext credential in the
+ * database.
  *
  * These exist so there is a door into the customer app on a fresh install.
  * They start with no points, no wallet and no orders; everything a real
  * account accumulates, it accumulates by being used.
+ *
+ * They are also people who do not exist, so they stop at the edge of production.
+ * A customer directory that ships with three invented patrons in it — verified,
+ * and openable by anyone who has read this file — is a fake, and a supervisor
+ * looking at the list cannot tell them apart from three real ones.
  */
 const SIGN_IN_ACCOUNTS = [
   { name: 'Ama Serwaah', email: 'ama.serwaah@st.knust.edu.gh', phone: '0550192831' },
@@ -88,8 +121,48 @@ const SIGN_IN_ACCOUNTS = [
   { name: 'Adwoa Osei', email: 'adwoa.osei@outlook.com', phone: '0500887261' },
 ];
 
-/** Every seeded staff and sign-in credential uses this. */
-export const DEMO_PASSWORD = 'password';
+/**
+ * What the seeded development credentials use. Never reachable in production:
+ * `supervisorPassword()` refuses rather than falling back to it, and the sign-in
+ * accounts it also covers are not seeded there at all.
+ */
+const DEV_PASSWORD = 'password';
+
+/** A seed that cannot be performed safely. Fatal at boot — see `start()`. */
+export class SeedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SeedError';
+  }
+}
+
+/**
+ * The password the bootstrap desk account is created with.
+ *
+ * In production it must be supplied, and there is no default. The account this
+ * creates can read every customer's address and phone number, settle any bill and
+ * delete the ledger — and it used to be created with the word `password` on any
+ * deployment that started against an empty database.
+ *
+ * Called from inside the emptiness check rather than at module load, which is what
+ * makes this safe to roll out: a database that already has a supervisor never
+ * reaches here, so an existing deployment redeploys without new configuration.
+ */
+function supervisorPassword(): string {
+  const supplied = process.env.SEED_SUPERVISOR_PASSWORD?.trim();
+  if (supplied) return supplied;
+
+  if (IS_PRODUCTION) {
+    throw new SeedError(
+      'this database has no supervisor, and SEED_SUPERVISOR_PASSWORD is not set. ' +
+        'Set it to the password the first desk account should be created with, then ' +
+        'start again. Refusing to create a supervisor with a default password: it can ' +
+        'read every customer record and settle every bill.'
+    );
+  }
+
+  return DEV_PASSWORD;
+}
 
 /**
  * The supervisor desk.
@@ -125,8 +198,9 @@ export function seedRiders(): StoredRider[] {
       gpsAccuracy: 0,
       speed: 0,
       heading: 0,
-      // Parked at the hub until the device reports a real fix.
-      coords: { lat: 6.6852, lng: -1.5815 },
+      // Parked at the hub until the device reports a real fix. Read from the
+      // shared hub rather than copied, so a relocation moves this too.
+      coords: { lat: LAUNDRY_HUB.lat, lng: LAUNDRY_HUB.lng },
       todayDistance: 0,
       todayEarnings: 0,
       completedCount: 0,
@@ -141,8 +215,9 @@ export function seedRiders(): StoredRider[] {
 }
 
 export function seedSupervisors(): StoredSupervisor[] {
+  const password = supervisorPassword();
   return SUPERVISORS.map((supervisor) => {
-    const { salt, hash } = hashPassword(DEMO_PASSWORD);
+    const { salt, hash } = hashPassword(password);
     return {
       ...supervisor,
       createdAt: new Date().toISOString(),
@@ -155,7 +230,7 @@ export function seedSupervisors(): StoredSupervisor[] {
 
 export function seedAccounts(): StoredAccount[] {
   return SIGN_IN_ACCOUNTS.map((account) => {
-    const { salt, hash } = hashPassword(DEMO_PASSWORD);
+    const { salt, hash } = hashPassword(DEV_PASSWORD);
     return {
       ...account,
       points: 0,
@@ -172,12 +247,19 @@ export function seedAccounts(): StoredAccount[] {
 }
 
 /**
- * Puts the three bootstrap identities in place if they are not there already.
+ * Puts the bootstrap identities in place if they are not there already.
+ *
+ * The desk account in every environment; the development roster and sign-in
+ * accounts outside production only.
  *
  * Runs on every boot and on `POST /api/reset`. All three checks share one
  * transaction so two instances starting together cannot both find an empty
  * roster and both fill it — the second waits, sees three couriers, and does
  * nothing.
+ *
+ * Throws `SeedError` when a supervisor is needed and production has not been told
+ * what password to give it. That is fatal at boot rather than survivable: the
+ * alternative is a live desk account with a password from a public repository.
  */
 export async function ensureSeeded(): Promise<{
   riders: number;
@@ -187,14 +269,18 @@ export async function ensureSeeded(): Promise<{
   return store.tx(async (t) => {
     const inserted = { riders: 0, supervisors: 0, accounts: 0 };
 
-    if ((await t.riders.count()) === 0) {
-      for (const rider of seedRiders()) await t.riders.insert(rider);
-      inserted.riders = ROSTER.length;
-    }
-
     if ((await t.supervisors.list()).length === 0) {
       for (const supervisor of seedSupervisors()) await t.supervisors.insert(supervisor);
       inserted.supervisors = SUPERVISORS.length;
+    }
+
+    // Everything below this line is a development convenience. In production the
+    // roster and the customer directory start empty and fill with real people.
+    if (IS_PRODUCTION) return inserted;
+
+    if ((await t.riders.count()) === 0) {
+      for (const rider of seedRiders()) await t.riders.insert(rider);
+      inserted.riders = ROSTER.length;
     }
 
     if ((await t.accounts.list()).length === 0) {
@@ -204,4 +290,15 @@ export async function ensureSeeded(): Promise<{
 
     return inserted;
   });
+}
+
+/**
+ * The credentials a development boot just created, for the startup banner.
+ *
+ * Null in production, where the desk password came from the environment and the
+ * operator already knows it. Printing it there would put it in a log aggregator.
+ */
+export function developmentCredentials(): { email: string; password: string } | null {
+  if (IS_PRODUCTION) return null;
+  return { email: SUPERVISORS[0].email, password: DEV_PASSWORD };
 }

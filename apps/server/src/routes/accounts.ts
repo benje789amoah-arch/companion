@@ -5,14 +5,19 @@
 
 import { Router } from 'express';
 import {
+  ADDRESS_LIMIT_MESSAGE,
+  MAX_SAVED_ADDRESSES,
   PHONE_LENGTH_MESSAGE,
   isCompletePhone,
   isTerminal,
+  normaliseAddresses,
   phoneDigits,
   type PaymentTransaction,
   type UserAccount,
 } from '@freshfold/core';
 import { requireAuth, requireSupervisor } from '../auth';
+import { deskActor, recordAudit } from '../audit';
+import { resolveLister } from '../booking-access';
 import { cancel, resume, settleAccountByEmail, subscribe } from '../membership';
 import { sanitize } from '../passwords';
 import { store, type StoredAccount } from '../store';
@@ -39,6 +44,12 @@ export const accountsRouter = Router();
  * restored by whichever device next saved a profile, and a client could award
  * itself any number of care points by asking. Money and points move through
  * `/accounts/wallet` below, which decides the arithmetic itself.
+ *
+ * `addresses` is not among them either, and for the same reason rather than a
+ * different one. Both apps call this with a whole account object, so a name
+ * change carries whatever book that device last polled — and a phone saving a
+ * name would erase an address added on the website a second earlier. The book
+ * moves through `/accounts/addresses` below, which is the only writer.
  */
 type WritableAccountFields = Pick<UserAccount, 'email' | 'phone' | 'name'>;
 
@@ -53,22 +64,47 @@ function pickWritable(body: Partial<UserAccount>): Partial<WritableAccountFields
   return writable;
 }
 
+/**
+ * The patron table. Supervisor only.
+ *
+ * This answered anybody, and `sanitize` only takes the credentials off — so the
+ * response was every customer FreshFold has: name, email, phone, points, wallet
+ * balance, membership and whether they are suspended. The website polled it
+ * every five seconds from the public marketing page.
+ */
 accountsRouter.get(
   '/',
+  requireSupervisor,
   guard(async (_req, res) => {
     const accounts = await store.accounts.list();
     res.json(accounts.map(sanitize));
   })
 );
 
+/**
+ * Saves a profile. The caller's own, and only theirs.
+ *
+ * The email used to come out of the body, and there was no session at all: the
+ * route would find-or-create by whatever address arrived, so it could rename any
+ * customer, move their phone number, or conjure an account for an address it had
+ * never seen. The address now comes off the token, and a body naming somebody
+ * else is refused rather than quietly redirected — a client sending one has a bug
+ * worth hearing about.
+ */
 accountsRouter.put(
   '/',
+  requireAuth,
   guard(async (req, res) => {
     const incoming = pickWritable((req.body ?? {}) as Partial<UserAccount>);
-    if (!incoming.email) {
-      res.status(400).json({ error: 'An account needs an email.' });
+    const session = req.account!;
+
+    if (incoming.email && incoming.email.trim().toLowerCase() !== session.email.toLowerCase()) {
+      res.status(403).json({ error: 'A profile can only be saved by the account that owns it.' });
       return;
     }
+
+    // Whatever the body said, this is whose profile it is.
+    incoming.email = session.email;
 
     // A blank number is a profile that has not filled one in yet; a number that
     // is present has to be a whole one.
@@ -80,26 +116,122 @@ accountsRouter.put(
       incoming.phone = phoneDigits(incoming.phone);
     }
 
-    // Find-then-write, on a locked row: two tabs saving a profile at once
-    // would otherwise both find nothing and both insert.
-    const account = await store.tx(async (t) => {
-      const existing = await t.accounts.find(incoming.email!, { lock: true });
+    /**
+     * A write, on a locked row. No insert branch any more: `requireAuth`
+     * resolved this account to reach here, so it exists by construction. The
+     * find-or-create this replaced was the whole of the account-creation path
+     * for an unauthenticated caller.
+     */
+    const outcome = await store.tx(async (t) => {
+      const existing = await t.accounts.find(session.email, { lock: true });
+      if (!existing) return { ok: false as const, reason: 'no-account' as const };
 
-      if (!existing) {
-        return t.accounts.insert({
-          email: incoming.email!,
-          phone: incoming.phone ?? '',
-          name: incoming.name ?? '',
-          createdAt: new Date().toISOString(),
-        });
+      /**
+       * Nobody else's number.
+       *
+       * `accounts_phone_key_idx` is a plain index, not a unique one, so the
+       * database will happily hold two customers on one number — and sign-in
+       * resolves an identifier through `findByIdentifier`, which matches
+       * `phone_key` with `limit 1`. Two accounts sharing a number therefore
+       * means signing in by phone lands on whichever row Postgres hands back
+       * first, and the loser cannot reach their account at all.
+       *
+       * Nothing could reach this until now: no surface could change a phone
+       * number. The app's settings screen can, so the check belongs here —
+       * inside the transaction, because a check made outside it is one two
+       * simultaneous saves can both pass.
+       */
+      if (incoming.phone) {
+        const holder = await t.accounts.findByIdentifier(incoming.phone);
+        if (holder && holder.email.toLowerCase() !== existing.email.toLowerCase()) {
+          return { ok: false as const, reason: 'phone-taken' as const };
+        }
       }
 
       // Only the allow-listed fields are written, so password_salt and
       // password_hash on the stored row are untouched.
-      return (await t.accounts.updateProfile(existing.email, incoming)) ?? existing;
+      const saved = (await t.accounts.updateProfile(existing.email, incoming)) ?? existing;
+      return { ok: true as const, account: saved };
     });
 
-    res.json(sanitize(account));
+    if (!outcome.ok) {
+      if (outcome.reason === 'phone-taken') {
+        res.status(409).json({
+          error: 'That phone number is already on another FreshFold account.',
+          reason: 'phone-taken',
+        });
+        return;
+      }
+
+      notFound(res, 'Account');
+      return;
+    }
+
+    res.json(sanitize(outcome.account));
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Saved addresses
+// ---------------------------------------------------------------------------
+
+/**
+ * Replaces the signed-in customer's saved address book.
+ *
+ * The book used to live in the app's own storage, under `freshfold_addresses`,
+ * which made it a property of a handset rather than of a person: the website
+ * showed none of it, a second phone showed none of it, and reinstalling erased
+ * it. It is a column on the account now, so the address a customer saves while
+ * booking on their phone is the address the patron portal offers them on a
+ * laptop — carried there by the `/auth/me` poll both surfaces already run,
+ * which is why this is the only route the move needed.
+ *
+ * Its own route rather than a field on the PUT above; see the allow-list
+ * comment at the top of this file for why that matters.
+ *
+ * The whole book, every time. Nothing here merges: exactly one entry is the
+ * default, so any change is a statement about all of them, and a client that
+ * built its array with `withAddress` or `withoutAddress` has already worked out
+ * what the whole book should be. Two devices editing at once therefore means the
+ * later save wins outright — acceptable for a list of half a dozen addresses a
+ * person keeps for themselves, and the alternative is per-entry writes that can
+ * leave the book with two defaults or none.
+ */
+accountsRouter.put(
+  '/addresses',
+  requireAuth,
+  guard(async (req, res) => {
+    const body = (req.body ?? {}) as { addresses?: unknown };
+
+    /**
+     * Over the ceiling is refused, not trimmed.
+     *
+     * `normaliseAddresses` caps what it returns, so writing anyway would
+     * succeed and silently drop the addresses past the twelfth — and the
+     * customer would find out by noticing one missing later. No client sends
+     * this: both stop at the limit and show `ADDRESS_LIMIT_MESSAGE`. One that
+     * does has a bug, and a 400 is how it hears about it.
+     */
+    if (Array.isArray(body.addresses) && body.addresses.length > MAX_SAVED_ADDRESSES) {
+      res.status(400).json({ error: ADDRESS_LIMIT_MESSAGE, reason: 'address-limit' });
+      return;
+    }
+
+    // The server's copy of the rules, run on a body it has no reason to trust.
+    // Entries without an address or a suburb are dropped, ids are deduplicated
+    // and the single default is settled here — so the column holds a book this
+    // product can render even if the caller sent something else.
+    const addresses = normaliseAddresses(body.addresses);
+
+    // No transaction: this replaces a column outright rather than reading it
+    // first, so there is no read-modify-write for a concurrent save to tear.
+    const saved = await store.accounts.updateProfile(req.account!.email, { addresses });
+    if (!saved) {
+      notFound(res, 'Account');
+      return;
+    }
+
+    res.json(sanitize(saved));
   })
 );
 
@@ -192,6 +324,108 @@ accountsRouter.delete(
 function formatShortfall(amount: number | undefined): string {
   return `₵${(amount ?? 0).toFixed(2)}`;
 }
+
+// ---------------------------------------------------------------------------
+// Closing an account
+// ---------------------------------------------------------------------------
+
+/**
+ * The customer closes their own account.
+ *
+ * Registered here rather than beside the desk's `delete('/:email')` below,
+ * because Express matches in declaration order: down there, `/me` is read as a
+ * customer whose email address is the word "me", and since that route is
+ * supervisor-only the single symptom would be a 401 on a request that was never
+ * wrong. The `/plan` routes sit above `/:email` for the same reason.
+ *
+ * Deliberately not the supervisor route with a different guard on it. The two
+ * answer different questions — the desk removing somebody, against somebody
+ * leaving — and only one of them can be answered with "block the account
+ * instead".
+ *
+ * What survives is the orders. `accounts.remove` leaves them, and they have to
+ * stay: a job carries the address a courier drove to and the money that changed
+ * hands, and the books do not balance without it. What goes is the identity that
+ * could sign in and read them.
+ *
+ * What is forfeited is the wallet balance and any running membership. There is
+ * no refund path anywhere in the product and building one is a different
+ * project, so the app's confirmation names the balance and says it goes — the
+ * alternative, refusing to delete an account with money in it, traps the person
+ * asking to leave.
+ */
+accountsRouter.delete(
+  '/me',
+  requireAuth,
+  guard(async (req, res) => {
+    const account = await store.accounts.find(req.account!.email);
+
+    if (!account) {
+      // The token outlived the row: the desk deleted it, or another device did.
+      notFound(res, 'Account');
+      return;
+    }
+
+    /**
+     * Not while a courier is on the way.
+     *
+     * The same refusal the desk's route gives, for the same reason — deleting
+     * the account cancels nothing, it removes the person the courier would ring
+     * from the gate. The wording differs because a customer cannot block their
+     * own account, and telling them to would be nonsense.
+     */
+    const live = (await store.jobs.list({ email: account.email })).filter(
+      (job) => !isTerminal(job.status)
+    );
+
+    if (live.length > 0) {
+      const one = live.length === 1;
+      res.status(409).json({
+        error:
+          `You still have ${live.length} order${one ? '' : 's'} with us. Wait for ` +
+          `${one ? 'it' : 'them'} to come back, or cancel ${one ? 'it' : 'them'} first, ` +
+          `then delete your account.`,
+        code: 'ACCOUNT_HAS_LIVE_ORDERS',
+        orders: live.map((job) => job.id),
+      });
+      return;
+    }
+
+    // Sessions first, for the reason the desk's route gives: the failure this
+    // order can leave is a customer signed out of an account that still exists,
+    // which they can sign back into. The other order leaves a working token for
+    // a row that has gone.
+    await store.sessions.revokeAllFor('customer', account.email);
+    await store.accounts.remove(account.email);
+
+    /**
+     * The one entry in this trail a customer writes.
+     *
+     * Filed all the same. An account disappearing is precisely the event the
+     * desk gets asked about later — "who was the customer on this order, and
+     * where have they gone" — and without this the answer is nowhere in the
+     * system, because the row that held the name is the row that went. The
+     * forfeited balance is named for the same reason: it is the part somebody
+     * will write in about.
+     */
+    await recordAudit(store, {
+      actor: account.email,
+      actorName: account.name || account.email,
+      action: 'Account closed by customer',
+      details:
+        `${account.name || account.email} (${account.email}) deleted their own account` +
+        (account.walletBalance
+          ? `, forfeiting a ${formatShortfall(account.walletBalance)} wallet balance`
+          : '') +
+        (account.plan ? ` and a running ${account.plan.planId} membership` : '') +
+        '; their past orders were left in place',
+      type: 'account',
+      subject: account.email,
+    });
+
+    res.json({ ok: true });
+  })
+);
 
 // ---------------------------------------------------------------------------
 // Wallet and care points
@@ -391,20 +625,23 @@ function patronView(account: StoredAccount): UserAccount {
  * absolute — two supervisors crediting the same patron at once would otherwise
  * lose one of the two grants.
  *
- * The reason is for the desk's own audit trail and is not stored on the
- * account; the dashboard logs it alongside the supervisor who pressed the
- * button.
+ * The reason is not stored on the account; it goes into the audit trail beside
+ * the delta and the supervisor who granted it, which is the record somebody
+ * asking "why does this patron have 400 points" needs to be able to read.
  */
 accountsRouter.patch(
   '/:email/points',
   requireSupervisor,
   guard(async (req, res) => {
-    const { delta } = (req.body ?? {}) as { delta?: unknown; reason?: string };
+    const { delta, reason } = (req.body ?? {}) as { delta?: unknown; reason?: string };
 
     if (typeof delta !== 'number' || !Number.isFinite(delta) || delta === 0) {
       res.status(400).json({ error: 'A points adjustment needs a non-zero delta.' });
       return;
     }
+
+    const actor = deskActor(req);
+    const note = (reason ?? '').trim();
 
     const account = await store.tx(async (t) => {
       const existing = await t.accounts.find(req.params.email, { lock: true });
@@ -413,7 +650,23 @@ accountsRouter.patch(
       // Clamped at zero: a deduction larger than the balance takes it to nothing
       // rather than into a debt no part of the product knows how to collect.
       const points = Math.max(0, Math.round((existing.points ?? 0) + delta));
-      return t.accounts.updateProfile(existing.email, { points });
+      const updated = await t.accounts.updateProfile(existing.email, { points });
+
+      // Inside the transaction, so the entry and the balance it explains commit
+      // together. Both totals are named because the delta alone does not say
+      // what the clamp did.
+      await recordAudit(t, {
+        ...actor,
+        action: 'Points adjustment',
+        details:
+          `${delta > 0 ? 'Awarded' : 'Deducted'} ${Math.abs(Math.round(delta))} care points ` +
+          `for ${existing.name || existing.email} — ${existing.points ?? 0} to ${points}` +
+          (note ? `. Reason: ${note}` : '. No reason given'),
+        type: 'points',
+        subject: existing.email,
+      });
+
+      return updated;
     });
 
     if (!account) {
@@ -451,6 +704,19 @@ accountsRouter.patch(
     // than whenever their week-long token happens to lapse. Lifting a block
     // does not restore the sessions it ended — they sign in again.
     if (blocked) await store.sessions.revokeAllFor('customer', account.email);
+
+    const note = (reason ?? '').trim();
+
+    await recordAudit(store, {
+      ...deskActor(req),
+      action: blocked ? 'Patron blocked' : 'Patron restored',
+      details: blocked
+        ? `Blocked ${account.name || account.email} and ended their sessions` +
+          (note ? `. Reason: ${note}` : '. No reason given')
+        : `Lifted the block on ${account.name || account.email}`,
+      type: 'account',
+      subject: account.email,
+    });
 
     res.json(patronView(account));
   })
@@ -499,22 +765,53 @@ accountsRouter.delete(
     await store.sessions.revokeAllFor('customer', account.email);
     await store.accounts.remove(account.email);
 
+    // The identity is gone, so the trail is the only place the name survives.
+    // Deliberately spelled out — an email alone in a list of deletions tells a
+    // colleague nothing about which account this was.
+    await recordAudit(store, {
+      ...deskActor(req),
+      action: 'Patron deleted',
+      details:
+        `Deleted the account for ${account.name || account.email} (${account.email})` +
+        `; their past orders were left in place`,
+      type: 'account',
+      subject: account.email,
+    });
+
     res.json({ ok: true });
   })
 );
 
+/**
+ * The payment ledger.
+ *
+ * Both routes were open. `GET` took the address to scope by out of the query
+ * string, so it answered any customer's statement to anyone who knew their email
+ * — and the whole ledger, every customer's payments, to a caller who passed
+ * nothing. `POST` let that caller write rows into it.
+ */
 export const transactionsRouter = Router();
 
+/** A statement: the caller's own, or the whole ledger for the desk. */
 transactionsRouter.get(
   '/',
   guard(async (req, res) => {
-    const email = typeof req.query.email === 'string' ? req.query.email : null;
-    res.json(await store.transactions.list(email));
+    const lister = await resolveLister(req);
+
+    if (!lister) {
+      res.status(401).json({ error: 'Sign in to see your statement.' });
+      return;
+    }
+
+    res.json(
+      await store.transactions.list(lister.kind === 'supervisor' ? null : lister.account.email)
+    );
   })
 );
 
 transactionsRouter.post(
   '/',
+  requireAuth,
   guard(async (req, res) => {
     const incoming = req.body as PaymentTransaction;
     if (!incoming?.reference) {
@@ -526,9 +823,14 @@ transactionsRouter.post(
     // back on a verify, and what the upsert matches on. `id` is a primary key
     // now rather than a field in an object, so a client that omitted one used
     // to store a record with `id: undefined` and would now fail the insert.
+    //
+    // `userEmail` comes off the session rather than the body: a row filed
+    // against somebody else's address is a line on their statement, and this
+    // route accepted whatever it was handed.
     const transaction = await store.transactions.upsert({
       ...incoming,
       id: incoming.id || incoming.reference,
+      userEmail: req.account!.email,
     });
 
     res.status(201).json(transaction);

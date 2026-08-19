@@ -9,8 +9,10 @@ import {
   samePhone,
   type AuthSession,
   type Booking,
+  type BookingAuth,
   type Message,
   type PaymentTransaction,
+  type SavedAddress,
   type SupervisorProfile,
   type UserAccount,
 } from '@freshfold/core';
@@ -40,13 +42,13 @@ const KEYS = {
   bookings: 'freshfold_bookings',
   accounts: 'freshfold_accounts',
   messages: 'freshfold_messages',
-  auditLogs: 'freshfold_audit_logs',
   currentUser: 'freshfold_current_user',
   authToken: 'freshfold_auth_token',
   adminToken: 'freshfold_admin_token',
   adminSupervisor: 'freshfold_admin_supervisor',
   queue: 'freshfold_pending_writes',
   localIds: 'freshfold_local_booking_ids',
+  trackingTokens: 'freshfold_tracking_tokens',
 } as const;
 
 const POLL_INTERVAL_MS = 5000;
@@ -55,23 +57,12 @@ const POLL_INTERVAL_MS = 5000;
  *  production the server serves this bundle itself. */
 export const api = createClient({ baseUrl: '' });
 
-/** Admin-only activity trail. Owned by the dashboard, never leaves the browser. */
-export interface AuditLog {
-  id: string;
-  timestamp: string;
-  action: string;
-  details: string;
-  supervisor: string;
-  type: 'stage' | 'payment' | 'points' | 'system';
-}
-
 type Listener = () => void;
 
 interface Mirror {
   bookings: Booking[];
   accounts: UserAccount[];
   messages: Message[];
-  auditLogs: AuditLog[];
   /** The signed-in customer, refreshed from `/auth/me` on every poll. */
   currentUser: UserAccount | null;
   /**
@@ -109,14 +100,90 @@ const mirror: Mirror = {
   bookings: readLocal<Booking[]>(KEYS.bookings, []),
   accounts: readLocal<UserAccount[]>(KEYS.accounts, []),
   messages: readLocal<Message[]>(KEYS.messages, []),
-  auditLogs: readLocal<AuditLog[]>(KEYS.auditLogs, []),
   currentUser: readLocal<UserAccount | null>(KEYS.currentUser, null),
   localIds: readLocal<string[]>(KEYS.localIds, []),
 };
 
+/**
+ * The audit trail used to hydrate here, and no longer does.
+ *
+ * This file owned it: an `AuditLog[]` in the mirror above, written by
+ * `AdminDashboard` from whichever browser performed the action, capped at fifty
+ * by an array `slice`, and described in this very file as "never leaves the
+ * browser". Which meant the record of every payment override, points grant and
+ * deletion was visible only to the machine that made it, gone when somebody
+ * cleared site data, and — being one client's note about that client's own
+ * claim — evidence of nothing.
+ *
+ * `audit_events` on the server replaces it. Each entry is written by the route
+ * that performs the action, in the same transaction, and read back through
+ * `api.listAuditEvents(token)` by any desk that asks.
+ *
+ * The old key is removed rather than left alone: a browser that ran an earlier
+ * build still holds a private copy of a record we now say lives on the server,
+ * and two answers to that question is worse than one.
+ *
+ * Guarded like `readLocal` and `writeLocal` are, and for the same reason — this
+ * runs at import, and storage that throws on access would take the whole page
+ * with it rather than one stale key.
+ */
+try {
+  localStorage.removeItem('freshfold_audit_logs');
+} catch {
+  // Storage disabled. Nothing reads that key any more either way.
+}
+
 const listeners = new Set<Listener>();
 let online = false;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+// ---------------------------------------------------------------------------
+// Tracking grants
+// ---------------------------------------------------------------------------
+
+/**
+ * The per-booking tokens this browser holds, by booking id.
+ *
+ * A visitor books without an account, so a session is not what entitles them to
+ * read the order back — this is. The server hands one over with the 201 and it is
+ * the only claim a guest has on their own pickup until they set a password from
+ * the emailed link.
+ *
+ * Kept alongside `localIds` rather than inside the mirror: it is a credential,
+ * not display state, and nothing renders it.
+ */
+let trackingTokens: Record<string, string> = readLocal<Record<string, string>>(
+  KEYS.trackingTokens,
+  {}
+);
+
+function rememberTracking(bookingId: string, token: string | undefined): void {
+  if (!token || trackingTokens[bookingId] === token) return;
+  trackingTokens = { ...trackingTokens, [bookingId]: token };
+  writeLocal(KEYS.trackingTokens, trackingTokens);
+}
+
+function forgetTracking(bookingId: string): void {
+  if (!(bookingId in trackingTokens)) return;
+  const { [bookingId]: _spent, ...rest } = trackingTokens;
+  trackingTokens = rest;
+  writeLocal(KEYS.trackingTokens, trackingTokens);
+}
+
+/**
+ * How this browser proves it may touch one booking.
+ *
+ * Both grants when it holds both: the desk's token reads anything, a customer's
+ * reads their own, and the tracking token covers the case neither does — a guest,
+ * or a customer who booked before signing in. The server takes the first that
+ * works.
+ */
+function bookingAuth(bookingId?: string): BookingAuth {
+  return {
+    token: readAdminToken() ?? readAuthToken(),
+    trackingToken: bookingId ? trackingTokens[bookingId] : undefined,
+  };
+}
 
 function notify(): void {
   for (const listener of listeners) listener();
@@ -155,20 +222,46 @@ function enqueue(write: PendingWrite): void {
 
 async function send(write: PendingWrite): Promise<void> {
   switch (write.kind) {
-    case 'booking:create':
-      await api.createBooking(write.booking);
+    case 'booking:create': {
+      /**
+       * Sent with the session when there is one.
+       *
+       * The token is how the server knows whether this booking is under a
+       * membership: it reads the plan off the account behind it to decide
+       * dispatch priority and to spend one of the period's included pickups.
+       * This call passed no token at all, so every booking made on the website
+       * went up as a stranger's — a paying member got no priority, no included
+       * pickup was counted, and the email-confirmation gate never fired. The
+       * customer app has always passed it.
+       */
+      const created = await api.createBooking(write.booking, readAuthToken());
+
+      // The grant that lets this browser read the order back without an
+      // account. Stored against the id the server actually saved it under.
+      rememberTracking(created.id, created.trackingToken);
       return;
+    }
     case 'booking:patch':
-      await api.updateBooking(write.id, write.patch);
+      await api.updateBooking(write.id, write.patch, bookingAuth(write.id));
       return;
     case 'booking:delete':
-      await api.deleteBooking(write.id);
+      await api.deleteBooking(write.id, bookingAuth(write.id));
+      forgetTracking(write.id);
       return;
-    case 'account:upsert':
-      await api.upsertAccount(write.account);
+    case 'account:upsert': {
+      // A profile save is the signed-in customer's own. Without a session there
+      // is nothing to save it against, and the server would refuse it — so it is
+      // dropped here rather than retried forever against a 401.
+      const token = readAuthToken();
+      if (!token) return;
+      await api.upsertAccount(write.account, token);
       return;
+    }
     case 'message:send':
-      await api.postMessage(write.message);
+      await api.postMessage(
+        { text: write.message.text, orderId: write.message.orderId!, id: write.message.id },
+        bookingAuth(write.message.orderId)
+      );
       return;
   }
 }
@@ -272,7 +365,7 @@ export function readBooking(id: string): Booking | undefined {
 }
 
 /**
- * One customer's orders, scoped by the server rather than filtered here.
+ * The signed-in customer's orders, scoped by the server rather than filtered here.
  *
  * The portal used to take the whole ledger out of the mirror and match
  * `email OR samePhone(phone)` in the browser, while the customer app asked
@@ -281,11 +374,17 @@ export function readBooking(id: string): Booking | undefined {
  * are the same list; the server matches the number on the account as well, so
  * nothing the browser-side filter used to find has been lost.
  *
+ * It no longer takes an address. The one it was given was the signed-in
+ * customer's, but nothing made that so — the server read the query string, so the
+ * route would answer for any address handed to it. The token decides now.
+ *
  * Async, unlike the reads above, because it is a request rather than a mirror
  * lookup. Callers keep their last result when it rejects.
  */
-export async function readUserBookings(email: string): Promise<Booking[]> {
-  return api.listBookings({ email });
+export async function readUserBookings(): Promise<Booking[]> {
+  const token = readAuthToken();
+  if (!token) return [];
+  return api.listBookings(token);
 }
 
 /**
@@ -361,6 +460,59 @@ export function createBooking(booking: Booking): void {
 
   enqueue({ kind: 'booking:create', booking });
   notify();
+}
+
+/**
+ * Pays a booking's bill, and waits for the answer.
+ *
+ * Deliberately not queued, like the wallet movements below and for the same
+ * reason: a payment must not be applied twice or applied late from a stale
+ * number, and "did that go through" is a question the customer is standing there
+ * asking. It fails in front of them, and the booking stays `Pending` — which is
+ * true, and is what the desk will see.
+ *
+ * The queue is drained first because the booking itself is optimistic: it exists
+ * in this browser the moment it is made and on the server a round trip later, and
+ * there is nothing to settle until it is there.
+ */
+export async function payForBooking(
+  id: string,
+  method: 'Wallet' | 'Paystack' | 'Cash',
+  reference?: string
+): Promise<Booking> {
+  await drain();
+
+  const settled = await api.payForBooking(id, { method, reference }, bookingAuth(id));
+
+  mirror.bookings = mirror.bookings.map((booking) => (booking.id === id ? settled : booking));
+  writeLocal(KEYS.bookings, mirror.bookings);
+  notify();
+
+  // A wallet payment moved the balance and earned points, so the profile the
+  // portal is showing is now a version behind.
+  if (method === 'Wallet') await pullAccount();
+
+  return settled;
+}
+
+/**
+ * Takes back a cash settlement the desk recorded. Supervisor only, cash only.
+ *
+ * Not queued, for the reason above: whether the ledger now says a bill is unpaid
+ * is a question somebody is standing at the desk asking, and the server may refuse
+ * — a Paystack payment needs a refund, not a reversal. `bookingAuth` supplies the
+ * admin token when there is one.
+ */
+export async function reverseCashPayment(id: string): Promise<Booking> {
+  await drain();
+
+  const reversed = await api.reverseCashPayment(id, bookingAuth(id));
+
+  mirror.bookings = mirror.bookings.map((booking) => (booking.id === id ? reversed : booking));
+  writeLocal(KEYS.bookings, mirror.bookings);
+  notify();
+
+  return reversed;
 }
 
 export function patchBooking(id: string, patch: Partial<Booking>): void {
@@ -689,6 +841,60 @@ export function writeCurrentUser(account: UserAccount): void {
   applyAccount(account);
 }
 
+/**
+ * Saves the signed-in patron's own profile and keeps the answer.
+ *
+ * Deliberately not {@link upsertAccount}: that one hands the write to the
+ * offline queue, which means it resolves before the server has seen it, never
+ * touches `currentUser`, and drops the reply on the floor. The two things a
+ * settings form needs are the two things it throws away — the saved row,
+ * because the server is what normalises the phone and the only thing that knows
+ * the account's money, points and plan; and the failure, because a number
+ * already on somebody else's account comes back as a 409 the patron has to be
+ * told about rather than a silent no-op.
+ *
+ * `inFlight` is held across the round trip so the five-second poll cannot
+ * answer with the pre-edit account while this is still on the wire.
+ */
+export async function saveProfile(patch: Partial<UserAccount>): Promise<UserAccount> {
+  const token = readAuthToken();
+  const current = mirror.currentUser;
+  if (!token || !current) throw new Error('Sign in to change your details.');
+
+  inFlight += 1;
+  try {
+    const saved = await api.upsertAccount({ ...current, ...patch }, token);
+    applyAccount(saved);
+    return saved;
+  } finally {
+    inFlight -= 1;
+  }
+}
+
+/**
+ * Replaces the patron's saved address book.
+ *
+ * Sends the whole book rather than the entry that changed, because that is what
+ * the route replaces — and because it makes the write idempotent, which matters
+ * when the customer app is polling the same account every four seconds. The
+ * caller passes the book it just derived; the server's normalised answer is what
+ * gets applied, so the ids, the ordering and the single default all come back
+ * from one place.
+ */
+export async function saveAddresses(addresses: SavedAddress[]): Promise<UserAccount> {
+  const token = readAuthToken();
+  if (!token || !mirror.currentUser) throw new Error('Sign in to change your addresses.');
+
+  inFlight += 1;
+  try {
+    const saved = await api.saveAddresses(addresses, token);
+    applyAccount(saved);
+    return saved;
+  } finally {
+    inFlight -= 1;
+  }
+}
+
 export function readAuthToken(): string | null {
   return localStorage.getItem(KEYS.authToken);
 }
@@ -895,19 +1101,6 @@ export function clearAdminSession(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Audit log — deliberately local
-// ---------------------------------------------------------------------------
-
-export function readAuditLogs(): AuditLog[] {
-  return mirror.auditLogs;
-}
-
-export function writeAuditLogs(next: AuditLog[]): void {
-  mirror.auditLogs = next;
-  writeLocal(KEYS.auditLogs, next);
-}
-
-// ---------------------------------------------------------------------------
 // Sync
 // ---------------------------------------------------------------------------
 
@@ -916,33 +1109,153 @@ export function writeAuditLogs(next: AuditLog[]): void {
  *
  * Skipped while a write is in flight: the response would predate the edit that
  * is still on the wire, and applying it would make the UI flicker backwards.
+ *
+ * What gets pulled depends entirely on who is looking, which it did not used to.
+ * This fetched the whole booking ledger, every customer account and every message
+ * in the system, unconditionally, every five seconds — and `startSync()` runs from
+ * `App.tsx` on the public marketing page. So an anonymous visitor reading about
+ * laundry prices downloaded FreshFold's entire customer database on a timer and
+ * wrote it to `localStorage`, where it outlived the tab.
+ *
+ * Three cases now. The desk polls the board it administers. A signed-in customer
+ * polls their own orders. Everybody else polls nothing — a visitor with a booking
+ * on this device reads it by id with the grant they were given, and a visitor
+ * without one has no business here at all.
  */
 export async function pull(): Promise<void> {
   if (inFlight > 0) return;
 
+  const adminToken = readAdminToken();
+  const authToken = readAuthToken();
+
   try {
-    const [bookings, accounts, messages] = await Promise.all([
-      api.listBookings(),
-      api.listAccounts(),
-      api.listMessages(),
-    ]);
+    if (adminToken) await pullAsSupervisor(adminToken);
+    else if (authToken) await pullAsCustomer(authToken);
+    else await pullAsVisitor();
+
     online = true;
-
-    if (inFlight > 0) return;
-
-    mirror.bookings = bookings;
-    mirror.accounts = accounts;
-    mirror.messages = messages;
-    writeLocal(KEYS.bookings, bookings);
-    writeLocal(KEYS.accounts, accounts);
-    writeLocal(KEYS.messages, messages);
-    notify();
-
     await pullAccount();
   } catch {
     // The server is down or we're offline. The mirror stands.
     online = false;
   }
+}
+
+/** The desk: the whole board, the patron table and every conversation. */
+async function pullAsSupervisor(token: string): Promise<void> {
+  const [bookings, accounts, messages] = await Promise.all([
+    api.listBookings(token),
+    api.listAccounts(token),
+    api.listAllMessages(token),
+  ]);
+
+  if (inFlight > 0) return;
+
+  mirror.bookings = bookings;
+  mirror.accounts = accounts;
+  mirror.messages = messages;
+  writeLocal(KEYS.bookings, bookings);
+  writeLocal(KEYS.accounts, accounts);
+  writeLocal(KEYS.messages, messages);
+  notify();
+}
+
+/**
+ * A signed-in customer: their own orders, and the threads on them.
+ *
+ * The account list is not fetched at all. The portal's tier badge reads
+ * `currentUser`, which `pullAccount` keeps fresh, and the patron table it used to
+ * share is the supervisor's screen.
+ */
+async function pullAsCustomer(token: string): Promise<void> {
+  const bookings = await api.listBookings(token);
+  if (inFlight > 0) return;
+
+  mirror.bookings = bookings;
+  writeLocal(KEYS.bookings, bookings);
+
+  // Remember them as ours, so the notifier keeps working after a sign-out.
+  mirror.localIds = Array.from(new Set([...mirror.localIds, ...bookings.map((b) => b.id)]));
+  writeLocal(KEYS.localIds, mirror.localIds);
+  notify();
+
+  await pullThreads(bookings, () => ({ token }));
+}
+
+/**
+ * A visitor: the bookings made on this device, one request each.
+ *
+ * By id rather than as a list, because there is no session to scope a list by —
+ * and the grant is per booking. Only the ones this browser actually holds a token
+ * for, which is what stops the old behaviour of reading the ledger and filtering
+ * afterwards.
+ */
+async function pullAsVisitor(): Promise<void> {
+  const held = mirror.localIds.filter((id) => trackingTokens[id]);
+
+  if (held.length === 0) {
+    // Nothing to sync, but "is the server there" is still worth an answer: the
+    // booking form shows whether a write is queued.
+    await api.health();
+    return;
+  }
+
+  const results = await Promise.all(
+    held.map((id) =>
+      api
+        .getBooking(id, { trackingToken: trackingTokens[id] })
+        .catch((error: unknown) => {
+          // A grant the server no longer honours is a booking the desk has
+          // removed, or a token past its month. Forget it rather than asking
+          // again every five seconds forever.
+          if (error instanceof ApiError && (error.status === 404 || error.status === 401)) {
+            forgetTracking(id);
+          }
+          return null;
+        })
+    )
+  );
+
+  if (inFlight > 0) return;
+
+  const found = results.filter((booking): booking is Booking => booking !== null);
+
+  mirror.bookings = found;
+  writeLocal(KEYS.bookings, found);
+  notify();
+
+  await pullThreads(found, (id) => ({ trackingToken: trackingTokens[id] }));
+}
+
+/**
+ * The conversations on a set of orders, one request per thread.
+ *
+ * A thread is only readable by a party to its job now, so there is no single
+ * request that fetches "my messages" — the customer app has always done it this
+ * way for the same reason. Bounded by how many orders the caller actually has,
+ * which is a handful.
+ */
+async function pullThreads(
+  bookings: Booking[],
+  authFor: (bookingId: string) => BookingAuth
+): Promise<void> {
+  if (bookings.length === 0) {
+    mirror.messages = [];
+    writeLocal(KEYS.messages, mirror.messages);
+    return;
+  }
+
+  const threads = await Promise.all(
+    bookings.map((booking) =>
+      api.listMessages(booking.id, authFor(booking.id)).catch(() => [] as Message[])
+    )
+  );
+
+  if (inFlight > 0) return;
+
+  mirror.messages = threads.flat();
+  writeLocal(KEYS.messages, mirror.messages);
+  notify();
 }
 
 /**

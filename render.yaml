@@ -57,6 +57,15 @@ services:
       - key: DATABASE_URL
         sync: false
 
+      # The password the first supervisor account is created with. Read only when
+      # the `supervisors` table is empty, so this matters on the very first deploy
+      # against a new database and is ignored on every one after. Unset, that first
+      # boot fails on purpose rather than creating a desk account — full read of
+      # every customer record, and settlement on every bill — with a default
+      # password. Set it to something long before the first deploy.
+      - key: SEED_SUPERVISOR_PASSWORD
+        sync: false
+
       # The Vercel origin, so the customer app and any Expo web build can call
       # this cross-origin. The website itself does not need to be listed — its
       # /api calls are proxied by Vercel server-side and arrive same-origin.
@@ -90,8 +99,13 @@ services:
       - key: GOOGLE_MAPS_PLATFORM_KEY
         sync: false
 
-      # How long the hub spends on each stage. Both default to 2 minutes, which
-      # is a demo value — set them to what the laundry actually takes.
+      # Leave both blank. The two hub stages — In Care → Ironing & Folding →
+      # Quality Check — are confirmed from the desk's Hub tab by whoever knows
+      # the load is done, and in production the timed sweep does not run at all
+      # unless one of these is set. Setting either turns it back on for both
+      # stages, at a 2-minute default dwell, which means telling customers their
+      # laundry is washed on the evidence that a clock passed a number. Every
+      # advance it makes is filed in the audit trail against `system`.
       - key: HUB_WASH_MINUTES
         sync: false
       - key: HUB_FINISH_MINUTES

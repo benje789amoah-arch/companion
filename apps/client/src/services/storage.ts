@@ -25,6 +25,15 @@ export const STORAGE_KEYS = {
   addresses: 'freshfold_client_addresses',
   preferences: 'freshfold_client_preferences',
   /**
+   * Per-booking tracking grants, by booking id.
+   *
+   * A visitor books without an account, so a session is not what entitles them
+   * to read the order back — this is. The server hands one over with the 201, and
+   * it is the only claim the device has on that pickup until the customer sets a
+   * password from the emailed link.
+   */
+  trackingTokens: 'freshfold_client_tracking_tokens',
+  /**
    * Where the membership used to live.
    *
    * A plan is a paid entitlement and now belongs to the account on the server —

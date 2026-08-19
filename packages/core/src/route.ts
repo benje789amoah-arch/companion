@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { AVERAGE_SPEED_KMH, distanceKm } from './geo';
+import { distanceKm } from './geo';
 import type { Coords } from './types';
 
 /**
@@ -85,6 +85,16 @@ export function decodePolyline(encoded: string): Coords[] {
 }
 
 /**
+ * Average scooter speed on campus roads.
+ *
+ * Not exported, and not an ETA. It exists to give the fallback leg below a
+ * `durationSeconds` so it has the same shape as a real one — and
+ * `routeEtaMinutes` refuses to read it, because a straight line divided by a
+ * constant is what every arrival time in this product used to be.
+ */
+const AVERAGE_SPEED_KMH = 18;
+
+/**
  * The fallback route: the straight line, named as such.
  *
  * Used when no routing key is configured, when the API is unreachable, and
@@ -102,8 +112,18 @@ export function straightLineRoute(from: Coords, to: Coords): RouteLeg {
   };
 }
 
-/** Minutes, rounded the way every ETA readout in the product wants it. */
-export function routeEtaMinutes(route: RouteLeg): number {
+/**
+ * Minutes to arrival, or `null` when nobody knows.
+ *
+ * A `straight` leg has a duration only because the interface requires one: it is
+ * the chord divided by an average speed, which on the hub-to-Ayeduase run is 60%
+ * short before traffic is considered. Refusing it here rather than at each call
+ * site is deliberate — six surfaces used to render that number as an arrival
+ * time, and the ones that checked did it by hand. Callers show the stage the job
+ * is at instead.
+ */
+export function routeEtaMinutes(route: RouteLeg): number | null {
+  if (route.source !== 'roads') return null;
   return Math.max(1, Math.round(route.durationSeconds / 60));
 }
 

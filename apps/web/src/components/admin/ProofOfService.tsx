@@ -22,7 +22,7 @@
 import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { AlertTriangle, ImageOff, PenLine, ShieldCheck, X } from 'lucide-react';
-import { api } from '../../services/store';
+import { api, readAdminToken } from '../../services/store';
 import type { JobProof } from '../../types';
 
 interface Shot {
@@ -90,8 +90,10 @@ export default function ProofOfService({
     let live = true;
     setLoading(true);
 
+    // The desk's own token. Reading one order in full is a supervisor action —
+    // this is the evidence behind a dispute, and it is not a public record.
     api
-      .getBooking(bookingId)
+      .getBooking(bookingId, { token: readAdminToken() })
       .then((booking) => {
         if (live) setDetail(booking.proof ?? {});
       })

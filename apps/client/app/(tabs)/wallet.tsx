@@ -44,6 +44,7 @@ import {
   Sheet,
 } from '../../src/components/ui';
 import { SUBSCRIPTION_PLANS, nextTierAfter, tierForPoints } from '../../src/data/catalogue';
+import { intlTag, useT, type Translate } from '../../src/i18n';
 import { api } from '../../src/services/api';
 import { useClient } from '../../src/store/ClientStore';
 import { useSession } from '../../src/store/SessionStore';
@@ -62,15 +63,32 @@ const TOP_UPS = [50, 100, 200, 500];
  * server being down, read as a phone problem. The server's address is in the
  * message for the same reason: on a phone it is the LAN address, and being
  * wrong about it is the usual cause.
+ *
+ * `reachable` is what stops the remaining overlap. A timeout by itself cannot
+ * say which hop was slow: an unroutable address — a phone on cellular data with
+ * the base URL derived from a `192.168.x` Expo host — drops packets rather than
+ * refusing them, so the request hangs and aborts exactly as a slow gateway
+ * would. The store's poll has already distinguished them, and when it says the
+ * server is unreachable this stops blaming Paystack for a request Paystack
+ * never received.
+ *
+ * `t` is passed in rather than read from a hook, because this is a function and
+ * not a component.
  */
-function gatewayProblem(err: unknown): string {
-  if (err instanceof ApiError) return `Payment gateway: ${err.message}`;
+function gatewayProblem(t: Translate, err: unknown, reachable: boolean): string {
+  // The server answered, so it is reachable and the complaint is really the
+  // gateway's — including the 504 it now returns when Paystack stops answering.
+  // Its sentence arrives in English; the frame around it is the booking flow's
+  // key, because it is the same frame around the same kind of message.
+  if (err instanceof ApiError) return t('book.pay.gateway', { message: err.message });
+
+  if (!reachable) return t('wallet.gateway.unreachable', { url: api.baseUrl });
 
   if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) {
-    return 'The payment gateway took too long to answer. Nothing was charged — try again.';
+    return t('wallet.gateway.timeout');
   }
 
-  return `Could not reach FreshFold at ${api.baseUrl}. Check that the dispatch server is running and that this device can see it.`;
+  return t('wallet.gateway.offline', { url: api.baseUrl });
 }
 
 /**
@@ -102,6 +120,7 @@ export default function WalletScreen() {
     online,
     probed,
   } = useClient();
+  const { t, locale } = useT();
 
   const [topUpOpen, setTopUpOpen] = useState(false);
   const [amount, setAmount] = useState(TOP_UPS[1]);
@@ -149,15 +168,16 @@ export default function WalletScreen() {
 
         if (result.ok) {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-          Alert.alert('Redeemed', 'Your reward is on your account.');
+          Alert.alert(t('wallet.rewards.doneTitle'), t('wallet.rewards.doneBody'));
         } else {
-          Alert.alert('Could not redeem', result.message);
+          // The server's refusal, in its own words.
+          Alert.alert(t('wallet.rewards.failed'), result.message);
         }
       } finally {
         setRedeeming(null);
       }
     },
-    [redeemReward]
+    [redeemReward, t]
   );
 
   /**
@@ -171,15 +191,15 @@ export default function WalletScreen() {
   const confirmCancel = useCallback(() => {
     if (!plan) return;
 
-    const until = new Date(plan.renewsOn).toLocaleDateString();
+    const until = new Date(plan.renewsOn).toLocaleDateString(intlTag(locale));
 
     Alert.alert(
-      'Cancel membership?',
-      `Your plan stays active until ${until} — included pickups and elite priority included — and nothing is taken after that. You can restart it any time.`,
+      t('wallet.plan.cancelTitle'),
+      t('wallet.plan.cancelBody', { date: until }),
       [
-        { text: 'Keep plan', style: 'cancel' },
+        { text: t('wallet.plan.keep'), style: 'cancel' },
         {
-          text: 'Cancel membership',
+          text: t('wallet.plan.cancelConfirm'),
           style: 'destructive',
           onPress: () => {
             setPlanBusy(true);
@@ -189,8 +209,8 @@ export default function WalletScreen() {
                   Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
                 } else {
                   Alert.alert(
-                    'Could not cancel',
-                    'FreshFold could not be reached. Your plan is unchanged — try again in a moment.'
+                    t('wallet.plan.cancelFailedTitle'),
+                    t('wallet.plan.cancelFailedBody')
                   );
                 }
               })
@@ -199,21 +219,18 @@ export default function WalletScreen() {
         },
       ]
     );
-  }, [plan, cancelPlan]);
+  }, [plan, cancelPlan, t, locale]);
 
   const keepPlan = useCallback(() => {
     setPlanBusy(true);
     void resumePlan()
       .then((ok) => {
         if (!ok) {
-          Alert.alert(
-            'Could not restore',
-            'FreshFold could not be reached. Your plan still ends as scheduled — try again in a moment.'
-          );
+          Alert.alert(t('wallet.plan.resumeFailedTitle'), t('wallet.plan.resumeFailedBody'));
         }
       })
       .finally(() => setPlanBusy(false));
-  }, [resumePlan]);
+  }, [resumePlan, t]);
 
   const closeTopUp = useCallback(() => {
     setTopUpOpen(false);
@@ -244,15 +261,19 @@ export default function WalletScreen() {
         email: account?.email ?? '',
         amount,
         // Back into the app rather than the server's `APP_URL`, which on a
-        // phone is a localhost page that does not exist.
-        callback_url: Linking.createURL('paystack-success'),
+        // phone is a localhost page that does not exist. `flow` is only read if
+        // the app was killed while the browser had the screen — see the
+        // `paystack-success` route.
+        callback_url: Linking.createURL('paystack-success', { queryParams: { flow: 'wallet' } }),
         // The server refuses to credit a wallet from a reference that was not
         // marked as a top-up, so a booking payment cannot be replayed here.
         metadata: { type: 'wallet_topup', customer_name: account?.name ?? 'Patron' },
       });
     } catch (err) {
       setBusy(false);
-      setTopUpNotice(gatewayProblem(err));
+      // Same test the Offline badge draws itself from: a negative is only worth
+      // believing once the first poll has come back.
+      setTopUpNotice(gatewayProblem(t, err, !(probed && !online)));
       return;
     }
 
@@ -260,15 +281,13 @@ export default function WalletScreen() {
 
     try {
       await WebBrowser.openBrowserAsync(checkout.authorization_url);
-      setTopUpNotice('Finish on the Paystack page, then tap “I have paid” to collect the funds.');
+      setTopUpNotice(t('wallet.topUp.finishOnPage'));
     } catch {
-      setTopUpNotice(
-        `Could not open the checkout page here. Reference ${checkout.reference} is live — pay on Paystack, then tap “I have paid”.`
-      );
+      setTopUpNotice(t('wallet.topUp.browserFailed', { reference: checkout.reference }));
     } finally {
       setBusy(false);
     }
-  }, [account?.email, account?.name, amount]);
+  }, [account?.email, account?.name, amount, online, probed, t]);
 
   /**
    * Claims the payment.
@@ -293,25 +312,25 @@ export default function WalletScreen() {
       setTopUpNotice(
         err instanceof ApiError
           ? err.message
-          : `Could not confirm the payment with FreshFold at ${api.baseUrl}. If you were charged, your funds are safe — tap “I have paid” again once the server is reachable.`
+          : t('wallet.topUp.confirmFailed', { url: api.baseUrl })
       );
     } finally {
       setBusy(false);
     }
-  }, [checkoutRef, closeTopUp, topUpWallet]);
+  }, [checkoutRef, closeTopUp, topUpWallet, t]);
 
   if (!isAuthenticated) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>Wallet</Text>
+          <Text style={styles.headerTitle}>{t('wallet.title')}</Text>
         </View>
         <View style={{ padding: 20 }}>
           <EmptyState
             icon={<Lock size={26} color={colors.brandStone} />}
-            title="Sign in to use your wallet"
-            body="Your balance, loyalty points and membership are tied to your account, so they follow you to any device you sign in from."
-            action="Sign in or create an account"
+            title={t('wallet.locked.title')}
+            body={t('wallet.locked.body')}
+            action={t('common.signInCta')}
             onAction={() => router.push({ pathname: '/auth', params: { reason: 'wallet' } })}
           />
         </View>
@@ -323,10 +342,10 @@ export default function WalletScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>Wallet</Text>
+          <Text style={styles.headerTitle}>{t('wallet.title')}</Text>
           <Text style={styles.headerSub}>{account?.email}</Text>
         </View>
-        {probed && !online && <Badge label="Offline" tone="warning" />}
+        {probed && !online && <Badge label={t('common.offline')} tone="warning" />}
       </View>
 
       <ScrollView
@@ -340,23 +359,21 @@ export default function WalletScreen() {
         <View style={styles.balanceCard}>
           <View style={styles.balanceHead}>
             <WalletIcon size={15} color="rgba(255,255,255,0.65)" />
-            <Text style={styles.balanceLabel}>Available balance</Text>
+            <Text style={styles.balanceLabel}>{t('wallet.balance.label')}</Text>
           </View>
-          <Text style={styles.balanceValue}>{formatCedis(walletBalance)}</Text>
-          <Text style={styles.balanceHint}>
-            Settles a booking instantly and earns a loyalty point per cedi.
-          </Text>
+          <Text style={styles.balanceValue}>{formatCedis(walletBalance, locale)}</Text>
+          <Text style={styles.balanceHint}>{t('wallet.balance.hint')}</Text>
 
           <View style={styles.balanceActions}>
             <Button
-              label="Top up"
+              label={t('wallet.balance.topUp')}
               variant="gold"
               onPress={() => setTopUpOpen(true)}
               icon={<Plus size={15} color="#FFFFFF" />}
               style={{ flex: 1 }}
             />
             <Button
-              label="Book with it"
+              label={t('wallet.balance.book')}
               variant="ghost"
               onPress={() => router.push('/(tabs)/book')}
               style={{ flex: 1 }}
@@ -366,8 +383,10 @@ export default function WalletScreen() {
 
         {/* --------------------------------------------------------- loyalty */}
         <View style={styles.section}>
-          <SectionHeader title="Membership" caption="Earned on everything you spend." />
+          <SectionHeader title={t('wallet.tier.title')} caption={t('wallet.tier.caption')} />
 
+          {/* The tier's card name, name, description and benefits are catalogue
+              records with ids, so they are translated there rather than here. */}
           <View style={[styles.tierCard, { backgroundColor: tier.gradient[0] }]}>
             <View style={[styles.tierWash, { backgroundColor: tier.gradient[1] }]} />
 
@@ -381,27 +400,32 @@ export default function WalletScreen() {
 
             <View style={styles.tierPoints}>
               <Text style={[styles.tierPointsValue, { color: tier.textColor }]}>
-                {points.toLocaleString()}
+                {points.toLocaleString(intlTag(locale))}
               </Text>
-              <Text style={[styles.tierPointsLabel, { color: tier.accent }]}>lifetime points</Text>
+              <Text style={[styles.tierPointsLabel, { color: tier.accent }]}>
+                {t('wallet.tier.lifetime')}
+              </Text>
             </View>
 
             {next ? (
               <View style={{ gap: 6, marginTop: 12 }}>
                 <ProgressBar percent={tierPercent} tone="gold" height={5} />
                 <Text style={[styles.tierNext, { color: tier.accent }]}>
-                  {toNext.toLocaleString()} points to {next.name}
+                  {t('wallet.tier.toNext', {
+                    points: toNext.toLocaleString(intlTag(locale)),
+                    tier: next.name,
+                  })}
                 </Text>
               </View>
             ) : (
               <Text style={[styles.tierNext, { color: tier.accent, marginTop: 12 }]}>
-                Top tier — every benefit unlocked.
+                {t('wallet.tier.top')}
               </Text>
             )}
           </View>
 
           <Card style={{ gap: 9, marginTop: 12 }}>
-            <SectionLabel>Your benefits</SectionLabel>
+            <SectionLabel>{t('wallet.tier.benefits')}</SectionLabel>
             {tier.benefits.map((benefit) => (
               <View key={benefit} style={styles.benefitRow}>
                 <Gift size={13} color={colors.brandGold} />
@@ -412,8 +436,7 @@ export default function WalletScreen() {
               <>
                 <Divider style={{ marginVertical: 3 }} />
                 <Text style={styles.discountNote}>
-                  {Math.round(tier.discountRate * 100)}% is taken off every quote before you confirm
-                  it — you never have to claim it.
+                  {t('wallet.tier.discount', { percent: Math.round(tier.discountRate * 100) })}
                 </Text>
               </>
             )}
@@ -426,8 +449,12 @@ export default function WalletScreen() {
             now post to `/api/accounts/wallet`, which takes the points.
           */}
           <Card style={{ gap: 10, marginTop: 12 }}>
-            <SectionLabel>Spend your points</SectionLabel>
+            <SectionLabel>{t('wallet.rewards.title')}</SectionLabel>
 
+            {/* `LOYALTY_REWARDS` is a core record set, shared with the desk
+                console, so the reward names and descriptions stay in core and
+                are translated by id with the rest of the catalogue copy. Only
+                the frame around them is keyed here. */}
             {LOYALTY_REWARDS.map((reward) => {
               const affordable = points >= reward.cost;
 
@@ -440,7 +467,10 @@ export default function WalletScreen() {
 
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={`Redeem ${reward.name} for ${reward.cost} care points`}
+                    accessibilityLabel={t('wallet.rewards.redeem', {
+                      name: reward.name,
+                      cost: reward.cost,
+                    })}
                     accessibilityState={{ disabled: !affordable || redeeming !== null }}
                     disabled={!affordable || redeeming !== null}
                     onPress={() => onRedeem(reward.id)}
@@ -459,7 +489,9 @@ export default function WalletScreen() {
                           !affordable && styles.rewardButtonTextOff,
                         ]}
                       >
-                        {reward.cost.toLocaleString()} pts
+                        {t('wallet.rewards.cost', {
+                          points: reward.cost.toLocaleString(intlTag(locale)),
+                        })}
                       </Text>
                     )}
                   </Pressable>
@@ -472,9 +504,9 @@ export default function WalletScreen() {
         {/* ----------------------------------------------------------- plan */}
         <View style={styles.section}>
           <SectionHeader
-            title="Subscription"
-            caption={activePlan ? 'Active plan' : 'Regular laundry, one monthly price.'}
-            action={activePlan ? undefined : 'Compare plans'}
+            title={t('wallet.plan.title')}
+            caption={activePlan ? t('wallet.plan.activeCaption') : t('wallet.plan.caption')}
+            action={activePlan ? undefined : t('wallet.plan.compare')}
             onAction={() => router.push('/plans')}
           />
 
@@ -485,20 +517,32 @@ export default function WalletScreen() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.planName}>{activePlan.name}</Text>
                   <Text style={styles.planMeta}>
-                    {includedPickupsLeft} of {activePlan.includedPickups} pickups left ·{' '}
-                    {planEndsOn
-                      ? `ends ${new Date(planEndsOn).toLocaleDateString()}`
-                      : `renews ${new Date(plan.renewsOn).toLocaleDateString()}`}
+                    {/* The date is a phrase inside the line — "ends" and
+                        "renews" are two keys — rather than a word glued to a
+                        date, so a language can put the preposition its own
+                        grammar wants in front of it. */}
+                    {t('wallet.plan.meta', {
+                      left: includedPickupsLeft,
+                      total: activePlan.includedPickups,
+                      when: planEndsOn
+                        ? t('wallet.plan.ends', {
+                            date: new Date(planEndsOn).toLocaleDateString(intlTag(locale)),
+                          })
+                        : t('wallet.plan.renews', {
+                            date: new Date(plan.renewsOn).toLocaleDateString(intlTag(locale)),
+                          }),
+                    })}
                   </Text>
                 </View>
-                <Text style={styles.planPrice}>{formatCedis(plan.price)}</Text>
+                <Text style={styles.planPrice}>{formatCedis(plan.price, locale)}</Text>
               </View>
 
               {/* A cancellation already made, and the way back from it. */}
               {planEndsOn && (
                 <Text style={styles.planNotice}>
-                  Cancelled. Your pickups and elite priority run until{' '}
-                  {new Date(planEndsOn).toLocaleDateString()} — nothing more will be taken.
+                  {t('wallet.plan.cancelled', {
+                    date: new Date(planEndsOn).toLocaleDateString(intlTag(locale)),
+                  })}
                 </Text>
               )}
 
@@ -506,14 +550,14 @@ export default function WalletScreen() {
 
               <View style={{ flexDirection: 'row', gap: 9 }}>
                 <Button
-                  label="Change plan"
+                  label={t('wallet.plan.change')}
                   variant="ghost"
                   size="sm"
                   onPress={() => router.push('/plans')}
                   style={{ flex: 1 }}
                 />
                 <Button
-                  label={planEndsOn ? 'Keep plan' : 'Cancel'}
+                  label={planEndsOn ? t('wallet.plan.keep') : t('wallet.plan.cancel')}
                   variant={planEndsOn ? 'outline' : 'danger'}
                   size="sm"
                   loading={planBusy}
@@ -528,14 +572,20 @@ export default function WalletScreen() {
                 <View style={styles.planHead}>
                   <Sparkles size={17} color={colors.brandSage} />
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.planName}>No active plan</Text>
+                    <Text style={styles.planName}>{t('wallet.plan.none')}</Text>
                     <Text style={styles.planMeta}>
-                      From {formatCedis(SUBSCRIPTION_PLANS[0].monthlyPrice)} a month, pickups
-                      included.
+                      {t('wallet.plan.from', {
+                        price: formatCedis(SUBSCRIPTION_PLANS[0].monthlyPrice, locale),
+                      })}
                     </Text>
                   </View>
                 </View>
-                <Button label="Explore plans" variant="outline" size="sm" onPress={() => router.push('/plans')} />
+                <Button
+                  label={t('wallet.plan.explore')}
+                  variant="outline"
+                  size="sm"
+                  onPress={() => router.push('/plans')}
+                />
               </Card>
             </Pressable>
           )}
@@ -543,13 +593,16 @@ export default function WalletScreen() {
 
         {/* ---------------------------------------------------------- ledger */}
         <View style={styles.section}>
-          <SectionHeader title="Statement" caption="Every movement on this account." />
+          <SectionHeader
+            title={t('wallet.statement.title')}
+            caption={t('wallet.statement.caption')}
+          />
 
           {transactions.length === 0 ? (
             <EmptyState
               icon={<WalletIcon size={24} color={colors.brandStone} />}
-              title="Nothing yet"
-              body="Top-ups, bookings and refunds all show up here with their reference."
+              title={t('wallet.statement.emptyTitle')}
+              body={t('wallet.statement.emptyBody')}
             />
           ) : (
             <Card style={{ gap: 2 }}>
@@ -567,11 +620,8 @@ export default function WalletScreen() {
       {/* -------------------------------------------------------- top-up */}
       <Sheet visible={topUpOpen} onClose={closeTopUp}>
         <ScrollView contentContainerStyle={styles.topUp} keyboardShouldPersistTaps="handled">
-          <Text style={styles.topUpTitle}>Top up your wallet</Text>
-          <Text style={styles.topUpBody}>
-            Paid through Paystack — MTN MoMo, Telecel Cash, AT Money, Visa or Mastercard. Funds
-            land the moment the payment settles.
-          </Text>
+          <Text style={styles.topUpTitle}>{t('wallet.topUp.title')}</Text>
+          <Text style={styles.topUpBody}>{t('wallet.topUp.body')}</Text>
 
           <View style={styles.amountRow}>
             {TOP_UPS.map((value) => (
@@ -595,14 +645,20 @@ export default function WalletScreen() {
           <Divider style={{ marginVertical: 4 }} />
 
           <View style={styles.topUpSummary}>
-            <Text style={styles.topUpSummaryLabel}>Balance after payment</Text>
-            <Text style={styles.topUpSummaryValue}>{formatCedis(walletBalance + amount)}</Text>
+            <Text style={styles.topUpSummaryLabel}>{t('wallet.topUp.after')}</Text>
+            <Text style={styles.topUpSummaryValue}>
+              {formatCedis(walletBalance + amount, locale)}
+            </Text>
           </View>
 
           {!!topUpNotice && <Text style={styles.topUpNotice}>{topUpNotice}</Text>}
 
           <Button
-            label={checkoutRef ? 'Reopen checkout' : `Pay ${formatCedis(amount)} with Paystack`}
+            label={
+              checkoutRef
+                ? t('book.pay.reopen')
+                : t('wallet.topUp.pay', { amount: formatCedis(amount, locale) })
+            }
             onPress={startTopUp}
             loading={busy && !checkoutRef}
             variant={checkoutRef ? 'ghost' : 'primary'}
@@ -610,10 +666,15 @@ export default function WalletScreen() {
           />
 
           {!!checkoutRef && (
-            <Button label="I have paid — collect funds" onPress={collectTopUp} loading={busy} size="lg" />
+            <Button
+              label={t('wallet.topUp.collect')}
+              onPress={collectTopUp}
+              loading={busy}
+              size="lg"
+            />
           )}
 
-          <Button label="Cancel" variant="ghost" onPress={closeTopUp} />
+          <Button label={t('common.cancel')} variant="ghost" onPress={closeTopUp} />
         </ScrollView>
       </Sheet>
     </SafeAreaView>
@@ -621,7 +682,16 @@ export default function WalletScreen() {
 }
 
 function TransactionRow({ transaction }: { transaction: PaymentTransaction }) {
+  const { locale } = useT();
+
   // A top-up adds to the balance; everything else spends from it.
+  //
+  // The description is the server's sentence rather than this app's, and that is
+  // what keeps this test safe: it is matched against the English the server
+  // wrote, is never translated, and so the arrow keeps pointing the right way in
+  // every language. The description, the method and the status are all rendered
+  // as they arrive for the same reason — they are one vocabulary shared with the
+  // dispatch board and the desk's mail.
   const inbound = transaction.description.toLowerCase().includes('top-up');
 
   return (
@@ -639,13 +709,14 @@ function TransactionRow({ transaction }: { transaction: PaymentTransaction }) {
           {transaction.description}
         </Text>
         <Text style={styles.txnMeta} numberOfLines={1}>
-          {transaction.method} · {transaction.reference} · {relativeTime(transaction.timestamp)}
+          {transaction.method} · {transaction.reference} ·{' '}
+          {relativeTime(transaction.timestamp, locale)}
         </Text>
       </View>
 
       <View style={{ alignItems: 'flex-end' }}>
         <Text style={[styles.txnAmount, inbound && { color: colors.statusSuccess }]}>
-          {inbound ? '+' : '−'} {formatCedis(transaction.amount)}
+          {inbound ? '+' : '−'} {formatCedis(transaction.amount, locale)}
         </Text>
         <Text style={styles.txnStatus}>{transaction.status}</Text>
       </View>

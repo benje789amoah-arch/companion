@@ -6,176 +6,146 @@
 import {
   MEMBERSHIP_PLANS,
   LOYALTY_TIERS as CORE_LOYALTY_TIERS,
+  SERVICE_CATALOGUE,
   nextTierAfter as coreNextTierAfter,
+  priceLabel,
   tierForPoints as coreTierForPoints,
 } from '@freshfold/core';
 import type {
   LoyaltyTier,
   LoyaltyTierId,
   MembershipPlanId,
+  ServiceCategory,
   SubscriptionPlan,
   Testimonial,
 } from '@freshfold/core';
 
 /**
- * The marketing catalogue, ported from `apps/web/src/data.ts`.
+ * The catalogue as a phone shows it.
  *
- * It is duplicated rather than lifted into `@freshfold/core` for the same
- * reason the palettes are: the shared package deliberately imports nothing
- * platform-specific, and this table carries presentation decisions (icon names
- * that must exist in `lucide-react-native`, gradient stops as hex rather than
- * Tailwind class names) that only make sense on a device. The *prices and
- * copy* are the contract with the website; keep those in step.
+ * What FreshFold sells, what each thing costs and whether it can be booked at
+ * all now come from `@freshfold/core`, shared with the website and the server.
+ * This file used to carry its own copy of the table *and* its own pricing
+ * arithmetic, which is how the app came to quote ₵5 for a courier run the
+ * server records at ₵0, and to offer `Corporate Contracts` — a conversation,
+ * not a price — as a ₵30 order.
+ *
+ * What stays here is only what a device cares about: icon names that must exist
+ * in `lucide-react-native`, photographs, a short label for places the full
+ * service name will not fit, and gradient stops as hex rather than Tailwind
+ * class names. The same split the website makes in `apps/web/src/data.ts`.
  */
 
-export type ServiceCategory = 'core' | 'specialized' | 'express';
+export type { ServiceCategory } from '@freshfold/core';
 
-export interface ClientService {
-  id: string;
-  name: string;
+interface ServicePresentation {
   /** Short label for chips and the booking summary, where the full name won't fit. */
   shortName: string;
-  description: string;
-  priceInfo: string;
   iconName: string;
-  category: ServiceCategory;
   imageUrl: string;
 }
 
-export const SERVICES: ClientService[] = [
-  {
-    id: 'washing',
-    name: 'Washing (Machine & Hand Wash)',
+const SERVICE_PRESENTATION: Record<string, ServicePresentation> = {
+  washing: {
     shortName: 'Wash & Care',
-    description:
-      'Bespoke hand-care treatments for fine silks and cashmere, alongside temperature-regulated drum-washing for designer garments.',
-    priceInfo: 'From ₵15 / load',
     iconName: 'Sparkles',
-    category: 'core',
     imageUrl:
       'https://images.unsplash.com/photo-1517677208171-0bc6725a3e60?auto=format&fit=crop&q=80&w=800',
   },
-  {
-    id: 'drying',
-    name: 'Gentle Air drying',
+  drying: {
     shortName: 'Air Dry',
-    description:
-      'Controlled low-heat dehydration that prevents thermal shrinkage, restoring original fabric lift and wool elasticity.',
-    priceInfo: 'Included with Wash',
     iconName: 'Wind',
-    category: 'core',
     imageUrl:
       'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSPI6SKSgSeb7TRH3tohbZVtJXr9VLQq8uyyryGaMA3AQ&s=10',
   },
-  {
-    id: 'ironing-folding',
-    name: 'Ironing & Folding',
+  'ironing-folding': {
     shortName: 'Iron & Fold',
-    description:
-      'Crisp hand-pressed steam finishes and pristine laser-line boutique folding, ready for direct closet placement.',
-    priceInfo: 'From ₵3.50 / item',
     iconName: 'Shirt',
-    category: 'core',
     imageUrl:
       'https://images.unsplash.com/photo-1489274495757-95c7c837b101?auto=format&fit=crop&q=80&w=800',
   },
-  {
-    id: 'stain-removal',
-    name: 'Advanced Stain Removal',
+  'stain-removal': {
     shortName: 'Stain Care',
-    description:
-      'Targeted eco-friendly enzyme treatment of individual spots that safely releases red wine, oil, and coffee stains.',
-    priceInfo: 'From ₵8 / item',
     iconName: 'Droplet',
-    category: 'specialized',
     imageUrl:
       'https://images.unsplash.com/photo-1581578731548-c64695cc6952?auto=format&fit=crop&q=80&w=800',
   },
-  {
-    id: 'bedding-linens',
-    name: 'Bed Sheets & Linens Care',
+  'bedding-linens': {
     shortName: 'Linens',
-    description:
-      'Sanitizing hot-water cycles paired with ultra-soft, organic floral-extract formulas for high-thread-count sheets.',
-    priceInfo: 'From ₵25 / set',
     iconName: 'Bed',
-    category: 'specialized',
     imageUrl:
       'https://images.unsplash.com/photo-1522771739844-6a9f6d5f14af?auto=format&fit=crop&q=80&w=800',
   },
-  {
-    id: 'express-laundry',
-    name: 'Express Same-Day Laundry',
+  'express-laundry': {
     shortName: 'Same-Day',
-    description:
-      'A dedicated expedited sequence. Collected from your home by 9:00 AM, delivered freshly pressed by 7:30 PM.',
-    priceInfo: '+₵15 premium surcharge',
     iconName: 'Zap',
-    category: 'express',
     imageUrl:
       'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?auto=format&fit=crop&q=80&w=800',
   },
-  {
-    id: 'pickup-delivery',
-    name: 'Fast Pickup & Delivery',
+  'pickup-delivery': {
     shortName: 'Pickup Only',
-    description:
-      'Convenient, reliable, on time, every time. Direct real-time GPS-tracked logistics ensuring your orders are received and returned exactly on your clock.',
-    priceInfo: 'Complimentary',
     iconName: 'Truck',
-    category: 'express',
     imageUrl:
       'https://images.unsplash.com/photo-1617347454431-f49d7ff5c3b1?auto=format&fit=crop&q=80&w=800',
   },
-  {
-    id: 'car-detailing',
-    name: 'Bespoke Car Detailing',
+  'car-detailing': {
     shortName: 'Car Detail',
-    description:
-      'We restore, shine and protect your ride. High-end hand steam, polymer sealant wax coating, and deep interior/exterior detailing.',
-    priceInfo: 'From ₵150 / ride',
     iconName: 'Car',
-    category: 'specialized',
     imageUrl:
       'https://images.unsplash.com/photo-1563720223185-11003d516935?auto=format&fit=crop&q=80&w=800',
   },
-  {
-    id: 'home-office-cleaning',
-    name: 'Home & Office Cleaning',
+  'home-office-cleaning': {
     shortName: 'Deep Clean',
-    description:
-      'Spotless spaces, and healthier living. Deep-steam surface sanitizing, precise dust eradication, and natural aromatherapy allergen-free deodorizing.',
-    priceInfo: 'From ₵180 / space',
     iconName: 'House',
-    category: 'specialized',
     imageUrl:
       'https://images.unsplash.com/photo-1527515637462-cff94eecc1ac?auto=format&fit=crop&q=80&w=800',
   },
-  {
-    id: 'sofa-carpet-cleaning',
-    name: 'Sofa & Carpet Cleaning',
+  'sofa-carpet-cleaning': {
     shortName: 'Upholstery',
-    description:
-      'Deep clean for a fresher, safer home. Heavy-duty hot water extraction, stain neutralization, and antibacterial fabric protectants for all upholstery.',
-    priceInfo: 'From ₵90 / unit',
     iconName: 'Armchair',
-    category: 'specialized',
     imageUrl:
       'https://images.unsplash.com/photo-1540555700478-4be289fbecef?auto=format&fit=crop&q=80&w=800',
   },
-  {
-    id: 'corporate',
-    name: 'Corporate Contracts',
+  corporate: {
     shortName: 'Corporate',
-    description:
-      'Continuous logistics and custom care protocols for boutique hotels, premium spas, high-end fitness studios, and corporate offices.',
-    priceInfo: 'Custom Enterprise Quotes',
     iconName: 'Briefcase',
-    category: 'specialized',
     imageUrl:
       'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&q=80&w=800',
   },
-];
+};
+
+export interface ClientService extends ServicePresentation {
+  id: string;
+  name: string;
+  description: string;
+  /**
+   * The advert, derived from the charge by `priceLabel`. Never typed by hand —
+   * it used to be, and said "From ₵15 / load" over a ₵30 wash.
+   */
+  priceInfo: string;
+  category: ServiceCategory;
+  /**
+   * Whether this can be the service on a booking.
+   *
+   * False for work sold only alongside something else, or quoted case by case.
+   * Still shown on the home screen — it is part of what the business does — but
+   * the booking form does not offer it. See {@link BOOKABLE_SERVICES}.
+   */
+  bookable: boolean;
+}
+
+export const SERVICES: ClientService[] = SERVICE_CATALOGUE.map((service) => ({
+  id: service.id,
+  name: service.name,
+  description: service.description,
+  priceInfo: priceLabel(service),
+  category: service.category,
+  bookable: service.bookable,
+  ...SERVICE_PRESENTATION[service.id],
+}));
+
+/** The only services the booking form may offer. */
+export const BOOKABLE_SERVICES: ClientService[] = SERVICES.filter((service) => service.bookable);
 
 export const SERVICE_CATEGORIES: { id: ServiceCategory; label: string; blurb: string }[] = [
   { id: 'core', label: 'Everyday care', blurb: 'The weekly essentials, done properly.' },
@@ -354,161 +324,35 @@ export const TESTIMONIALS: Testimonial[] = [
 // Booking options
 // ---------------------------------------------------------------------------
 
-/** Exact slot strings the website submits, so both surfaces read the same. */
-export const PICKUP_TIME_SLOTS = [
-  '08:00 AM - 11:00 AM (Morning Concierge)',
-  '12:00 PM - 03:00 PM (Afternoon Transit)',
-  '05:30 PM - 08:30 PM (Sunset Concierge)',
-] as const;
-
-export const SCENTS = [
-  { id: 'Organic Lavender', label: 'Organic Lavender', surcharge: 5 },
-  { id: 'Bespoke Eucalyptus & Tea-Tree', label: 'Eucalyptus & Tea-Tree', surcharge: 5 },
-  {
-    id: 'Fragrance-Free (Pure Hypoallergenic Soap)',
-    label: 'Fragrance-Free',
-    surcharge: 0,
-  },
-] as const;
-
-export const STARCH_LEVELS = ['None', 'Light', 'Medium'] as const;
-
-export interface SpecialtyAddon {
-  id: string;
-  label: string;
-  description: string;
-  price: number;
-  iconName: string;
-}
-
-export const SPECIALTY_ADDONS: SpecialtyAddon[] = [
-  {
-    id: 'Fabric Softening',
-    label: 'Fabric softening',
-    description: 'Plant-derived conditioner for a softer hand-feel.',
-    price: 6,
-    iconName: 'Feather',
-  },
-  {
-    id: 'Laser Line Creasing',
-    label: 'Laser-line creasing',
-    description: 'Razor-sharp trouser and sleeve lines.',
-    price: 8,
-    iconName: 'Ruler',
-  },
-  {
-    id: 'Garment Shielding',
-    label: 'Garment shielding',
-    description: 'Individual breathable covers on the hanger return.',
-    price: 10,
-    iconName: 'ShieldCheck',
-  },
-  {
-    id: 'Delicate Hand Finish',
-    label: 'Delicate hand finish',
-    description: 'Silks and cashmere finished by hand, never machine-pressed.',
-    price: 12,
-    iconName: 'Hand',
-  },
-];
-
 /**
- * The website's price estimator, kept behaviourally identical so a quote in the
- * app matches a quote on the site for the same selections. The add-on total is
- * this app's extension — the website has no add-on picker, and an empty
- * selection reproduces its number exactly.
- */
-export function estimatePrice(input: {
-  serviceName: string;
-  scent: string;
-  starch: string;
-  addonIds?: string[];
-}): number {
-  return priceBreakdown(input).gross;
-}
-
-export interface PriceBreakdown {
-  /** The service itself, before finishes. */
-  base: number;
-  /** Scent and starch surcharges — part of the laundry, not an extra. */
-  finishes: number;
-  /** Specialty add-ons, which a membership does not cover. */
-  addons: number;
-  /** The laundry a membership's included pickups pay for: base + finishes. */
-  laundry: number;
-  /** Everything, which is what `estimatePrice` has always returned. */
-  gross: number;
-}
-
-/**
- * The same arithmetic, itemised.
+ * The finish, the add-ons and the arithmetic, straight from core.
  *
- * A membership covers the laundry and not the extras, so the quote has to be
- * separable — `estimatePrice` returned one number and there was no way to waive
- * part of it. The sum is unchanged, so a quote here still matches the website's
- * for the same selections.
+ * All of this was declared here and it was a second opinion on what a booking
+ * costs. The local `priceBreakdown` decided the base price from a cascade of
+ * `serviceName.includes(…)` tests and the finish surcharge from a blacklist of
+ * three service names, so anything it had not heard of was treated as a garment
+ * — `Fast Pickup & Delivery` was quoted at ₵5 for a scent, against the ₵0 the
+ * server records for it. Re-exported rather than removed so the screens keep
+ * importing the catalogue for catalogue things.
  */
-export function priceBreakdown(input: {
-  serviceName: string;
-  scent: string;
-  starch: string;
-  addonIds?: string[];
-}): PriceBreakdown {
-  const { serviceName, scent, starch, addonIds = [] } = input;
+export {
+  DEFAULT_SCENT,
+  DEFAULT_STARCH,
+  PICKUP_TIME_SLOTS,
+  SCENTS,
+  SPECIALTY_ADDONS,
+  STARCH_LEVELS,
+  isGarmentService,
+  isPlanCoverable,
+  priceBreakdown,
+} from '@freshfold/core';
 
-  let base = 25;
-  if (serviceName.includes('Washing')) base = 30;
-  else if (serviceName.includes('Bed Sheets') || serviceName.includes('Linen')) base = 45;
-  else if (
-    serviceName.includes('Executive') ||
-    serviceName.includes('Pro') ||
-    serviceName.includes('Premium')
-  ) {
-    base = 55;
-  } else if (serviceName.includes('Express') || serviceName.includes('Same-Day')) base = 50;
-  else if (serviceName.includes('Car Detailing') || serviceName.includes('Detailing')) base = 150;
-  else if (serviceName.includes('Home & Office') || serviceName.includes('Office Cleaning')) {
-    base = 180;
-  } else if (serviceName.includes('Sofa & Carpet') || serviceName.includes('Carpet Cleaning')) {
-    base = 90;
-  } else if (serviceName.includes('Fast Pickup') || serviceName.includes('Pickup & Delivery')) {
-    base = 0; // Complimentary
-  }
-
-  // Scent and starch are garment finishes; they don't apply to a car or a sofa.
-  let finishes = 0;
-  if (isGarmentService(serviceName)) {
-    if (!scent.startsWith('Fragrance-Free')) finishes += 5;
-    if (starch !== 'None') finishes += 5;
-  }
-
-  const addons = SPECIALTY_ADDONS.filter((addon) => addonIds.includes(addon.id)).reduce(
-    (total, addon) => total + addon.price,
-    0
-  );
-
-  return { base, finishes, addons, laundry: base + finishes, gross: base + finishes + addons };
-}
-
-/**
- * Whether a membership's included pickups apply to this service.
- *
- * A laundry plan buys laundry. Car detailing, office cleaning and upholstery
- * are priced at ₵90–₵180 a visit and would otherwise let a Family member spend
- * eight included pickups on ₵1,440 of work for ₵289. Those get the member
- * discount instead.
- */
-export function isPlanCoverable(serviceName: string): boolean {
-  return isGarmentService(serviceName);
-}
-
-export function isGarmentService(serviceName: string): boolean {
-  return (
-    !serviceName.includes('Car Detailing') &&
-    !serviceName.includes('Home & Office') &&
-    !serviceName.includes('Sofa & Carpet')
-  );
-}
+export type {
+  BookingSelections,
+  FinishOption,
+  PriceBreakdown,
+  SpecialtyAddon,
+} from '@freshfold/core';
 
 // ---------------------------------------------------------------------------
 // Payment
@@ -646,11 +490,11 @@ export const CUSTOMER_SEGMENTS = [
 ];
 
 export const CONTACT = {
-  phone: '+233 55 000 1234',
+  phone: '+233 200957165',
   // Unused while the WhatsApp entry points are hidden; kept so they can be
   // switched back on without hunting for the number again.
-  whatsapp: '233550001234',
-  email: 'concierge@freshfold.com',
+  whatsapp: '233200957165',
+  email: 'laundry.freshfold@gmail.com',
   hours: 'Mon–Sat 07:00–21:00 · Sun 10:00–18:00',
-  address: 'FreshFold Laundry Hub, Bomso Junction, Kumasi',
+  address: 'Wagyingo Opal, Ayeduase-Kotei, beside the Benab filling station',
 };

@@ -30,9 +30,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ApiError,
+  MAX_SAVED_ADDRESSES,
   PHONE_DIGITS,
-  PHONE_LENGTH_MESSAGE,
   deriveSuburb,
+  encodeFinish,
   isCompletePhone,
   limitPhoneInput,
   membershipBookingQuote,
@@ -60,10 +61,12 @@ import {
   Sheet,
 } from '../../src/components/ui';
 import {
+  BOOKABLE_SERVICES,
+  DEFAULT_SCENT,
+  DEFAULT_STARCH,
   PAYMENT_METHODS,
   PICKUP_TIME_SLOTS,
   SCENTS,
-  SERVICES,
   SPECIALTY_ADDONS,
   STARCH_LEVELS,
   isGarmentService,
@@ -72,6 +75,7 @@ import {
   tierForPoints,
   type PaymentChoice,
 } from '../../src/data/catalogue';
+import { intlTag, useT, type TranslationKey } from '../../src/i18n';
 import { api } from '../../src/services/api';
 import { useClient } from '../../src/store/ClientStore';
 import { useSession } from '../../src/store/SessionStore';
@@ -81,11 +85,17 @@ import { colors, formatCedis, radius, shadow, tints } from '../../src/theme';
  * The booking flow.
  *
  * The website does this in one long modal; on a phone that is a wall, so it is
- * five steps with a running quote pinned to the bottom. The quote itself comes
- * from `priceBreakdown`, which reproduces the website's arithmetic exactly —
- * the same selections give the same number on both surfaces, which matters
- * because a customer can start on the site and finish here. It is itemised so a
- * membership can cover the laundry without also making the add-ons free.
+ * five steps with a running quote pinned to the bottom. The quote comes from
+ * `priceBreakdown` in `@freshfold/core` — the same table the website's form and
+ * the server's `quoteBooking` read, so the number shown here, the number shown
+ * there and the number charged are one number. This screen used to carry its own
+ * copy of the arithmetic and it had already drifted from both. It is itemised so
+ * a membership can cover the laundry without also making the add-ons free.
+ *
+ * Only `BOOKABLE_SERVICES` are offered. Two entries in the catalogue are not
+ * bookable — air drying is part of a wash, a corporate contract is a
+ * conversation — and this screen used to list all eleven and put a price on
+ * both.
  *
  * A booking does not require an account. Signed in, the contact step is
  * pre-filled and skippable; signed out, it is where the details are collected.
@@ -93,7 +103,34 @@ import { colors, formatCedis, radius, shadow, tints } from '../../src/theme';
 
 type Step = 0 | 1 | 2 | 3 | 4;
 
-const STEP_TITLES = ['Service', 'Schedule', 'Address', 'Finishing', 'Payment'] as const;
+/**
+ * The five steps, named by key rather than by word.
+ *
+ * Module scope, so it cannot translate anything itself — the screen looks up the
+ * key it picks. Keeping all five in one list is also what stops a part-written
+ * dictionary from producing a strip that reads "Step 4 of 5 · Finishing" after
+ * three translated names: a language either carries the set or falls back to
+ * English across the whole row.
+ */
+const STEP_TITLE_KEYS: readonly TranslationKey[] = [
+  'book.step.service',
+  'book.step.schedule',
+  'book.step.address',
+  'book.step.finishing',
+  'book.step.payment',
+];
+
+/**
+ * A service id this form can actually take an order for.
+ *
+ * The home screen links every catalogue card here, and two of them are not
+ * bookable — air drying is part of a wash, a corporate contract is quoted. An id
+ * for one of those falls back to the first bookable service rather than leaving
+ * the form pointed at something it cannot price.
+ */
+function bookableServiceId(id: string | undefined): string {
+  return BOOKABLE_SERVICES.find((service) => service.id === id)?.id ?? BOOKABLE_SERVICES[0].id;
+}
 
 export default function BookScreen() {
   const router = useRouter();
@@ -101,8 +138,7 @@ export default function BookScreen() {
   const { account, isAuthenticated } = useSession();
   const {
     createBooking,
-    chargeWallet,
-    recordTransaction,
+    payForBooking,
     walletBalance,
     points,
     addresses,
@@ -110,11 +146,12 @@ export default function BookScreen() {
     saveAddress,
     plan,
   } = useClient();
+  const { t, locale } = useT();
 
   const [step, setStep] = useState<Step>(0);
 
   // -- selections ----------------------------------------------------------
-  const [serviceId, setServiceId] = useState(params.serviceId ?? SERVICES[0].id);
+  const [serviceId, setServiceId] = useState(() => bookableServiceId(params.serviceId));
   const [pickupDate, setPickupDate] = useState(() => isoDaysFromNow(1));
   const [timeSlot, setTimeSlot] = useState<string>(PICKUP_TIME_SLOTS[0]);
   const [address, setAddress] = useState('');
@@ -138,8 +175,15 @@ export default function BookScreen() {
    */
   const suburb = useMemo(() => deriveSuburb(pickupPin, address), [pickupPin, address]);
   const [saveThisAddress, setSaveThisAddress] = useState(false);
-  const [scent, setScent] = useState<string>(SCENTS[0].id);
-  const [starch, setStarch] = useState<string>(STARCH_LEVELS[0]);
+
+  /**
+   * The book has a ceiling, and `withAddress` enforces it by dropping the
+   * overflow. So a full book has to disable the tick rather than take it and
+   * lose the address on the way to the account.
+   */
+  const bookIsFull = addresses.length >= MAX_SAVED_ADDRESSES;
+  const [scent, setScent] = useState<string>(DEFAULT_SCENT);
+  const [starch, setStarch] = useState<string>(DEFAULT_STARCH);
   const [addonIds, setAddonIds] = useState<string[]>([]);
   const [instructions, setInstructions] = useState('');
   const [riderNote, setRiderNote] = useState('');
@@ -153,6 +197,17 @@ export default function BookScreen() {
   const [method, setMethod] = useState<PaymentChoice>('Paystack');
   const [paystackRef, setPaystackRef] = useState('');
   const [isPaid, setIsPaid] = useState(false);
+
+  /**
+   * The booking's id, allocated before anything is paid.
+   *
+   * It used to be minted inside `submit`, which is too late: Paystack checkout
+   * happens on the payment step, before the form is submitted, and the server will
+   * only settle a payment whose `metadata.booking_id` names the booking it is
+   * settling. Without that binding one ₵30 wash's reference could be quoted
+   * against every other booking the customer holds.
+   */
+  const [bookingId, setBookingId] = useState(() => newJobId());
   const [paymentBusy, setPaymentBusy] = useState(false);
   const [paymentNotice, setPaymentNotice] = useState('');
 
@@ -163,15 +218,16 @@ export default function BookScreen() {
   const [error, setError] = useState('');
   const [created, setCreated] = useState<Booking | null>(null);
 
+  /** Always one of {@link BOOKABLE_SERVICES} — see {@link bookableServiceId}. */
   const service = useMemo(
-    () => SERVICES.find((candidate) => candidate.id === serviceId) ?? SERVICES[0],
+    () => BOOKABLE_SERVICES.find((candidate) => candidate.id === serviceId) ?? BOOKABLE_SERVICES[0],
     [serviceId]
   );
 
   const tier = useMemo(() => tierForPoints(points), [points]);
 
   const quote = useMemo(
-    () => priceBreakdown({ serviceName: service.name, scent, starch, addonIds }),
+    () => priceBreakdown({ serviceType: service.name, scent, starch, addonIds }),
     [service.name, scent, starch, addonIds]
   );
   const gross = quote.gross;
@@ -258,7 +314,7 @@ export default function BookScreen() {
 
   // Arriving from a service card or a segment tile preselects the service.
   useEffect(() => {
-    if (params.serviceId) setServiceId(params.serviceId);
+    if (params.serviceId) setServiceId(bookableServiceId(params.serviceId));
   }, [params.serviceId]);
 
   const stepValid = useCallback(
@@ -267,22 +323,29 @@ export default function BookScreen() {
         case 0:
           return null; // A service is always selected.
         case 1:
-          return pickupDate ? null : 'Choose a pickup date.';
+          return pickupDate ? null : t('book.error.date');
         case 2:
-          if (!address.trim()) return 'We need an address to collect from.';
-          if (!pickupPin) return 'Set the pickup pin so the courier knows where to knock.';
-          if (!name.trim()) return 'Tell us who to ask for at the door.';
-          if (!phone.trim()) return 'A phone number lets the courier reach you.';
-          if (!isCompletePhone(phone)) return PHONE_LENGTH_MESSAGE;
+          if (!address.trim()) return t('book.error.address');
+          if (!pickupPin) return t('book.error.pin');
+          if (!name.trim()) return t('book.error.name');
+          if (!phone.trim()) return t('book.error.phone');
+          // The rule lives in `@freshfold/core` and the wording lives here.
+          // `PHONE_LENGTH_MESSAGE` is the same sentence in English, but it is
+          // shared with the rider and web apps, which are not translated — so
+          // this screen says it in the customer's language and core keeps
+          // deciding what counts as a complete number.
+          if (!isCompletePhone(phone)) {
+            return t('settings.details.phoneLength', { digits: PHONE_DIGITS });
+          }
           return null;
         case 3:
           return null; // Finishing choices all have defaults.
         case 4:
           if (method === 'Wallet' && !isAuthenticated) {
-            return 'Sign in to pay from your FreshFold wallet.';
+            return t('book.error.walletSignIn');
           }
           if (method === 'Wallet' && walletBalance < total) {
-            return `Your wallet holds ${formatCedis(walletBalance)}. Choose another method or top up.`;
+            return t('book.error.walletShort', { amount: formatCedis(walletBalance, locale) });
           }
           return null;
       }
@@ -297,6 +360,8 @@ export default function BookScreen() {
       isAuthenticated,
       walletBalance,
       total,
+      t,
+      locale,
     ]
   );
 
@@ -341,9 +406,17 @@ export default function BookScreen() {
         amount: total,
         // Back into this app, not to a website. Without it Paystack follows
         // the server's `APP_URL` and drops a phone on a localhost page that
-        // does not exist on that phone.
-        callback_url: Linking.createURL('paystack-success'),
-        metadata: { customer_name: name || 'Patron', phone, service: service.name },
+        // does not exist on that phone. `flow` is only read if the app was
+        // killed while the browser had the screen — see `paystack-success`.
+        callback_url: Linking.createURL('paystack-success', { queryParams: { flow: 'book' } }),
+        metadata: {
+          // Binds this payment to this booking. The server refuses to settle a
+          // bill with a reference that names a different one.
+          booking_id: bookingId,
+          customer_name: name || 'Patron',
+          phone,
+          service: service.name,
+        },
       });
     } catch (err) {
       setPaymentBusy(false);
@@ -351,8 +424,8 @@ export default function BookScreen() {
       // refused the amount — and that is worth more than a generic line.
       setPaymentNotice(
         err instanceof ApiError
-          ? `Payment gateway: ${err.message}`
-          : 'Could not reach the payment gateway. Check your connection, or choose Pay on Pickup.'
+          ? t('book.pay.gateway', { message: err.message })
+          : t('book.pay.gatewayUnreachable')
       );
       return;
     }
@@ -361,15 +434,13 @@ export default function BookScreen() {
 
     try {
       await WebBrowser.openBrowserAsync(checkout.authorization_url);
-      setPaymentNotice('Finish on the Paystack page, then tap “I have paid” to verify.');
+      setPaymentNotice(t('book.pay.finishOnPage'));
     } catch {
-      setPaymentNotice(
-        `Could not open the checkout page here. Reference ${checkout.reference} is live — open Paystack, pay, then tap “I have paid”.`
-      );
+      setPaymentNotice(t('book.pay.browserFailed', { reference: checkout.reference }));
     } finally {
       setPaymentBusy(false);
     }
-  }, [email, total, name, phone, service.name]);
+  }, [email, total, name, phone, service.name, t]);
 
   const verifyPaystack = useCallback(async () => {
     if (!paystackRef) return;
@@ -381,17 +452,30 @@ export default function BookScreen() {
 
       if (result.status && status === 'success') {
         setIsPaid(true);
-        setPaymentNotice('Payment confirmed.');
+        setPaymentNotice(t('book.pay.confirmed'));
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       } else {
-        setPaymentNotice(`Paystack says: ${status ?? 'pending'}. Complete the checkout and retry.`);
+        // The gateway's own state word, which it gives in English. Only the
+        // stand-in for a missing one is translated.
+        setPaymentNotice(
+          t('book.pay.pending', { status: status ?? t('book.pay.pendingStatus') })
+        );
       }
-    } catch {
-      setPaymentNotice('Verification failed. If you were charged, contact the concierge desk.');
+    } catch (err) {
+      // The reference is kept either way, so none of these is a dead end — and
+      // that is why none of them sends the customer to the desk any more. The
+      // server says why when it knows why, and one of the things it now says is
+      // that a gateway timeout left the money safe and is worth another tap;
+      // that read as "verification failed, go and complain" before.
+      setPaymentNotice(
+        err instanceof ApiError
+          ? t('book.pay.gateway', { message: err.message })
+          : t('book.pay.verifyUnreachable')
+      );
     } finally {
       setPaymentBusy(false);
     }
-  }, [paystackRef]);
+  }, [paystackRef, t]);
 
   // --------------------------------------------------------------- submit
 
@@ -406,25 +490,7 @@ export default function BookScreen() {
     setSubmitting(true);
 
     try {
-      const id = newJobId();
-      let paid = isPaid;
-      let reference = paystackRef;
-
-      if (method === 'Wallet') {
-        const ok = await chargeWallet(total, `Booking ${id} — ${service.name}`, id);
-        if (!ok) {
-          setError('Your wallet balance moved. Refresh and try again.');
-          return;
-        }
-        paid = true;
-        reference = `TXN-W-${id.replace(/\D/g, '')}`;
-      }
-
-      const paymentStatus: PaymentStatus = paid
-        ? 'Paid'
-        : method === 'Pay on Pickup'
-          ? 'Pay on Pickup'
-          : 'Pending';
+      const id = bookingId;
 
       const booking: Booking = {
         id,
@@ -439,15 +505,21 @@ export default function BookScreen() {
         pickupDate,
         pickupTime: timeSlot,
         deliveryDate: isoDaysAfter(pickupDate, 1),
-        // Same composed sentence the website writes, so the rider's job card
-        // and the admin dashboard read identically whichever surface booked it.
-        // The finish prefix is dropped for services it cannot apply to — the
-        // website writes "Organic Lavender scent, None starch" onto a car
-        // detailing job, which is noise on the courier's card.
-        specialInstructions: (isGarmentService(service.name)
-          ? `${scent} scent, ${starch} starch. ${instructions}`
-          : instructions
-        ).trim(),
+        // `encodeFinish` is the one writer of this format, shared with the
+        // website, so the rider's job card and the admin dashboard read
+        // identically whichever surface booked it. It drops the finish prefix on
+        // a service that cannot take one — writing "Organic Lavender scent, None
+        // starch" onto a car detail is noise on the courier's card.
+        specialInstructions: encodeFinish({
+          serviceType: service.name,
+          scent,
+          starch,
+          notes: instructions,
+        }),
+        // Structured as well as composed into the sentence above, because the
+        // server prices the booking from these rather than parsing English.
+        scent: isGarmentService(service.name) ? scent : undefined,
+        starch: isGarmentService(service.name) ? starch : undefined,
         specialtyAddons: addonIds.length > 0 ? addonIds : undefined,
         riderNote: riderNote.trim() || undefined,
         address: address.trim(),
@@ -459,32 +531,59 @@ export default function BookScreen() {
         pickupCoords: pickupPin ?? undefined,
         status: 'Scheduled',
         createdAt: new Date().toISOString(),
-        paymentStatus,
+        /**
+         * How they mean to pay. Not whether they have, and not what it costs.
+         *
+         * `amount`, `paymentStatus`, `paidAt` and `transactionRef` are the
+         * server's: it prices the booking with `quoteBooking` and will only mark
+         * one `Paid` through `POST /bookings/:id/payment`. This screen used to
+         * debit the wallet itself, set `paymentStatus: 'Paid'` and invent a
+         * `TXN-…` reference — and once the server stopped honouring that, the
+         * money left the wallet while the booking still read `Pending`.
+         */
         paymentMethod: method,
-        amount: total,
-        transactionRef: paid ? reference || `TXN-${id.replace(/\D/g, '')}` : undefined,
-        paidAt: paid ? new Date().toISOString() : undefined,
       };
 
       const saved = await createBooking(booking);
 
-      // A card or mobile-money charge is ledgered here; the wallet path already
-      // ledgered itself inside `chargeWallet`.
-      if (paid && method !== 'Wallet' && account) {
-        recordTransaction({
-          id: `txn-${Date.now()}`,
-          bookingId: saved.id,
-          userEmail: account.email,
-          amount: total,
-          method,
-          status: 'Successful',
-          reference: booking.transactionRef!,
-          timestamp: new Date().toISOString(),
-          description: `Booking ${saved.id} — ${service.name}`,
-        });
+      /**
+       * Settle it, against the price the server worked out.
+       *
+       * After the booking rather than before: the pickup is real and dispatchable
+       * either way, and one that could not be paid for reads `Pending` to the
+       * desk, which is true. The wallet debit, its ledger row and the points it
+       * earns all happen inside the route, on a locked account row — so there is
+       * no separate `recordTransaction` here any more, and no way for the two to
+       * disagree about what was taken.
+       */
+      let settled = saved;
+      if (method !== 'Pay on Pickup' && (method === 'Wallet' || isPaid)) {
+        /**
+         * Two ways to settle, whatever the customer called it.
+         *
+         * `PaymentChoice` still lists 'MTN MoMo', 'Telecel Cash', 'AT Money' and
+         * 'Card' from an earlier design; `PAYMENT_METHODS` offers none of them, and
+         * every one of them would go through the Paystack checkout if it did. So
+         * anything that is not the wallet is a Paystack settlement.
+         */
+        const settleAs = method === 'Wallet' ? 'Wallet' : 'Paystack';
+
+        try {
+          settled = await payForBooking(
+            saved.id,
+            settleAs,
+            settleAs === 'Paystack' ? paystackRef : undefined
+          );
+        } catch (failure) {
+          setPaymentNotice(
+            failure instanceof ApiError
+              ? t('book.pay.bookedThen', { message: failure.message })
+              : t('book.pay.bookedUnsettled')
+          );
+        }
       }
 
-      if (saveThisAddress) {
+      if (saveThisAddress && !bookIsFull) {
         saveAddress({
           id: `addr-${Date.now()}`,
           label: suburb,
@@ -500,9 +599,9 @@ export default function BookScreen() {
       }
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      setCreated(saved);
+      setCreated(settled);
     } catch {
-      setError('Could not save that booking. It is queued and will send when you reconnect.');
+      setError(t('book.error.save'));
     } finally {
       setSubmitting(false);
     }
@@ -511,8 +610,8 @@ export default function BookScreen() {
     isPaid,
     paystackRef,
     method,
-    chargeWallet,
-    total,
+    bookingId,
+    payForBooking,
     service.name,
     name,
     email,
@@ -530,11 +629,11 @@ export default function BookScreen() {
     suburb,
     pickupPin,
     createBooking,
-    account,
-    recordTransaction,
     saveThisAddress,
     saveAddress,
     addresses.length,
+    bookIsFull,
+    t,
   ]);
 
   const reset = useCallback(() => {
@@ -546,6 +645,9 @@ export default function BookScreen() {
     setInstructions('');
     setRiderNote('');
     setAddonIds([]);
+    // A fresh id for the next booking. Without this the second pickup of a
+    // session would carry the first one's id and its Paystack reference.
+    setBookingId(newJobId());
   }, []);
 
   return (
@@ -555,9 +657,13 @@ export default function BookScreen() {
           <ArrowLeft size={17} color={colors.textCharcoal} />
         </Pressable>
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>Schedule a pickup</Text>
+          <Text style={styles.headerTitle}>{t('book.title')}</Text>
           <Text style={styles.headerStep}>
-            Step {step + 1} of 5 · {STEP_TITLES[step]}
+            {t('book.stepOf', {
+              current: step + 1,
+              total: 5,
+              name: t(STEP_TITLE_KEYS[step]),
+            })}
           </Text>
         </View>
       </View>
@@ -574,7 +680,7 @@ export default function BookScreen() {
         >
           {step === 0 && (
             <View style={{ gap: 14 }}>
-              <SectionLabel>What needs care?</SectionLabel>
+              <SectionLabel>{t('book.service.prompt')}</SectionLabel>
 
               <Pressable onPress={() => setServicePickerOpen(true)}>
                 <Card tone="sage" style={styles.selectedService}>
@@ -592,24 +698,24 @@ export default function BookScreen() {
                 </Card>
               </Pressable>
 
-              <Text style={styles.helper}>
-                Tap to change. Every service is quoted before you confirm, and the courier is
-                complimentary on all of them.
-              </Text>
+              <Text style={styles.helper}>{t('book.service.helper')}</Text>
 
               {!!plan && (
                 <Card tone="gold" style={{ gap: 4 }}>
                   <Text style={styles.planTitle}>
-                    {membership.covered
-                      ? 'This pickup is included in your membership'
-                      : 'Booked under your membership'}
+                    {membership.covered ? t('book.plan.coveredTitle') : t('book.plan.title')}
                   </Text>
                   <Text style={styles.planBody}>
                     {membership.covered
-                      ? `The laundry is already paid for — ${membership.remainingPickups} of ${planDefinition?.includedPickups ?? 0} pickups left this month. Add-ons are charged at your member rate, and the order is prioritised in dispatch.`
+                      ? t('book.plan.coveredBody', {
+                          left: membership.remainingPickups,
+                          total: planDefinition?.includedPickups ?? 0,
+                        })
                       : membership.discount > 0
-                        ? `Your included pickups are spent for this month, so this one is at your member rate. It is still prioritised in dispatch, and your allowance resets on ${new Date(plan.renewsOn).toLocaleDateString()}.`
-                        : 'This order is prioritised in dispatch.'}
+                        ? t('book.plan.rateBody', {
+                            date: new Date(plan.renewsOn).toLocaleDateString(intlTag(locale)),
+                          })
+                        : t('book.plan.priorityBody')}
                   </Text>
                 </Card>
               )}
@@ -619,7 +725,7 @@ export default function BookScreen() {
           {step === 1 && (
             <View style={{ gap: 18 }}>
               <View style={{ gap: 10 }}>
-                <SectionLabel>Pickup date</SectionLabel>
+                <SectionLabel>{t('book.date.title')}</SectionLabel>
                 <View style={styles.dateRow}>
                   {[0, 1, 2, 3, 4].map((offset) => {
                     const iso = isoDaysFromNow(offset);
@@ -633,34 +739,37 @@ export default function BookScreen() {
                         style={[styles.dateCell, active && styles.dateCellActive]}
                       >
                         <Text style={[styles.dateDow, active && styles.dateTextActive]}>
+                          {/* The first two cells are named; the rest are the
+                              weekday, which Intl already knows how to say in
+                              the customer's language. */}
                           {offset === 0
-                            ? 'Today'
+                            ? t('book.date.today')
                             : offset === 1
-                              ? 'Tmrw'
-                              : date.toLocaleDateString([], { weekday: 'short' })}
+                              ? t('book.date.tomorrow')
+                              : date.toLocaleDateString(intlTag(locale), { weekday: 'short' })}
                         </Text>
                         <Text style={[styles.dateNum, active && styles.dateTextActive]}>
                           {date.getDate()}
                         </Text>
                         <Text style={[styles.dateMon, active && styles.dateTextActive]}>
-                          {date.toLocaleDateString([], { month: 'short' })}
+                          {date.toLocaleDateString(intlTag(locale), { month: 'short' })}
                         </Text>
                       </Pressable>
                     );
                   })}
                 </View>
                 <Field
-                  label="Or type a date"
+                  label={t('book.date.field')}
                   value={pickupDate}
                   onChangeText={setPickupDate}
-                  placeholder="YYYY-MM-DD"
+                  placeholder={t('book.date.placeholder')}
                   icon={<Calendar size={15} color={colors.textMuted} />}
-                  hint="Delivery is scheduled for the following day."
+                  hint={t('book.date.hint')}
                 />
               </View>
 
               <View style={{ gap: 9 }}>
-                <SectionLabel>Collection window</SectionLabel>
+                <SectionLabel>{t('book.window.title')}</SectionLabel>
                 {PICKUP_TIME_SLOTS.map((slot) => (
                   <OptionRow
                     key={slot}
@@ -683,7 +792,7 @@ export default function BookScreen() {
                 <Pressable onPress={() => setAddressPickerOpen(true)}>
                   <Card tone="sunken" style={styles.savedRow}>
                     <Bookmark size={15} color={colors.brandSage} />
-                    <Text style={styles.savedLabel}>Use a saved address</Text>
+                    <Text style={styles.savedLabel}>{t('book.address.saved')}</Text>
                     <ChevronRight size={15} color={colors.textMuted} />
                   </Card>
                 </Pressable>
@@ -700,23 +809,27 @@ export default function BookScreen() {
                   setPickupPin(detail.coords);
                   setPinOrigin('place');
                 }}
-                placeholder="Evandy Hostel, Block B, Room 304"
-                hint="Include the block and room — this is what the courier reads at the door."
+                placeholder={t('address.addressPlaceholder')}
+                hint={t('book.address.hint')}
               />
 
               {/* The suburb sheet used to sit here. It is derived from the pin
                   now — a customer who has dropped one has already said where
                   they are, and picking a collection zone as well was asking
-                  them to do our filing. */}
-              <Field label="City" value={city} onChangeText={setCity} placeholder="Kumasi" />
+                  them to do our filing.
+
+                  The label and its example town are the address sheet's own
+                  keys: it is the same field, so it is not worded twice. */}
+              <Field
+                label={t('address.city')}
+                value={city}
+                onChangeText={setCity}
+                placeholder={t('address.cityPlaceholder')}
+              />
 
               <View style={{ gap: 8 }}>
-                <SectionLabel>Where should the courier knock?</SectionLabel>
-                <Text style={styles.pinIntro}>
-                  An address is a sentence; a courier needs a point. Drop the pin on your gate or
-                  hostel entrance — it is what their navigation follows and what confirms their
-                  arrival.
-                </Text>
+                <SectionLabel>{t('book.pin.title')}</SectionLabel>
+                <Text style={styles.pinIntro}>{t('book.pin.intro')}</Text>
                 <PickupPinPicker
                   value={pickupPin}
                   onChange={setPickupPin}
@@ -730,38 +843,54 @@ export default function BookScreen() {
 
               <Pressable
                 onPress={() => setSaveThisAddress((current) => !current)}
+                disabled={bookIsFull}
                 style={styles.checkRow}
               >
-                <View style={[styles.checkbox, saveThisAddress && styles.checkboxOn]}>
-                  {saveThisAddress && <Check size={11} color="#FFFFFF" strokeWidth={3} />}
+                <View
+                  style={[
+                    styles.checkbox,
+                    saveThisAddress && !bookIsFull && styles.checkboxOn,
+                    bookIsFull && styles.checkboxOff,
+                  ]}
+                >
+                  {saveThisAddress && !bookIsFull && (
+                    <Check size={11} color="#FFFFFF" strokeWidth={3} />
+                  )}
                 </View>
-                <Text style={styles.checkLabel}>Save this address for next time</Text>
+                <Text style={[styles.checkLabel, bookIsFull && styles.checkLabelOff]}>
+                  {/* `MAX_SAVED_ADDRESSES` is the server's ceiling, passed in
+                      rather than written into five dictionaries. */}
+                  {bookIsFull
+                    ? t('addresses.full', { max: MAX_SAVED_ADDRESSES })
+                    : t('book.address.save')}
+                </Text>
               </Pressable>
 
               <Divider />
 
-              <SectionLabel>Who should the courier ask for?</SectionLabel>
-              <Field label="Full name" value={name} onChangeText={setName} placeholder="Ama Mensah" />
+              <SectionLabel>{t('book.contact.title')}</SectionLabel>
               <Field
-                label="Phone"
+                label={t('book.contact.name')}
+                value={name}
+                onChangeText={setName}
+                placeholder={t('book.contact.namePlaceholder')}
+              />
+              <Field
+                label={t('settings.details.phone')}
                 value={phone}
                 onChangeText={(next) => setPhone(limitPhoneInput(next))}
-                placeholder={`${PHONE_DIGITS} digits — e.g. 0550001234`}
+                placeholder={t('settings.details.phonePlaceholder', { digits: PHONE_DIGITS })}
                 keyboardType="phone-pad"
                 maxLength={PHONE_DIGITS}
               />
               <Field
-                label="Email"
+                label={t('settings.details.email')}
                 value={email}
                 onChangeText={setEmail}
-                placeholder="you@example.com"
+                placeholder={t('book.contact.emailPlaceholder')}
                 keyboardType="email-address"
                 autoCapitalize="none"
-                hint={
-                  isAuthenticated
-                    ? undefined
-                    : 'Optional — but it is how we link this order to an account later.'
-                }
+                hint={isAuthenticated ? undefined : t('book.contact.emailHint')}
               />
             </View>
           )}
@@ -771,12 +900,16 @@ export default function BookScreen() {
               {isGarmentService(service.name) ? (
                 <>
                   <View style={{ gap: 9 }}>
-                    <SectionLabel>Scent</SectionLabel>
+                    <SectionLabel>{t('book.scent.title')}</SectionLabel>
                     {SCENTS.map((option) => (
                       <OptionRow
                         key={option.id}
                         title={option.label}
-                        subtitle={option.surcharge > 0 ? `+ ${formatCedis(option.surcharge)}` : 'No surcharge'}
+                        subtitle={
+                          option.surcharge > 0
+                            ? `+ ${formatCedis(option.surcharge, locale)}`
+                            : t('book.scent.noSurcharge')
+                        }
                         selected={scent === option.id}
                         onPress={() => setScent(option.id)}
                         trailing={
@@ -787,30 +920,33 @@ export default function BookScreen() {
                   </View>
 
                   <View style={{ gap: 9 }}>
-                    <SectionLabel>Starch on ironed items</SectionLabel>
+                    <SectionLabel>{t('book.starch.title')}</SectionLabel>
                     <View style={styles.starchRow}>
-                      {STARCH_LEVELS.map((level) => (
+                      {STARCH_LEVELS.map((option) => (
                         <Pressable
-                          key={level}
-                          onPress={() => setStarch(level)}
-                          style={[styles.starchCell, starch === level && styles.starchCellActive]}
+                          key={option.id}
+                          onPress={() => setStarch(option.id)}
+                          style={[
+                            styles.starchCell,
+                            starch === option.id && styles.starchCellActive,
+                          ]}
                         >
                           <Text
                             style={[
                               styles.starchLabel,
-                              starch === level && styles.starchLabelActive,
+                              starch === option.id && styles.starchLabelActive,
                             ]}
                           >
-                            {level}
+                            {option.label}
                           </Text>
-                          {level !== 'None' && (
+                          {option.surcharge > 0 && (
                             <Text
                               style={[
                                 styles.starchMeta,
-                                starch === level && { color: 'rgba(255,255,255,0.75)' },
+                                starch === option.id && { color: 'rgba(255,255,255,0.75)' },
                               ]}
                             >
-                              + ₵5
+                              + {formatCedis(option.surcharge, locale)}
                             </Text>
                           )}
                         </Pressable>
@@ -820,23 +956,22 @@ export default function BookScreen() {
                 </>
               ) : (
                 <Card tone="sunken" style={{ gap: 4 }}>
-                  <Text style={styles.planTitle}>No finishing options here</Text>
+                  <Text style={styles.planTitle}>{t('book.finish.noneTitle')}</Text>
                   <Text style={styles.planBody}>
-                    Scent and starch apply to garments. {service.shortName} is quoted on the work
-                    itself — add a note below if there is anything specific.
+                    {t('book.finish.noneBody', { service: service.shortName })}
                   </Text>
                 </Card>
               )}
 
               <View style={{ gap: 9 }}>
-                <SectionLabel>Specialist add-ons</SectionLabel>
+                <SectionLabel>{t('book.addons.title')}</SectionLabel>
                 {SPECIALTY_ADDONS.map((addon) => {
                   const on = addonIds.includes(addon.id);
                   return (
                     <OptionRow
                       key={addon.id}
                       title={addon.label}
-                      subtitle={`${addon.description} · ${formatCedis(addon.price)}`}
+                      subtitle={`${addon.description} · ${formatCedis(addon.price, locale)}`}
                       icon={<Icon name={addon.iconName} size={15} color={colors.brandSage} />}
                       selected={on}
                       onPress={() =>
@@ -851,19 +986,19 @@ export default function BookScreen() {
               </View>
 
               <Field
-                label="Care instructions"
+                label={t('book.instructions.label')}
                 value={instructions}
                 onChangeText={setInstructions}
-                placeholder="The navy blazer has a coffee stain on the left cuff."
+                placeholder={t('book.instructions.placeholder')}
                 multiline
               />
               <Field
-                label="Note for the courier"
+                label={t('book.riderNote.label')}
                 value={riderNote}
                 onChangeText={setRiderNote}
-                placeholder="Call when you reach the gate — the buzzer is broken."
+                placeholder={t('book.riderNote.placeholder')}
                 multiline
-                hint="Shown on the courier's job card, not to the laundry team."
+                hint={t('book.riderNote.hint')}
               />
             </View>
           )}
@@ -871,57 +1006,73 @@ export default function BookScreen() {
           {step === 4 && (
             <View style={{ gap: 16 }}>
               <Card style={{ gap: 10 }}>
-                <SectionLabel>Summary</SectionLabel>
-                <SummaryRow label="Service" value={service.name} />
-                <SummaryRow label="Pickup" value={`${pickupDate} · ${timeSlot.split(' (')[0]}`} />
+                <SectionLabel>{t('book.summary.title')}</SectionLabel>
+                <SummaryRow label={t('book.summary.service')} value={service.name} />
                 <SummaryRow
-                  label="Address"
-                  value={[address, suburb].filter(Boolean).join(', ') || '—'}
+                  label={t('book.summary.pickup')}
+                  value={`${pickupDate} · ${timeSlot.split(' (')[0]}`}
                 />
                 <SummaryRow
-                  label="Pickup pin"
+                  label={t('book.summary.address')}
+                  value={[address, suburb].filter(Boolean).join(', ') || t('common.blank')}
+                />
+                <SummaryRow
+                  label={t('book.summary.pin')}
                   value={
                     pickupPin
                       ? `${pickupPin.lat.toFixed(5)}° N, ${Math.abs(pickupPin.lng).toFixed(5)}° W`
-                      : 'Not set'
+                      : t('book.summary.pinUnset')
                   }
                 />
                 {isGarmentService(service.name) && (
-                  <SummaryRow label="Finish" value={`${scent}, ${starch} starch`} />
+                  <SummaryRow
+                    label={t('book.summary.finish')}
+                    value={t('book.summary.finishValue', { scent, starch })}
+                  />
                 )}
                 {addonIds.length > 0 && (
-                  <SummaryRow label="Add-ons" value={addonIds.join(', ')} />
+                  <SummaryRow label={t('book.summary.addons')} value={addonIds.join(', ')} />
                 )}
 
                 <Divider style={{ marginVertical: 4 }} />
 
-                <SummaryRow label="Subtotal" value={formatCedis(gross)} />
+                <SummaryRow label={t('book.summary.subtotal')} value={formatCedis(gross, locale)} />
                 {membership.waived > 0 && (
                   <SummaryRow
-                    label={`${planDefinition?.name ?? 'Membership'} — pickup included`}
-                    value={`− ${formatCedis(membership.waived)}`}
+                    label={t('book.summary.planIncluded', {
+                      plan: planDefinition?.name ?? t('book.summary.planFallback'),
+                    })}
+                    value={t('book.summary.less', {
+                      amount: formatCedis(membership.waived, locale),
+                    })}
                     tone="success"
                   />
                 )}
                 {membership.discount > 0 && (
                   <SummaryRow
-                    label="Member rate"
-                    value={`− ${formatCedis(membership.discount)}`}
+                    label={t('book.summary.memberRate')}
+                    value={t('book.summary.less', {
+                      amount: formatCedis(membership.discount, locale),
+                    })}
                     tone="success"
                   />
                 )}
                 {discount > 0 && (
                   <SummaryRow
-                    label={`${tier.name} discount`}
-                    value={`− ${formatCedis(discount)}`}
+                    label={t('book.summary.tierDiscount', { tier: tier.name })}
+                    value={t('book.summary.less', { amount: formatCedis(discount, locale) })}
                     tone="success"
                   />
                 )}
-                <SummaryRow label="Total" value={formatCedis(total)} emphasis />
+                <SummaryRow
+                  label={t('book.summary.total')}
+                  value={formatCedis(total, locale)}
+                  emphasis
+                />
               </Card>
 
               <View style={{ gap: 9 }}>
-                <SectionLabel>How would you like to pay?</SectionLabel>
+                <SectionLabel>{t('book.pay.title')}</SectionLabel>
                 {PAYMENT_METHODS.map((option) => {
                   const walletShort = option.id === 'Wallet' && walletBalance < total;
                   return (
@@ -930,7 +1081,13 @@ export default function BookScreen() {
                       title={option.label}
                       subtitle={
                         option.id === 'Wallet'
-                          ? `Balance ${formatCedis(walletBalance)}${walletShort ? ' — not enough' : ''}`
+                          ? walletShort
+                            ? t('book.pay.walletShort', {
+                                amount: formatCedis(walletBalance, locale),
+                              })
+                            : t('book.pay.walletBalance', {
+                                amount: formatCedis(walletBalance, locale),
+                              })
                           : option.blurb
                       }
                       icon={<Icon name={option.iconName} size={15} color={colors.brandSage} />}
@@ -953,30 +1110,28 @@ export default function BookScreen() {
               {/* Method-specific detail */}
               {method === 'Paystack' && (
                 <Card style={{ gap: 10 }}>
-                  <Text style={styles.payTitle}>Paystack secure checkout</Text>
-                  <Text style={styles.payBody}>
-                    Opens Paystack in a browser. Nothing about your card is entered in this app or
-                    stored by FreshFold.
-                  </Text>
+                  <Text style={styles.payTitle}>{t('book.pay.paystackTitle')}</Text>
+                  <Text style={styles.payBody}>{t('book.pay.paystackBody')}</Text>
                   <Button
-                    label={paystackRef ? 'Reopen checkout' : 'Open checkout'}
+                    label={paystackRef ? t('book.pay.reopen') : t('book.pay.open')}
                     variant="outline"
                     onPress={startPaystack}
                     loading={paymentBusy}
                   />
                   {!!paystackRef && !isPaid && (
-                    <Button label="I have paid — verify" onPress={verifyPaystack} loading={paymentBusy} />
+                    <Button
+                      label={t('book.pay.verify')}
+                      onPress={verifyPaystack}
+                      loading={paymentBusy}
+                    />
                   )}
                 </Card>
               )}
 
               {method === 'Pay on Pickup' && (
                 <Card tone="sunken" style={{ gap: 4 }}>
-                  <Text style={styles.payTitle}>Settle at the door</Text>
-                  <Text style={styles.payBody}>
-                    The courier carries a card reader and accepts mobile money. Your order is
-                    confirmed either way.
-                  </Text>
+                  <Text style={styles.payTitle}>{t('book.pay.doorTitle')}</Text>
+                  <Text style={styles.payBody}>{t('book.pay.doorBody')}</Text>
                 </Card>
               )}
 
@@ -1000,25 +1155,33 @@ export default function BookScreen() {
         {/* ------------------------------------------------------ quote bar */}
         <View style={styles.quoteBar}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.quoteLabel}>{step === 4 ? 'Total due' : 'Running quote'}</Text>
-            <Text style={styles.quoteValue}>{formatCedis(total)}</Text>
+            <Text style={styles.quoteLabel}>
+              {step === 4 ? t('book.quote.due') : t('book.quote.running')}
+            </Text>
+            <Text style={styles.quoteValue}>{formatCedis(total, locale)}</Text>
             {total < gross && (
               <Text style={styles.quoteStrike}>
-                {formatCedis(gross)} before your{' '}
-                {membership.waived > 0
-                  ? 'included pickup'
-                  : membership.discount > 0 && discount > 0
-                    ? 'member and tier rates'
-                    : membership.discount > 0
-                      ? 'member rate'
-                      : 'tier discount'}
+                {/* The reason is a phrase inside the sentence rather than a
+                    fragment glued onto it, so a language can put the
+                    possessive where its own grammar wants it. */}
+                {t('book.quote.before', {
+                  amount: formatCedis(gross, locale),
+                  reason:
+                    membership.waived > 0
+                      ? t('book.quote.reasonIncluded')
+                      : membership.discount > 0 && discount > 0
+                        ? t('book.quote.reasonBoth')
+                        : membership.discount > 0
+                          ? t('book.quote.reasonMember')
+                          : t('book.quote.reasonTier'),
+                })}
               </Text>
             )}
           </View>
 
           {step < 4 ? (
             <Button
-              label="Continue"
+              label={t('book.continue')}
               onPress={advance}
               size="lg"
               iconRight={<ArrowRight size={15} color="#FFFFFF" />}
@@ -1026,7 +1189,7 @@ export default function BookScreen() {
             />
           ) : (
             <Button
-              label="Confirm booking"
+              label={t('book.confirm')}
               onPress={submit}
               loading={submitting}
               size="lg"
@@ -1040,9 +1203,9 @@ export default function BookScreen() {
       <ScrollSheet
         visible={servicePickerOpen}
         onClose={() => setServicePickerOpen(false)}
-        title="Choose a service"
+        title={t('book.picker.service')}
       >
-        {SERVICES.map((option) => (
+        {BOOKABLE_SERVICES.map((option) => (
           <OptionRow
             key={option.id}
             title={option.name}
@@ -1060,7 +1223,7 @@ export default function BookScreen() {
       <ScrollSheet
         visible={addressPickerOpen}
         onClose={() => setAddressPickerOpen(false)}
-        title="Saved addresses"
+        title={t('book.picker.addresses')}
       >
         {addresses.map((saved) => (
           <OptionRow
@@ -1090,23 +1253,41 @@ export default function BookScreen() {
             <View style={styles.confirmMark}>
               <Check size={26} color="#FFFFFF" strokeWidth={3} />
             </View>
-            <Text style={styles.confirmTitle}>Booked</Text>
+            <Text style={styles.confirmTitle}>{t('book.done.title')}</Text>
             <Text style={styles.confirmBody}>
-              Reference <Text style={styles.confirmRef}>{created.id}</Text> is on the dispatch board.
-              A courier will accept it shortly and you can follow them from the Track tab.
+              {/* Two keys around a bold reference, rather than one sentence with
+                  markup in it. */}
+              {t('book.done.bodyBefore')} <Text style={styles.confirmRef}>{created.id}</Text>{' '}
+              {t('book.done.bodyAfter')}
             </Text>
 
             <Card tone="sunken" style={{ width: '100%', gap: 8, marginTop: 4 }}>
-              <SummaryRow label="Collection" value={`${created.pickupDate} · ${timeSlot.split(' (')[0]}`} />
-              <SummaryRow label="Return" value={created.deliveryDate} />
-              <SummaryRow label="Paid" value={created.paymentStatus ?? 'Pending'} />
-              <SummaryRow label="Total" value={formatCedis(created.amount ?? 0)} emphasis />
+              <SummaryRow
+                label={t('book.done.collection')}
+                value={`${created.pickupDate} · ${timeSlot.split(' (')[0]}`}
+              />
+              <SummaryRow label={t('book.done.return')} value={created.deliveryDate} />
+              {/* The status word is the server's vocabulary, not this app's — it
+                  arrives in English and the same word appears on the dispatch
+                  board and in the desk's mail. A `status.*` block can translate
+                  the set once, with the order screens. */}
+              <SummaryRow label={t('book.done.paid')} value={created.paymentStatus ?? 'Pending'} />
+              <SummaryRow
+                label={t('book.summary.total')}
+                value={formatCedis(created.amount ?? 0, locale)}
+                emphasis
+              />
             </Card>
 
             <View style={{ flexDirection: 'row', gap: 10, width: '100%', marginTop: 4 }}>
-              <Button label="Book another" variant="ghost" onPress={reset} style={{ flex: 1 }} />
               <Button
-                label="Track it"
+                label={t('book.done.another')}
+                variant="ghost"
+                onPress={reset}
+                style={{ flex: 1 }}
+              />
+              <Button
+                label={t('book.done.track')}
                 onPress={() => {
                   const id = created.id;
                   reset();
@@ -1234,7 +1415,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   checkboxOn: { backgroundColor: colors.brandSage, borderColor: colors.brandSage },
+  checkboxOff: { opacity: 0.45 },
   checkLabel: { fontSize: 11.5, color: colors.textCharcoal },
+  checkLabelOff: { color: colors.textSlate },
   pinIntro: { fontSize: 10.5, color: colors.textSlate, lineHeight: 14.5 },
 
   starchRow: { flexDirection: 'row', gap: 8 },

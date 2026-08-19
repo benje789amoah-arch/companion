@@ -34,7 +34,6 @@ function job(id: string, status: OrderStatus, riderId?: string, elite = false): 
     status,
     riderId,
     distance: 0,
-    estDuration: 0,
     price: 0,
     deadline: '',
   };

@@ -1,174 +1,165 @@
+import {
+  MEMBERSHIP_PLANS,
+  SERVICE_CATALOGUE,
+  priceLabel,
+  serviceById,
+  type MembershipPlanId,
+} from '@freshfold/core';
 import { ServiceItem, SubscriptionPlan, Testimonial } from './types';
 
-export const SERVICES: ServiceItem[] = [
-  {
-    id: 'washing',
-    name: 'Washing (Machine & Hand Wash)',
-    description: 'Bespoke hand-care treatments for fine silks and cashmere, alongside temperature-regulated drum-washing for designer garments.',
-    priceInfo: 'From ₵15 / load',
+/**
+ * The service cards.
+ *
+ * Name, description, price and category come from `@freshfold/core` so the
+ * advert and the checkout are the same number — they used to be two, and on six
+ * of eleven services they disagreed. What stays here is what only a browser
+ * cares about: a `lucide-react` icon name and a photograph.
+ */
+const SERVICE_PRESENTATION: Record<string, { iconName: string; imageUrl: string }> = {
+  washing: {
     iconName: 'Sparkles',
-    category: 'core',
     imageUrl: 'https://images.unsplash.com/photo-1517677208171-0bc6725a3e60?auto=format&fit=crop&q=80&w=800'
   },
-  {
-    id: 'drying',
-    name: 'Gentle Air drying',
-    description: 'Controlled low-heat dehydration that prevents thermal shrinkage, restoring original fabric lift and wool elasticity.',
-    priceInfo: 'Included with Wash',
+  drying: {
     iconName: 'Wind',
-    category: 'core',
     imageUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSPI6SKSgSeb7TRH3tohbZVtJXr9VLQq8uyyryGaMA3AQ&s=10'
   },
-  {
-    id: 'ironing-folding',
-    name: 'Ironing & Folding',
-    description: 'Crisp hand-pressed steam finishes and pristine laser-line boutique folding, ready for direct closet placement.',
-    priceInfo: 'From ₵3.50 / item',
+  'ironing-folding': {
     iconName: 'Shirt',
-    category: 'core',
     imageUrl: 'https://images.unsplash.com/photo-1489274495757-95c7c837b101?auto=format&fit=crop&q=80&w=800'
   },
-  {
-    id: 'stain-removal',
-    name: 'Advanced Stain Removal',
-    description: 'Targeted eco-friendly enzyme treatment of individual spots that safely releases red wine, oil, and coffee stains.',
-    priceInfo: 'From ₵8 / item',
+  'stain-removal': {
     iconName: 'Droplet',
-    category: 'specialized',
     imageUrl: 'https://images.unsplash.com/photo-1581578731548-c64695cc6952?auto=format&fit=crop&q=80&w=800'
   },
-  {
-    id: 'bedding-linens',
-    name: 'Bed Sheets & Linens Care',
-    description: 'Sanitizing hot-water cycles paired with ultra-soft, organic floral-extract formulas for high-thread-count sheets.',
-    priceInfo: 'From ₵25 / set',
+  'bedding-linens': {
     iconName: 'Bed',
-    category: 'specialized',
     imageUrl: 'https://images.unsplash.com/photo-1522771739844-6a9f6d5f14af?auto=format&fit=crop&q=80&w=800'
   },
-  {
-    id: 'express-laundry',
-    name: 'Express Same-Day Laundry',
-    description: 'A dedicated expedited sequence. Collected from your home by 9:00 AM, delivered freshly pressed by 7:30 PM.',
-    priceInfo: '+₵15 premium surcharge',
+  'express-laundry': {
     iconName: 'Zap',
-    category: 'express',
     imageUrl: 'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?auto=format&fit=crop&q=80&w=800'
   },
-  {
-    id: 'pickup-delivery',
-    name: 'Fast Pickup & Delivery',
-    description: 'Convenient, reliable, on time, every time. Direct real-time GPS-tracked prompt logistics ensuring your orders are received and returned exactly on your clock.',
-    priceInfo: 'Complimentary',
+  'pickup-delivery': {
     iconName: 'Truck',
-    category: 'express',
     imageUrl: 'https://images.unsplash.com/photo-1617347454431-f49d7ff5c3b1?auto=format&fit=crop&q=80&w=800'
   },
-  {
-    id: 'car-detailing',
-    name: 'Bespoke Car Detailing',
-    description: 'We restore, shine and protect your ride. High-end hand steam, polymer sealant wax coating, and deep interior/exterior detail detailing.',
-    priceInfo: 'From ₵150 / ride',
+  'car-detailing': {
     iconName: 'Car',
-    category: 'specialized',
     imageUrl: 'https://images.unsplash.com/photo-1563720223185-11003d516935?auto=format&fit=crop&q=80&w=800'
   },
-  {
-    id: 'home-office-cleaning',
-    name: 'Home & Office Cleaning',
-    description: 'Spotless spaces, and healthier living. Deep-steam surface sanitizing, precise dust eradication, and natural aromatherapy allergen-free deodorizing.',
-    priceInfo: 'From ₵180 / space',
+  'home-office-cleaning': {
     iconName: 'Home',
-    category: 'specialized',
     imageUrl: 'https://images.unsplash.com/photo-1527515637462-cff94eecc1ac?auto=format&fit=crop&q=80&w=800'
   },
-  {
-    id: 'sofa-carpet-cleaning',
-    name: 'Sofa & Carpet Cleaning',
-    description: 'Deep clean for a fresher, safer home. Heavy-duty hot water extraction, stain neutralization, and antibacterial fabric protectants for all upholstery.',
-    priceInfo: 'From ₵90 / unit',
+  'sofa-carpet-cleaning': {
     iconName: 'Armchair',
-    category: 'specialized',
     imageUrl: 'https://images.unsplash.com/photo-1540555700478-4be289fbecef?auto=format&fit=crop&q=80&w=800'
   },
-  {
-    id: 'corporate',
-    name: 'Corporate Contracts',
-    description: 'Continuous continuous logistics and custom care protocols for boutique hotels, premium spas, high-end fitness studios, and corporate offices.',
-    priceInfo: 'Custom Enterprise Quotes',
+  corporate: {
     iconName: 'Briefcase',
-    category: 'specialized',
     imageUrl: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&q=80&w=800'
   }
-];
+};
 
-export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
-  {
-    id: 'student',
-    name: 'Student Club Plan',
+export const SERVICES: ServiceItem[] = SERVICE_CATALOGUE.map((service) => ({
+  id: service.id,
+  name: service.name,
+  description: service.description,
+  priceInfo: priceLabel(service),
+  category: service.category,
+  ...SERVICE_PRESENTATION[service.id]
+}));
+
+/** Only these can become an order — see `bookable` in core's catalogue. */
+export const BOOKABLE_SERVICE_ITEMS: ServiceItem[] = SERVICES.filter(
+  (service) => serviceById(service.id)?.bookable
+);
+
+/**
+ * How each plan is *presented*. What it costs and what it includes is in
+ * `@freshfold/core`, and the two are joined below.
+ *
+ * Two things used to go wrong with these cards, and both were the same mistake
+ * twice:
+ *
+ *  - **The price was written here.** `'₵79'` sat on the card while a number sat
+ *    in the server's plan table, and nothing held them together. There is one
+ *    number now, in core, and the card's string is derived from it.
+ *  - **The bullets promised things nothing implemented.** "Free priority
+ *    emergency delivery (1/month)", "Same-day express upgrades up to twice a
+ *    month" and "Special discounted rates for bulk employee vouchers" are not
+ *    features; no code has ever granted them. What a plan actually buys is a
+ *    number of included pickups and a member rate on everything past them, both
+ *    of which core enforces — so that is what the bullets say, matching the
+ *    customer app word for word.
+ *
+ * Icon names are the one genuinely local field: these are `lucide-react`, and
+ * the app's are `lucide-react-native`, which is why `Home` here is `House`
+ * there.
+ */
+const PLAN_PRESENTATION: Record<
+  MembershipPlanId,
+  Omit<SubscriptionPlan, 'id' | 'name' | 'price' | 'billing'>
+> = {
+  student: {
     tagline: 'Worry-free fabric care built around class schedules.',
-    price: '₵79',
-    billing: 'billed monthly',
     iconName: 'GraduationCap',
     capacity: '20 lbs / month of laundry',
     turnaround: 'Next-day turnaround standard',
     benefits: [
-      '2 scheduled pickups per month',
+      '2 scheduled pickups per month, laundry included',
       'Complimentary organic hypoallergenic soap',
-      'Free standard machine-wash & tumble dry',
+      '10% member rate once the two are used',
       'Digital laundry history log'
     ]
   },
-  {
-    id: 'professional',
-    name: 'Professional Concierge',
+  professional: {
     tagline: 'Always-pristine formal shirts, business ensembles and suits.',
-    price: '₵149',
-    billing: 'billed monthly',
     popular: true,
     iconName: 'Briefcase',
     capacity: '45 lbs / month + 10 ironed items',
     turnaround: 'Next-day turnaround standard',
     benefits: [
-      'Weekly automated door-side pickups',
+      'Weekly door-side pickups — 4 a month, laundry included',
       'Complimentary delicate handwashing for custom knits',
       'Boutique hanger delivery with garment shielding',
-      'Free priority emergency delivery (1/month)'
+      '15% member rate on anything beyond the four'
     ]
   },
-  {
-    id: 'family',
-    name: 'Infinite Family Plan',
+  family: {
     tagline: 'Large bulk handling with individual-level garment separation.',
-    price: '₵289',
-    billing: 'billed monthly',
     iconName: 'Home',
     capacity: '100 lbs / month of heavy cycles',
     turnaround: 'Standard 24-hour delivery',
     benefits: [
-      '8 pickups/month (twice per week)',
+      '8 pickups/month (twice per week), laundry included',
       'Strict fabric and household division rules',
       'Free plush duvet and bed sheet washing & ironing',
-      'Same-day express upgrades up to twice a month'
+      '20% member rate on anything beyond the eight'
     ]
   },
-  {
-    id: 'corporate',
-    name: 'Corporate Executive',
+  corporate: {
     tagline: 'Custom high-frequency care for premium enterprises.',
-    price: '₵499',
-    billing: 'billed monthly',
     iconName: 'Crown',
     capacity: '200 lbs / month + customizable setups',
     turnaround: 'Same-day turnaround prioritized',
     benefits: [
-      'Daily pickup options with dedicated account manager',
+      'Daily pickups — 30 a month, laundry included',
       'White-glove quality assurance reports',
-      'Express stain restoration guarantee',
-      'Special discounted rates for bulk employee vouchers'
+      'Dedicated account manager and express stain restoration',
+      '25% member rate on anything beyond the thirty'
     ]
   }
-];
+};
+
+export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = MEMBERSHIP_PLANS.map((plan) => ({
+  ...PLAN_PRESENTATION[plan.id],
+  id: plan.id,
+  name: plan.name,
+  price: `₵${plan.price}`,
+  billing: 'billed monthly'
+}));
 
 /**
  * Loyalty tiers come from `@freshfold/core`.

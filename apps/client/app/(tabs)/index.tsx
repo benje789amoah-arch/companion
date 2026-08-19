@@ -54,7 +54,16 @@ import {
 } from '../../src/components/ui';
 import { useClient } from '../../src/store/ClientStore';
 import { useSession } from '../../src/store/SessionStore';
-import { colors, courierName, formatCedis, radius, shadow, tints } from '../../src/theme';
+import { useT, type TranslationKey } from '../../src/i18n';
+import {
+  colors,
+  courierName,
+  courierVehicle,
+  formatCedis,
+  radius,
+  shadow,
+  tints,
+} from '../../src/theme';
 
 /**
  * Home.
@@ -69,6 +78,7 @@ export default function HomeScreen() {
   const router = useRouter();
   const { account, isAuthenticated } = useSession();
   const { primaryBooking, activeBookings, unreadCount, online, probed, points, refresh } = useClient();
+  const { t, locale } = useT();
 
   const [category, setCategory] = useState<ServiceCategory>('core');
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -87,8 +97,20 @@ export default function HomeScreen() {
     setRefreshing(false);
   }, [refresh]);
 
+  /**
+   * Where a service card goes.
+   *
+   * Two of the eleven cannot be ordered — air drying comes with a wash, a
+   * corporate contract is quoted case by case — so those open the concierge
+   * instead of a booking form that would substitute a different service and put
+   * a price on work nobody agreed to do.
+   */
   const bookService = useCallback(
     (service?: ClientService) => {
+      if (service && !service.bookable) {
+        router.push('/concierge');
+        return;
+      }
       router.push({
         pathname: '/(tabs)/book',
         params: service ? { serviceId: service.id } : undefined,
@@ -97,7 +119,10 @@ export default function HomeScreen() {
     [router]
   );
 
-  const greeting = greetingFor(new Date());
+  // Picked by the clock and then translated, rather than translated after the
+  // fact, so a language can answer with `Maakye` where English says "Good
+  // morning" instead of a rendering of the English words.
+  const greeting = t(greetingKeyFor(new Date()));
   const firstName = account?.name?.split(/\s+/)[0];
 
   return (
@@ -113,8 +138,9 @@ export default function HomeScreen() {
         <View style={styles.topBar}>
           <View style={{ flex: 1 }}>
             <Text style={styles.greeting}>
-              {greeting}
-              {firstName ? `, ${firstName}` : ''}
+              {/* The comma is in the string, because it is not where every
+                  language puts it — and some would rather lead with the name. */}
+              {firstName ? t('home.greetingNamed', { greeting, name: firstName }) : greeting}
             </Text>
             <View style={styles.topMeta}>
               <ConnectionPill online={online} pending={!probed} />
@@ -123,7 +149,7 @@ export default function HomeScreen() {
           </View>
 
           <IconButton
-            accessibilityLabel="Notifications"
+            accessibilityLabel={t('account.notifications')}
             onPress={() => setNotificationsOpen(true)}
           >
             <Bell size={17} color={colors.textCharcoal} />
@@ -131,7 +157,7 @@ export default function HomeScreen() {
           </IconButton>
 
           <Pressable onPress={() => router.push('/(tabs)/account')} hitSlop={6}>
-            <InitialsAvatar name={account?.name ?? 'Guest'} size={38} />
+            <InitialsAvatar name={account?.name ?? t('account.guestName')} size={38} />
           </Pressable>
         </View>
 
@@ -143,7 +169,7 @@ export default function HomeScreen() {
           >
             <View style={styles.liveHead}>
               <View style={styles.livePulse} />
-              <Text style={styles.liveLabel}>In progress</Text>
+              <Text style={styles.liveLabel}>{t('home.live.label')}</Text>
               <Text style={styles.liveRef}>{primaryBooking.id}</Text>
             </View>
 
@@ -161,41 +187,52 @@ export default function HomeScreen() {
 
             <View style={styles.liveFoot}>
               <Text style={styles.liveFootText}>
+                {/*
+                  The courier and the bike they are on. This line used to end
+                  "· 12 min away", off a straight line to the door divided by an
+                  assumed 18 km/h — and the timeline directly above already says
+                  which stage the job is at, in the reader's own language.
+                */}
                 {primaryBooking.rider
-                  ? `${courierName(primaryBooking.rider)} · ${primaryBooking.rider.etaMinutes ?? '—'} min away`
-                  : 'Assigning a courier'}
+                  ? t('home.live.courier', {
+                      name: courierName(primaryBooking.rider, locale),
+                      vehicle: courierVehicle(primaryBooking.rider, locale),
+                    })
+                  : t('home.live.assigning')}
               </Text>
               <View style={styles.liveCta}>
-                <Text style={styles.liveCtaLabel}>Track live</Text>
+                <Text style={styles.liveCtaLabel}>{t('home.live.track')}</Text>
                 <ArrowRight size={13} color={colors.brandSage} />
               </View>
             </View>
 
             {activeBookings.length > 1 && (
+              // Two keys and the call site picks, rather than a plural rule: Twi, Ga
+              // and Ewe do not inflect the noun for number, so plural machinery would
+              // be English grammar imposed on dictionaries that cannot use it.
               <Text style={styles.liveMore}>
-                +{activeBookings.length - 1} more order{activeBookings.length > 2 ? 's' : ''} running
+                {activeBookings.length === 2
+                  ? t('home.live.moreOne')
+                  : t('home.live.moreMany', { count: activeBookings.length - 1 })}
               </Text>
             )}
           </Pressable>
         ) : (
           <View style={styles.hero}>
-            <Text style={styles.heroEyebrow}>FreshFold Laundry Co.</Text>
-            <Text style={styles.heroTitle}>
-              Boutique fabric care,{'\n'}collected from your door.
-            </Text>
-            <Text style={styles.heroBody}>
-              Hand-finished washing, pressing and specialist treatment across Kumasi — booked in a
-              minute, tracked to the doorstep.
-            </Text>
+            <Text style={styles.heroEyebrow}>{t('home.hero.eyebrow')}</Text>
+            {/* The line break moved into the string, so a translation breaks its
+                own sentence where its own sentence divides. */}
+            <Text style={styles.heroTitle}>{t('home.hero.title')}</Text>
+            <Text style={styles.heroBody}>{t('home.hero.body')}</Text>
             <View style={styles.heroActions}>
               <Button
-                label="Schedule a pickup"
+                label={t('common.schedulePickup')}
                 onPress={() => bookService()}
                 iconRight={<ArrowRight size={15} color="#FFFFFF" />}
                 style={{ flex: 1 }}
               />
               <Button
-                label="Plans"
+                label={t('home.hero.plans')}
                 variant="ghost"
                 onPress={() => router.push('/plans')}
               />
@@ -206,24 +243,32 @@ export default function HomeScreen() {
         {/* ------------------------------------------------ quick actions */}
         <View style={styles.quickRow}>
           <QuickAction
-            label="Book"
+            label={t('home.quick.book')}
             iconName="CalendarClock"
             onPress={() => bookService()}
           />
-          <QuickAction label="Track" iconName="Radar" onPress={() => router.push('/(tabs)/track')} />
           <QuickAction
-            label="Wallet"
+            label={t('home.quick.track')}
+            iconName="Radar"
+            onPress={() => router.push('/(tabs)/track')}
+          />
+          <QuickAction
+            label={t('home.quick.wallet')}
             iconName="Wallet"
             onPress={() => router.push('/(tabs)/wallet')}
           />
-          <QuickAction label="Foldie" iconName="Sparkles" onPress={() => router.push('/concierge')} />
+          <QuickAction
+            label={t('home.quick.foldie')}
+            iconName="Sparkles"
+            onPress={() => router.push('/concierge')}
+          />
         </View>
 
         {/* ------------------------------------------------------ services */}
         <View style={styles.section}>
           <SectionHeader
-            title="Our services"
-            caption="Priced up front. No surprises at the door."
+            title={t('home.services.title')}
+            caption={t('home.services.caption')}
           />
 
           <ScrollView
@@ -276,7 +321,7 @@ export default function HomeScreen() {
 
         {/* -------------------------------------------------- how it works */}
         <View style={styles.section}>
-          <SectionHeader title="How it works" caption="Four steps, start to closet." />
+          <SectionHeader title={t('home.steps.title')} caption={t('home.steps.caption')} />
           <View style={{ gap: 9 }}>
             {HOW_IT_WORKS.map((step, index) => (
               <View key={step.id} style={styles.stepCard}>
@@ -295,7 +340,7 @@ export default function HomeScreen() {
 
         {/* ------------------------------------------------------- why us */}
         <View style={styles.section}>
-          <SectionHeader title="Why FreshFold" caption="What you get that a laundrette doesn’t." />
+          <SectionHeader title={t('home.why.title')} caption={t('home.why.caption')} />
           <View style={styles.grid}>
             {WHY_CHOOSE_US.map((reason) => (
               <Card key={reason.id} style={styles.gridCard}>
@@ -311,7 +356,7 @@ export default function HomeScreen() {
 
         {/* ----------------------------------------------------- segments */}
         <View style={styles.section}>
-          <SectionHeader title="Built for" caption="Tap one to start a booking shaped around it." />
+          <SectionHeader title={t('home.segments.title')} caption={t('home.segments.caption')} />
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -321,10 +366,7 @@ export default function HomeScreen() {
               <Pressable
                 key={segment.id}
                 onPress={() =>
-                  router.push({
-                    pathname: '/(tabs)/book',
-                    params: { serviceId: segment.serviceId },
-                  })
+                  bookService(SERVICES.find((service) => service.id === segment.serviceId))
                 }
                 style={({ pressed }) => [styles.segmentCard, pressed && { opacity: 0.92 }]}
               >
@@ -340,7 +382,7 @@ export default function HomeScreen() {
 
         {/* ------------------------------------------------- testimonials */}
         <View style={styles.section}>
-          <SectionHeader title="From our patrons" />
+          <SectionHeader title={t('home.testimonials.title')} />
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -371,43 +413,41 @@ export default function HomeScreen() {
 
         {/* ------------------------------------------------------ contact */}
         <View style={styles.section}>
-          <SectionHeader title="Talk to us" caption="A person, not a form." />
+          <SectionHeader title={t('home.contact.title')} caption={t('home.contact.caption')} />
           <Card style={{ gap: 4 }}>
             <ContactRow
               icon={<Phone size={15} color={colors.brandSage} />}
               label={CONTACT.phone}
-              caption="Call the concierge desk"
+              caption={t('home.contact.phoneCaption')}
               onPress={() => Linking.openURL(`tel:${CONTACT.phone.replace(/\s/g, '')}`)}
             />
             {/* WhatsApp row hidden for now. */}
             <ContactRow
               icon={<Bot size={15} color={colors.brandSage} />}
-              label="Ask Foldie"
-              caption="Our concierge assistant, in-app"
+              label={t('home.contact.foldie')}
+              caption={t('home.contact.foldieCaption')}
               onPress={() => router.push('/concierge')}
             />
             <ContactRow
               icon={<Mail size={15} color={colors.brandSage} />}
               label={CONTACT.email}
-              caption="For contracts and invoicing"
+              caption={t('home.contact.emailCaption')}
               onPress={() => Linking.openURL(`mailto:${CONTACT.email}`)}
             />
             <ContactRow
               icon={<MapPin size={15} color={colors.brandSage} />}
               label={CONTACT.address}
-              caption="Where your garments are cared for"
+              caption={t('home.contact.addressCaption')}
             />
             <ContactRow
               icon={<Clock size={15} color={colors.brandSage} />}
               label={CONTACT.hours}
-              caption="Collection windows run to close"
+              caption={t('home.contact.hoursCaption')}
             />
           </Card>
         </View>
 
-        <Text style={styles.footer}>
-          FreshFold Laundry Co. · Bomso Junction, Kumasi{'\n'}Every order priced before you confirm.
-        </Text>
+        <Text style={styles.footer}>{t('home.footer')}</Text>
       </ScrollView>
 
       <NotificationsSheet
@@ -469,11 +509,19 @@ function ContactRow({
   );
 }
 
-function greetingFor(now: Date): string {
+/**
+ * Which greeting the hour calls for.
+ *
+ * Returns the key rather than the words, so this stays a module-scope function
+ * with no hook in it and the screen does the translating. The boundaries are the
+ * English ones — noon and five — and a language that divides its day differently
+ * would want those moved, not just the strings changed.
+ */
+function greetingKeyFor(now: Date): TranslationKey {
   const hour = now.getHours();
-  if (hour < 12) return 'Good morning';
-  if (hour < 17) return 'Good afternoon';
-  return 'Good evening';
+  if (hour < 12) return 'home.greeting.morning';
+  if (hour < 17) return 'home.greeting.afternoon';
+  return 'home.greeting.evening';
 }
 
 const styles = StyleSheet.create({

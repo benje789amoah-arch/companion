@@ -57,6 +57,33 @@ export function orderView(job: Job): Order {
   return jobToOrder(job);
 }
 
+/**
+ * What a *write* answers with: the same view, minus the proof-of-service blobs.
+ *
+ * `store.jobs.find` reads a job whole, blobs and all — the mutation routes need
+ * that to make their checks under the row lock. Handing the result straight
+ * back means a courier who has just uploaded four digits then waits on every
+ * photograph already attached to that job coming the other way: at the door
+ * that is the pickup photo *and* the delivery photo, over a phone's signal.
+ * When that does not finish inside the client's timeout the write is reported
+ * as unreachable having already landed, and the courier is sent to redo a
+ * hand-off the hub or the customer already has.
+ *
+ * Nothing reads these bodies — the apps have just said what changed, and their
+ * next poll brings the board back anyway. Whatever draws a photograph asks the
+ * `:id` route for it, which is the one place that still carries them.
+ */
+export function writtenOrderView(job: Job): Order {
+  const {
+    pickupPhoto: _pickupPhoto,
+    pickupSignature: _pickupSignature,
+    deliveryPhoto: _deliveryPhoto,
+    deliverySignature: _deliverySignature,
+    ...rest
+  } = jobToOrder(job);
+  return rest;
+}
+
 export function nowLabel(): string {
   return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }

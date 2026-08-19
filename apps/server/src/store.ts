@@ -6,6 +6,7 @@
 import {
   phoneKey,
   type ActivePlan,
+  type AuditEvent,
   type Job,
   type Message,
   type Notification,
@@ -14,6 +15,7 @@ import {
 import { sql, type Executor } from './db';
 import {
   toAccount,
+  toAuditEvent,
   toJob,
   toMessage,
   toNotification,
@@ -21,8 +23,10 @@ import {
   toSession,
   toSetupToken,
   toSupervisor,
+  toTrackingToken,
   toTransaction,
   type AccountRow,
+  type AuditEventRow,
   type JobRow,
   type MessageRow,
   type NotificationRow,
@@ -35,7 +39,9 @@ import {
   type StoredSession,
   type StoredSetupToken,
   type StoredSupervisor,
+  type StoredTrackingToken,
   type SupervisorRow,
+  type TrackingTokenRow,
   type TransactionRow,
 } from './rows';
 
@@ -65,6 +71,7 @@ export type {
   StoredSession,
   StoredSetupToken,
   StoredSupervisor,
+  StoredTrackingToken,
   SupervisorProfile,
 } from './rows';
 
@@ -457,7 +464,9 @@ function repositories(exec: Executor) {
        */
       async updateProfile(
         email: string,
-        patch: Partial<Pick<StoredAccount, 'email' | 'phone' | 'name' | 'points' | 'walletBalance'>>
+        patch: Partial<
+          Pick<StoredAccount, 'email' | 'phone' | 'name' | 'points' | 'walletBalance' | 'addresses'>
+        >
       ): Promise<StoredAccount | null> {
         const columns: Record<string, string> = {
           email: 'email',
@@ -465,12 +474,23 @@ function repositories(exec: Executor) {
           name: 'name',
           points: 'points',
           walletBalance: 'wallet_balance',
+          addresses: 'addresses',
         };
 
         const assignments: Record<string, unknown> = {};
         for (const [field, column] of Object.entries(columns)) {
           const value = (patch as Record<string, unknown>)[field];
-          if (value !== undefined) assignments[column] = value;
+          if (value === undefined) continue;
+
+          // `addresses` is jsonb, and the book arrives as a plain array. Handed
+          // over as one it does not reach the column as json at all: postgres.js
+          // infers a parameter type from the value, and for anything it does not
+          // recognise — an array, an object — that inference lands on the number
+          // handler, whose serialiser is `String(x)`. The column would be given
+          // the text `[object Object]` and reject it. `json()` tags the
+          // parameter so it is stringified properly, which is how the jsonb
+          // columns in `upsertJob` above are written.
+          assignments[column] = field === 'addresses' ? exec.json(value as never) : value;
         }
 
         if (Object.keys(assignments).length === 0) {
@@ -742,6 +762,25 @@ function repositories(exec: Executor) {
         return rows.map(toMessage);
       },
 
+      /**
+       * The newest `limit` messages across every thread, in conversation order.
+       *
+       * For the desk's inbox, which reads all threads at once. `list(null)` would
+       * answer the same rows and never stop growing — this table gets a line for
+       * every status change on every job — so the desk takes a page of the most
+       * recent traffic, oldest-first within that page so a thread reads downwards
+       * the way it was written.
+       */
+      async listRecent(limit: number): Promise<Message[]> {
+        const rows = await exec<MessageRow[]>`
+          select * from (
+            select * from messages order by seq desc limit ${limit}
+          ) recent
+          order by seq
+        `;
+        return rows.map(toMessage);
+      },
+
       async insert(message: Message): Promise<Message> {
         const rows = await exec<MessageRow[]>`
           insert into messages (id, sender, "text", "timestamp", order_id)
@@ -839,6 +878,45 @@ function repositories(exec: Executor) {
           returning *
         `;
         return toTransaction(rows[0]);
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Audit trail
+    // -----------------------------------------------------------------------
+    auditEvents: {
+      /**
+       * Append one entry.
+       *
+       * `created_at` is left to the column default so the instant comes from
+       * the database clock rather than from whichever process happened to
+       * handle the request. `on conflict do nothing` is a belt-and-braces
+       * measure against a retried write — nothing here is meant to be replayed,
+       * and an audit row must never be rewritten.
+       */
+      async insert(event: Omit<AuditEvent, 'at'>): Promise<AuditEvent> {
+        const rows = await exec<AuditEventRow[]>`
+          insert into audit_events (
+            id, actor, actor_name, action, details, "type", order_id, subject
+          ) values (
+            ${event.id}, ${event.actor}, ${event.actorName}, ${event.action},
+            ${event.details}, ${event.type}, ${event.orderId ?? null},
+            ${event.subject ?? null}
+          )
+          on conflict (id) do nothing
+          returning *
+        `;
+        return rows[0]
+          ? toAuditEvent(rows[0])
+          : { ...event, at: new Date().toISOString() };
+      },
+
+      /** Newest first. Nothing is ever pruned, so the caller sets the page. */
+      async list(limit: number): Promise<AuditEvent[]> {
+        const rows = await exec<AuditEventRow[]>`
+          select * from audit_events order by seq desc limit ${limit}
+        `;
+        return rows.map(toAuditEvent);
       },
     },
 
@@ -973,6 +1051,53 @@ function repositories(exec: Executor) {
         await exec`delete from booking_setup_tokens where expires_at <= now()`;
       },
     },
+
+    // -----------------------------------------------------------------------
+    // Tracking tokens
+    // -----------------------------------------------------------------------
+    trackingTokens: {
+      /**
+       * Issues the token for a booking, retiring any earlier one.
+       *
+       * One live token per booking. The web app's offline queue re-POSTs a
+       * booking whose first attempt never answered, so the client holding the
+       * reply is by definition holding the newest one — an older digest is a
+       * grant nobody can present.
+       */
+      async issue(token: StoredTrackingToken): Promise<StoredTrackingToken> {
+        await exec`delete from booking_tracking_tokens where booking_id = ${token.bookingId}`;
+
+        const rows = await exec<TrackingTokenRow[]>`
+          insert into booking_tracking_tokens (token_hash, booking_id, created_at, expires_at)
+          values (
+            ${token.tokenHash}, ${token.bookingId},
+            ${token.createdAt}, ${token.expiresAt}
+          )
+          returning *
+        `;
+        return toTrackingToken(rows[0]);
+      },
+
+      /**
+       * The booking a token grants, if the grant is still live.
+       *
+       * Expiry is in the where-clause rather than checked on the result, for the
+       * reason the other token lookups do it that way: an expired grant should
+       * not resolve to a booking at all, and no caller can forget.
+       */
+      async findLive(tokenHash: string): Promise<StoredTrackingToken | null> {
+        const rows = await exec<TrackingTokenRow[]>`
+          select * from booking_tracking_tokens
+          where token_hash = ${tokenHash} and expires_at > now()
+        `;
+        return rows[0] ? toTrackingToken(rows[0]) : null;
+      },
+
+      /** Clears dead tokens. Called when a new one is issued. */
+      async pruneExpired(): Promise<void> {
+        await exec`delete from booking_tracking_tokens where expires_at <= now()`;
+      },
+    },
   };
 }
 
@@ -997,14 +1122,18 @@ export const store = {
   /**
    * Wipes every table back to nothing — the admin dashboard's "reset".
    *
-   * `truncate ... cascade` rather than eight deletes so the foreign keys from
+   * `truncate ... cascade` rather than nine deletes so the foreign keys from
    * messages and notifications back to jobs do not have to be untangled in
    * order, and the sequences behind `seq` restart with the data.
+   *
+   * The audit trail goes with it, which is the one place that is defensible:
+   * this route refuses in production, and audit rows describing jobs and
+   * patrons that no longer exist are worse than no rows at all.
    */
   async reset(): Promise<void> {
     await sql`
       truncate jobs, riders, accounts, supervisors, messages,
-               notifications, transactions, sessions
+               notifications, transactions, sessions, audit_events
       restart identity cascade
     `;
   },

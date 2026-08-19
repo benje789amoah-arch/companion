@@ -3,28 +3,30 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
 import * as Linking from 'expo-linking';
 import {
   Bell,
   Bot,
   ChevronRight,
-  Fingerprint,
   LogOut,
   Mail,
   MapPin,
   Package,
+  Pencil,
   Phone,
   Plus,
-  ShieldCheck,
+  Settings,
   Star,
   Trash2,
   UserCog,
 } from 'lucide-react-native';
 import React, { useCallback, useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { deriveSuburb } from '@freshfold/core';
+import { MAX_SAVED_ADDRESSES } from '@freshfold/core';
+import AddressSheet from '../../src/components/AddressSheet';
 import NotificationsSheet from '../../src/components/NotificationsSheet';
 import OrderCard from '../../src/components/OrderCard';
 import {
@@ -34,13 +36,11 @@ import {
   ConnectionPill,
   Divider,
   EmptyState,
-  Field,
   InitialsAvatar,
   SectionHeader,
-  SectionLabel,
-  Sheet,
 } from '../../src/components/ui';
 import { CONTACT, tierForPoints } from '../../src/data/catalogue';
+import { intlTag, useT } from '../../src/i18n';
 import { useClient, type SavedAddress } from '../../src/store/ClientStore';
 import { useSession } from '../../src/store/SessionStore';
 import { colors, formatCedis, radius, tints } from '../../src/theme';
@@ -49,27 +49,25 @@ import { API_BASE_URL } from '../../src/services/api';
 /**
  * Account.
  *
- * Profile, saved addresses, the security switches, recent orders and the ways
- * to reach a human. Signed out it is a short pitch and a sign-in button — the
- * app stays usable either way, so there is nothing to lock.
+ * A dashboard: who you are, what you have spent, where we collect from, the
+ * last few orders and the ways to reach a human. Signed out it is a short pitch
+ * and a sign-in button — the app stays usable either way, so there is nothing
+ * to lock.
+ *
+ * Anything that *changes* the account lives on the settings screen, reached
+ * from the gear in the header. The biometric switch used to sit down here in a
+ * "Security" section of its own, which is how a read-only screen ends up with
+ * one lonely control and no way to correct a mistyped name.
  */
 export default function AccountScreen() {
   const router = useRouter();
-  const {
-    account,
-    isAuthenticated,
-    signOut,
-    resendVerification,
-    biometricAvailable,
-    biometricEnabled,
-    setBiometricEnabled,
-  } = useSession();
+  const { t, locale } = useT();
+  const { account, isAuthenticated, signOut, resendVerification } = useSession();
   const {
     bookings,
     activeBookings,
     pastBookings,
     addresses,
-    saveAddress,
     removeAddress,
     points,
     walletBalance,
@@ -79,27 +77,16 @@ export default function AccountScreen() {
   } = useClient();
 
   const [notificationsOpen, setNotificationsOpen] = useState(false);
-  const [addressSheetOpen, setAddressSheetOpen] = useState(false);
+  /** Open with an address to edit it, or with none to add one. */
+  const [addressSheet, setAddressSheet] = useState<{ open: boolean; editing: SavedAddress | null }>({
+    open: false,
+    editing: null,
+  });
 
   // The unconfirmed-email notice. `verifyNotice` holds whatever the server last
   // said — a cooldown message answers the question the customer is about to ask.
   const [verifySending, setVerifySending] = useState(false);
   const [verifyNotice, setVerifyNotice] = useState('');
-
-  const [draftLabel, setDraftLabel] = useState('');
-  const [draftAddress, setDraftAddress] = useState('');
-  const [draftCity, setDraftCity] = useState('Kumasi');
-
-  /**
-   * The collection zone, read out of the address rather than picked.
-   *
-   * This editor has no pin of its own, so the landmark table is all there is
-   * to go on — and it is enough for the addresses people actually save, which
-   * are the halls and hostels it already knows. Blank otherwise, which the job
-   * model tolerates; the booking screen fills it in properly once a pin is
-   * placed against this address.
-   */
-  const draftSuburb = useMemo(() => deriveSuburb(null, draftAddress), [draftAddress]);
 
   const tier = useMemo(() => tierForPoints(points), [points]);
   const recent = useMemo(() => [...activeBookings, ...pastBookings].slice(0, 3), [
@@ -120,64 +107,67 @@ export default function AccountScreen() {
     setVerifyNotice('');
     try {
       await resendVerification();
-      setVerifyNotice('Sent. Check your inbox — and your spam folder.');
+      setVerifyNotice(t('account.verify.sent'));
     } catch (error) {
-      // The server's own wording, which carries the cooldown countdown.
-      setVerifyNotice(
-        error instanceof Error ? error.message : 'Could not send the link. Try again shortly.'
-      );
+      // The server's own wording, which carries the cooldown countdown. Left in
+      // English knowingly: the desk writes these, and a sentence a customer can
+      // read beats a guess at which of them this was.
+      setVerifyNotice(error instanceof Error ? error.message : t('account.verify.failed'));
     } finally {
       setVerifySending(false);
     }
-  }, [resendVerification]);
+  }, [resendVerification, t]);
 
   const confirmSignOut = useCallback(() => {
-    Alert.alert('Sign out?', 'Your orders stay on the account and come back when you sign in.', [
-      { text: 'Stay signed in', style: 'cancel' },
-      { text: 'Sign out', style: 'destructive', onPress: () => void signOut() },
+    Alert.alert(t('account.signOutTitle'), t('account.signOutBody'), [
+      { text: t('account.stay'), style: 'cancel' },
+      { text: t('account.signOut'), style: 'destructive', onPress: () => void signOut() },
     ]);
-  }, [signOut]);
-
-  const commitAddress = useCallback(() => {
-    if (!draftAddress.trim()) return;
-
-    saveAddress({
-      id: `addr-${Date.now()}`,
-      label: draftLabel.trim() || draftSuburb || 'Pickup address',
-      address: draftAddress.trim(),
-      suburb: draftSuburb,
-      city: draftCity.trim(),
-      isDefault: addresses.length === 0,
-    });
-
-    setDraftLabel('');
-    setDraftAddress('');
-    setAddressSheetOpen(false);
-  }, [draftAddress, draftLabel, draftSuburb, draftCity, addresses.length, saveAddress]);
+  }, [signOut, t]);
 
   const confirmRemoveAddress = useCallback(
     (saved: SavedAddress) => {
-      Alert.alert('Remove this address?', saved.address, [
-        { text: 'Keep', style: 'cancel' },
-        { text: 'Remove', style: 'destructive', onPress: () => removeAddress(saved.id) },
+      Alert.alert(t('addresses.confirmRemove'), saved.address, [
+        { text: t('common.keep'), style: 'cancel' },
+        { text: t('common.remove'), style: 'destructive', onPress: () => removeAddress(saved.id) },
       ]);
     },
-    [removeAddress]
+    [removeAddress, t]
   );
+
+  /**
+   * Opens the address sheet, or says why it will not — the book is a column on
+   * the account now, and the server refuses one longer than the ceiling.
+   */
+  const addAddress = useCallback(() => {
+    if (addresses.length >= MAX_SAVED_ADDRESSES) {
+      Alert.alert(t('account.addresses.title'), t('addresses.full', { max: MAX_SAVED_ADDRESSES }));
+      return;
+    }
+    setAddressSheet({ open: true, editing: null });
+  }, [addresses.length, t]);
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Account</Text>
+        <Text style={styles.headerTitle}>{t('account.title')}</Text>
         <ConnectionPill online={online} pending={!probed} />
         <Pressable
           onPress={() => setNotificationsOpen(true)}
           hitSlop={8}
           style={styles.bell}
-          accessibilityLabel="Notifications"
+          accessibilityLabel={t('account.notifications')}
         >
           <Bell size={17} color={colors.textCharcoal} />
           {unreadCount > 0 && <View style={styles.bellDot} />}
+        </Pressable>
+        <Pressable
+          onPress={() => router.push('/settings')}
+          hitSlop={8}
+          style={styles.bell}
+          accessibilityLabel={t('settings.title')}
+        >
+          <Settings size={17} color={colors.textCharcoal} />
         </Pressable>
       </View>
 
@@ -192,14 +182,13 @@ export default function AccountScreen() {
           <Card style={styles.verifyCard}>
             <View style={styles.verifyHeader}>
               <Mail size={16} color={colors.brandGold} />
-              <Text style={styles.verifyTitle}>Confirm your email</Text>
+              <Text style={styles.verifyTitle}>{t('account.verify.title')}</Text>
             </View>
             <Text style={styles.verifyBody}>
-              {verifyNotice ||
-                `We sent a link to ${account.email}. Confirm it to start booking pickups.`}
+              {verifyNotice || t('account.verify.body', { email: account.email })}
             </Text>
             <Button
-              label={verifySending ? 'Sending…' : 'Resend link'}
+              label={verifySending ? t('common.sending') : t('account.verify.resend')}
               onPress={handleResendVerification}
               loading={verifySending}
             />
@@ -224,43 +213,48 @@ export default function AccountScreen() {
             <Divider />
 
             <View style={styles.statRow}>
-              <Stat label="Orders" value={String(bookings.length)} />
-              <Stat label="Points" value={points.toLocaleString()} />
-              <Stat label="Wallet" value={formatCedis(walletBalance)} />
-              <Stat label="Spent" value={formatCedis(lifetimeSpend)} />
+              <Stat label={t('account.stats.orders')} value={String(bookings.length)} />
+              {/*
+                Grouped for the reading language rather than for the handset, so
+                two customers reading the same screen in the same language see
+                the same number — `1,240` in English, `1 240` in French.
+              */}
+              <Stat label={t('account.stats.points')} value={points.toLocaleString(intlTag(locale))} />
+              <Stat label={t('account.stats.wallet')} value={formatCedis(walletBalance, locale)} />
+              <Stat label={t('account.stats.spent')} value={formatCedis(lifetimeSpend, locale)} />
             </View>
           </Card>
         ) : (
           <Card style={{ gap: 12 }}>
             <View style={styles.profileRow}>
-              <InitialsAvatar name="Guest" size={52} />
+              <InitialsAvatar name={t('account.guestName')} size={52} />
               <View style={{ flex: 1 }}>
-                <Text style={styles.profileName}>Browsing as a guest</Text>
-                <Text style={styles.profileContact}>
-                  Bookings work without an account — an account is what keeps them, along with your
-                  wallet and loyalty tier.
-                </Text>
+                <Text style={styles.profileName}>{t('common.guest')}</Text>
+                <Text style={styles.profileContact}>{t('account.guestBody')}</Text>
               </View>
             </View>
-            <Button label="Sign in or create an account" onPress={() => router.push('/auth')} />
+            <Button label={t('common.signInCta')} onPress={() => router.push('/auth')} />
           </Card>
         )}
 
         {/* ---------------------------------------------------------- orders */}
         <View style={styles.section}>
           <SectionHeader
-            title="Recent orders"
-            caption={`${activeBookings.length} active · ${pastBookings.length} completed`}
-            action={bookings.length > 0 ? 'See all' : undefined}
+            title={t('account.orders.title')}
+            caption={t('account.orders.caption', {
+              active: activeBookings.length,
+              past: pastBookings.length,
+            })}
+            action={bookings.length > 0 ? t('account.orders.seeAll') : undefined}
             onAction={() => router.push('/orders')}
           />
 
           {recent.length === 0 ? (
             <EmptyState
               icon={<Package size={24} color={colors.brandStone} />}
-              title="No orders yet"
-              body="Your first pickup is a minute away."
-              action="Schedule a pickup"
+              title={t('account.orders.emptyTitle')}
+              body={t('account.orders.emptyBody')}
+              action={t('common.schedulePickup')}
               onAction={() => router.push('/(tabs)/book')}
             />
           ) : (
@@ -281,17 +275,17 @@ export default function AccountScreen() {
         {/* ------------------------------------------------------- addresses */}
         <View style={styles.section}>
           <SectionHeader
-            title="Saved addresses"
-            caption="Pre-fills the booking form."
-            action="Add"
-            onAction={() => setAddressSheetOpen(true)}
+            title={t('account.addresses.title')}
+            caption={t('account.addresses.caption')}
+            action={t('common.add')}
+            onAction={addAddress}
           />
 
           {addresses.length === 0 ? (
-            <Pressable onPress={() => setAddressSheetOpen(true)}>
+            <Pressable onPress={addAddress}>
               <Card tone="sunken" style={styles.addRow}>
                 <Plus size={16} color={colors.brandSage} />
-                <Text style={styles.addLabel}>Add your first address</Text>
+                <Text style={styles.addLabel}>{t('addresses.empty')}</Text>
               </Card>
             </Pressable>
           ) : (
@@ -304,72 +298,58 @@ export default function AccountScreen() {
                   <View style={{ flex: 1 }}>
                     <View style={styles.addressTitleRow}>
                       <Text style={styles.addressLabel}>{saved.label}</Text>
-                      {saved.isDefault && <Badge label="Default" tone="sage" />}
+                      {saved.isDefault && <Badge label={t('common.default')} tone="sage" />}
                     </View>
                     <Text style={styles.addressText} numberOfLines={2}>
                       {[saved.address, saved.suburb, saved.city].filter(Boolean).join(', ')}
                     </Text>
                   </View>
-                  <Pressable
-                    onPress={() => confirmRemoveAddress(saved)}
-                    hitSlop={8}
-                    accessibilityLabel={`Remove ${saved.label}`}
-                  >
-                    <Trash2 size={15} color={colors.statusError} />
-                  </Pressable>
+                  <View style={styles.addressActions}>
+                    <Pressable
+                      onPress={() => setAddressSheet({ open: true, editing: saved })}
+                      hitSlop={8}
+                      accessibilityLabel={t('addresses.edit', { label: saved.label })}
+                    >
+                      <Pencil size={14} color={colors.textSlate} />
+                    </Pressable>
+                    <Pressable
+                      onPress={() => confirmRemoveAddress(saved)}
+                      hitSlop={8}
+                      accessibilityLabel={t('addresses.remove', { label: saved.label })}
+                    >
+                      <Trash2 size={15} color={colors.statusError} />
+                    </Pressable>
+                  </View>
                 </View>
               ))}
             </View>
           )}
         </View>
 
-        {/* -------------------------------------------------------- security */}
-        {isAuthenticated && (
-          <View style={styles.section}>
-            <SectionHeader title="Security" />
-            <Card style={{ gap: 4 }}>
-              <View style={styles.switchRow}>
-                <View style={styles.switchIcon}>
-                  <Fingerprint size={15} color={colors.brandSage} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.switchTitle}>Unlock with biometrics</Text>
-                  <Text style={styles.switchCaption}>
-                    {biometricAvailable
-                      ? 'Use Face ID or your fingerprint instead of typing your password.'
-                      : 'No biometric enrolled on this device.'}
-                  </Text>
-                </View>
-                <Switch
-                  value={biometricEnabled}
-                  onValueChange={setBiometricEnabled}
-                  disabled={!biometricAvailable}
-                  trackColor={{ true: colors.brandSage, false: colors.bgSand }}
-                  thumbColor="#FFFFFF"
-                />
-              </View>
-
-              <Divider style={{ marginVertical: 6 }} />
-
-              <View style={styles.assuranceRow}>
-                <ShieldCheck size={14} color={colors.brandSage} />
-                <Text style={styles.assuranceText}>
-                  Your password is compared on our servers and never stored on this device — only a
-                  session token is, and signing out revokes it.
-                </Text>
-              </View>
-            </Card>
-          </View>
-        )}
+        {/*
+          -------------------------------------------------------- settings
+          Shown to guests too: the addresses and the alert switches on that
+          screen belong to the phone, not to an account.
+        */}
+        <View style={styles.section}>
+          <Card style={{ gap: 2 }}>
+            <SupportRow
+              icon={<Settings size={15} color={colors.brandSage} />}
+              label={t('settings.title')}
+              caption={t('account.settingsCaption')}
+              onPress={() => router.push('/settings')}
+            />
+          </Card>
+        </View>
 
         {/* --------------------------------------------------------- support */}
         <View style={styles.section}>
-          <SectionHeader title="Help" caption="A person, not a form." />
+          <SectionHeader title={t('account.help.title')} caption={t('account.help.caption')} />
           <Card style={{ gap: 2 }}>
             <SupportRow
               icon={<Bot size={15} color={colors.brandSage} />}
-              label="Ask Foldie"
-              caption="Concierge assistant, in-app"
+              label={t('account.help.foldie')}
+              caption={t('account.help.foldieCaption')}
               onPress={() => router.push('/concierge')}
             />
             {/* WhatsApp row hidden for now. */}
@@ -382,16 +362,20 @@ export default function AccountScreen() {
             <SupportRow
               icon={<Mail size={15} color={colors.brandSage} />}
               label={CONTACT.email}
-              caption="Contracts and invoicing"
+              // The settings screen says this about the same address, so it is
+              // one key rather than the same sentence written twice.
+              caption={t('settings.about.email')}
               onPress={() => Linking.openURL(`mailto:${CONTACT.email}`)}
             />
             <SupportRow
               icon={<Star size={15} color={colors.brandSage} />}
-              label="Rate FreshFold"
-              caption="Tell us how we are doing"
+              label={t('account.help.rate')}
+              caption={t('account.help.rateCaption')}
               onPress={() =>
                 Linking.openURL(
-                  `mailto:${CONTACT.email}?subject=${encodeURIComponent('Feedback on FreshFold')}`
+                  `mailto:${CONTACT.email}?subject=${encodeURIComponent(
+                    t('account.help.feedbackSubject')
+                  )}`
                 )
               }
             />
@@ -402,7 +386,7 @@ export default function AccountScreen() {
         {isAuthenticated && (
           <View style={styles.section}>
             <Button
-              label="Sign out"
+              label={t('account.signOut')}
               variant="danger"
               onPress={confirmSignOut}
               icon={<LogOut size={15} color={colors.statusError} />}
@@ -413,7 +397,15 @@ export default function AccountScreen() {
         <View style={styles.buildInfo}>
           <UserCog size={12} color={colors.textMuted} />
           <Text style={styles.buildText}>
-            FreshFold client 1.0.0 · dispatch at {API_BASE_URL}
+            {/*
+              Read from the manifest rather than typed in, which is also what the
+              settings screen does — two build lines disagreeing about the version
+              is worse than either of them being wrong.
+            */}
+            {t('account.build', {
+              version: Constants.expoConfig?.version ?? '1.0.0',
+              server: API_BASE_URL,
+            })}
           </Text>
         </View>
       </ScrollView>
@@ -421,50 +413,11 @@ export default function AccountScreen() {
       {/* --------------------------------------------------------- sheets */}
       <NotificationsSheet visible={notificationsOpen} onClose={() => setNotificationsOpen(false)} />
 
-      <Sheet visible={addressSheetOpen} onClose={() => setAddressSheetOpen(false)}>
-        <ScrollView contentContainerStyle={styles.addressSheet} keyboardShouldPersistTaps="handled">
-          <Text style={styles.sheetTitle}>Add an address</Text>
-
-          <Field
-            label="Label"
-            value={draftLabel}
-            onChangeText={setDraftLabel}
-            placeholder="Home, hostel, office…"
-          />
-          <Field
-            label="Address"
-            value={draftAddress}
-            onChangeText={setDraftAddress}
-            placeholder="Evandy Hostel, Block B, Room 304"
-            multiline
-          />
-
-          {/* The suburb sheet used to sit here. It is read out of the address
-              now rather than asked for separately. */}
-          <Field label="City" value={draftCity} onChangeText={setDraftCity} placeholder="Kumasi" />
-
-          <SectionLabel>
-            The courier navigates to a pin derived from this text — the more specific, the closer
-            they land.
-          </SectionLabel>
-
-          <View style={{ flexDirection: 'row', gap: 10, marginTop: 6 }}>
-            <Button
-              label="Cancel"
-              variant="ghost"
-              onPress={() => setAddressSheetOpen(false)}
-              style={{ flex: 1 }}
-            />
-            <Button
-              label="Save address"
-              onPress={commitAddress}
-              disabled={!draftAddress.trim()}
-              style={{ flex: 1.3 }}
-            />
-          </View>
-        </ScrollView>
-      </Sheet>
-
+      <AddressSheet
+        visible={addressSheet.open}
+        editing={addressSheet.editing}
+        onClose={() => setAddressSheet({ open: false, editing: null })}
+      />
     </SafeAreaView>
   );
 }
@@ -601,21 +554,7 @@ const styles = StyleSheet.create({
   addressTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
   addressLabel: { fontSize: 12.5, fontWeight: '800', color: colors.textCharcoal },
   addressText: { fontSize: 10.5, color: colors.textSlate, marginTop: 2, lineHeight: 14.5 },
-
-  switchRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 4 },
-  switchIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: radius.md,
-    backgroundColor: tints.sage08,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  switchTitle: { fontSize: 12.5, fontWeight: '700', color: colors.textCharcoal },
-  switchCaption: { fontSize: 10, color: colors.textSlate, marginTop: 2, lineHeight: 14 },
-
-  assuranceRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 9 },
-  assuranceText: { flex: 1, fontSize: 10, color: colors.textMuted, lineHeight: 14.5 },
+  addressActions: { flexDirection: 'row', alignItems: 'center', gap: 13 },
 
   supportRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 9 },
   supportIcon: {
@@ -637,7 +576,4 @@ const styles = StyleSheet.create({
     marginTop: 30,
   },
   buildText: { fontSize: 9, color: colors.textMuted },
-
-  addressSheet: { padding: 20, paddingTop: 8, gap: 13 },
-  sheetTitle: { fontSize: 16, fontWeight: '800', color: colors.textCharcoal },
 });
