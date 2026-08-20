@@ -18,7 +18,7 @@ import {
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { humanizeStatus, type JobStatus } from '@freshfold/core';
+import { type JobStatus } from '@freshfold/core';
 import HandoffCard from '../../src/components/HandoffCard';
 import { StageTimeline } from '../../src/components/StageTimeline';
 import TrackingMap from '../../src/components/TrackingMap';
@@ -31,6 +31,12 @@ import {
   EmptyState,
   SectionLabel,
 } from '../../src/components/ui';
+import {
+  jobStatusLabel,
+  paymentStatusLabel,
+  stageLabel,
+  useT,
+} from '../../src/i18n';
 import { useClient } from '../../src/store/ClientStore';
 import {
   colors,
@@ -66,6 +72,7 @@ const COLLECTION_PENDING = new Set<JobStatus>([
 export default function TrackScreen() {
   const router = useRouter();
   const { activeBookings, primaryBooking, online, probed, refresh, messagesFor } = useClient();
+  const { t, locale } = useT();
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -98,15 +105,15 @@ export default function TrackScreen() {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>Track</Text>
+          <Text style={styles.headerTitle}>{t('track.title')}</Text>
           <ConnectionPill online={online} pending={!probed} />
         </View>
         <View style={{ padding: 20 }}>
           <EmptyState
             icon={<PackageSearch size={28} color={colors.brandStone} />}
-            title="Nothing in flight"
-            body="Once you book a pickup, the courier's progress shows up here in real time."
-            action="Schedule a pickup"
+            title={t('track.empty.title')}
+            body={t('track.empty.body')}
+            action={t('common.schedulePickup')}
             onAction={() => router.push('/(tabs)/book')}
           />
         </View>
@@ -120,7 +127,7 @@ export default function TrackScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>Track</Text>
+          <Text style={styles.headerTitle}>{t('track.title')}</Text>
           <Text style={styles.headerSub}>{booking.id}</Text>
         </View>
         <ConnectionPill online={online} pending={!probed} />
@@ -154,7 +161,9 @@ export default function TrackScreen() {
                     style={[styles.selectorStage, active && { color: 'rgba(255,255,255,0.75)' }]}
                     numberOfLines={1}
                   >
-                    {candidate.status}
+                    {/* The coarse stage, not the dispatch status — this chip is
+                        the customer's own vocabulary for one of their orders. */}
+                    {stageLabel(t, candidate.status)}
                   </Text>
                 </Pressable>
               );
@@ -175,14 +184,14 @@ export default function TrackScreen() {
           <Card style={styles.riderCard}>
             <Avatar size={46} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.riderName}>{courierName(rider)}</Text>
+              <Text style={styles.riderName}>{courierName(rider, locale)}</Text>
               <Text style={styles.riderVehicle} numberOfLines={1}>
-                {courierVehicle(rider)}
+                {courierVehicle(rider, locale)}
               </Text>
               <View style={styles.riderMeta}>
                 <Star size={11} color={colors.brandGold} fill={colors.brandGold} />
                 <Text style={styles.riderRating}>{rider.rating.toFixed(1)}</Text>
-                <Badge label={humanizeStatus(rider.jobStatus)} tone="sage" />
+                <Badge label={jobStatusLabel(t, rider.jobStatus)} tone="sage" />
               </View>
             </View>
 
@@ -190,14 +199,14 @@ export default function TrackScreen() {
               <Pressable
                 onPress={() => Linking.openURL(`tel:${booking.phone.replace(/\s/g, '')}`)}
                 style={styles.roundAction}
-                accessibilityLabel="Call the courier"
+                accessibilityLabel={t('track.call')}
               >
                 <Phone size={15} color={colors.brandSage} />
               </Pressable>
               <Pressable
                 onPress={() => router.push({ pathname: '/chat', params: { id: booking.id } })}
                 style={styles.roundAction}
-                accessibilityLabel="Message the courier"
+                accessibilityLabel={t('track.message')}
               >
                 <MessageSquare size={15} color={colors.brandSage} />
               </Pressable>
@@ -205,11 +214,8 @@ export default function TrackScreen() {
           </Card>
         ) : (
           <Card tone="sunken" style={{ gap: 4 }}>
-            <Text style={styles.pendingTitle}>Assigning a courier</Text>
-            <Text style={styles.pendingBody}>
-              Your booking is on the dispatch board. As soon as a courier accepts it, their
-              position and contact appear here.
-            </Text>
+            <Text style={styles.pendingTitle}>{t('track.pending.title')}</Text>
+            <Text style={styles.pendingBody}>{t('track.pending.body')}</Text>
           </Card>
         )}
 
@@ -220,34 +226,42 @@ export default function TrackScreen() {
 
         {/* -------------------------------------------------------- actions */}
         <View>
-          <SectionLabel>At the door</SectionLabel>
+          <SectionLabel>{t('track.section.door')}</SectionLabel>
           <View style={styles.actionGrid}>
             <ActionTile
               icon={<QrCode size={17} color={colors.brandSage} />}
-              label="Verify bags"
-              caption="Scan the manifest yourself"
+              label={t('track.action.scan')}
+              caption={t('track.action.scanCaption')}
               onPress={() =>
                 router.push({ pathname: '/order/[id]', params: { id: booking.id, action: 'scan' } })
               }
             />
             <ActionTile
               icon={<Camera size={17} color={colors.brandSage} />}
-              label="Report an issue"
-              caption="Photograph a garment"
+              label={t('track.action.issue')}
+              caption={t('track.action.issueCaption')}
               onPress={() =>
                 router.push({ pathname: '/order/[id]', params: { id: booking.id, action: 'issue' } })
               }
             />
             <ActionTile
               icon={<MessageSquare size={17} color={colors.brandSage} />}
-              label="Conversation"
-              caption={unreadThread > 0 ? `${unreadThread} messages` : 'Message dispatch'}
+              label={t('track.action.chat')}
+              caption={
+                // Two keys and a branch rather than a plural rule: the singular
+                // is its own string, so a language that says it differently can.
+                unreadThread === 1
+                  ? t('track.action.chatOne')
+                  : unreadThread > 1
+                    ? t('track.action.chatMany', { count: unreadThread })
+                    : t('track.action.chatCaption')
+              }
               onPress={() => router.push({ pathname: '/chat', params: { id: booking.id } })}
             />
             <ActionTile
               icon={<Radar size={17} color={colors.brandSage} />}
-              label="Full order"
-              caption="Manifest, proof, receipt"
+              label={t('track.action.full')}
+              caption={t('track.action.fullCaption')}
               onPress={() => router.push({ pathname: '/order/[id]', params: { id: booking.id } })}
             />
           </View>
@@ -255,19 +269,50 @@ export default function TrackScreen() {
 
         {/* -------------------------------------------------------- summary */}
         <Card style={{ gap: 9 }}>
-          <SectionLabel>This order</SectionLabel>
-          <Row label="Service" value={booking.serviceType} />
-          <Row label="Collection" value={`${booking.pickupDate} · ${booking.pickupTime}`} />
-          <Row label="Return" value={booking.deliveryDate} />
+          <SectionLabel>{t('track.section.order')}</SectionLabel>
+          {/* Five of these six labels are the booking flow's own — the same
+              field labelled the same way, so the same key. Only "Payment" is
+              new, because the booking summary never puts a label on that row. */}
+          <Row label={t('book.summary.service')} value={booking.serviceType} />
           <Row
-            label="Address"
+            label={t('book.done.collection')}
+            value={t('track.row.collectionValue', {
+              date: booking.pickupDate,
+              time: booking.pickupTime,
+            })}
+          />
+          <Row label={t('book.done.return')} value={booking.deliveryDate} />
+          <Row
+            label={t('book.summary.address')}
             value={[booking.address, booking.suburb].filter(Boolean).join(', ')}
           />
-          <Row label="Payment" value={`${booking.paymentStatus} · ${booking.paymentMethod ?? '—'}`} />
-          <Row label="Total" value={formatCedis(booking.amount ?? 0)} emphasis />
+          <Row
+            label={t('track.row.payment')}
+            // `paymentStatus` is optional on `Booking`, and the template that
+            // stood here interpolated it unguarded — a booking without one
+            // rendered the word "undefined" to the customer. An order with no
+            // payment state recorded has nothing to say about it, so it falls to
+            // the same blank every other empty row uses.
+            //
+            // The status is a closed union and is translated; the method beside
+            // it is a free-form string the server writes, and is not.
+            value={
+              booking.paymentStatus
+                ? t('track.row.paymentValue', {
+                    status: paymentStatusLabel(t, booking.paymentStatus),
+                    method: booking.paymentMethod ?? t('common.blank'),
+                  })
+                : ''
+            }
+          />
+          <Row
+            label={t('book.summary.total')}
+            value={formatCedis(booking.amount ?? 0, locale)}
+            emphasis
+          />
 
           <Button
-            label="Open full order"
+            label={t('track.open')}
             variant="ghost"
             onPress={() => router.push({ pathname: '/order/[id]', params: { id: booking.id } })}
             iconRight={<ChevronRight size={14} color={colors.textCharcoal} />}
@@ -305,11 +350,13 @@ function ActionTile({
 }
 
 function Row({ label, value, emphasis }: { label: string; value: string; emphasis?: boolean }) {
+  const { t } = useT();
+
   return (
     <View style={styles.row}>
       <Text style={styles.rowLabel}>{label}</Text>
       <Text style={[styles.rowValue, emphasis && styles.rowValueStrong]} numberOfLines={2}>
-        {value || '—'}
+        {value || t('common.blank')}
       </Text>
     </View>
   );

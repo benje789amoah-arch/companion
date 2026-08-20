@@ -176,7 +176,6 @@ export default function HomeScreen() {
 
     if (activeOrder.status === 'pickup_scanned') {
       updateOrderStatus(activeOrder.id, 'picked_up', undefined, signature);
-      updateRider({ todayDistance: rider.todayDistance + 2.1 });
     } else if (activeOrder.status === 'arrived_at_delivery') {
       void finishDelivery(signature);
     }
@@ -210,8 +209,11 @@ export default function HomeScreen() {
     setOtpInput('');
     setOverrideMode(false);
     setOverrideReason('');
+    // Distance is missing on purpose: the phone has been measuring the ride
+    // between its own GPS fixes the whole way, and the job's booked figure is a
+    // straight line drawn at booking time. Adding it here counted the trip
+    // twice, badly. See `distanceDate` on `RiderState`.
     updateRider({
-      todayDistance: rider.todayDistance + activeOrder.distance,
       todayEarnings: rider.todayEarnings + activeOrder.price,
       completedCount: rider.completedCount + 1,
     });
@@ -325,7 +327,7 @@ export default function HomeScreen() {
                 value={formatCedis(rider.todayEarnings)}
                 accent
               />
-              <StatTile label="Shift distance" value={`${rider.todayDistance.toFixed(1)} km`} />
+              <StatTile label="Ridden today" value={`${rider.todayDistance.toFixed(1)} km`} />
             </View>
           )}
 

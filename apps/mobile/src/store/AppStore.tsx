@@ -22,6 +22,7 @@ import {
   isActionableFix,
   isOutsideServiceArea,
   isTerminal,
+  metresBetween,
   orderWithKnownProof,
   type Coords,
   type Message,
@@ -213,6 +214,30 @@ export const PROFILE_FIELD_LABELS: Record<(typeof REQUIRED_PROFILE_FIELDS)[numbe
  * for a phone whose fix never settles.
  */
 const ARRIVAL_CONFIRMATIONS = 2;
+
+/**
+ * The device's own calendar date, `YYYY-MM-DD`.
+ *
+ * Local rather than UTC on purpose: a courier's day ends at midnight where they
+ * are standing, and at 00:30 in Kumasi a UTC stamp still says yesterday.
+ */
+function todayStamp(): string {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${now.getFullYear()}-${month}-${day}`;
+}
+
+/**
+ * A stamped distance figure, read as today's.
+ *
+ * Nothing ever reset `todayDistance`, so it was a lifetime total under a label
+ * that said "today". A figure carrying any other date belongs to that day, and
+ * today starts again at zero.
+ */
+function distanceToday(figure: Pick<RiderState, 'todayDistance' | 'distanceDate'>): number {
+  return figure.distanceDate === todayStamp() ? figure.todayDistance : 0;
+}
 const POLL_INTERVAL_MS = 4000;
 
 
@@ -501,6 +526,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       });
       setMessages(serverMessages);
       setNotifications(serverNotifications);
+      const stamp = todayStamp();
       setRider((prev) => ({
         ...prev,
         // Company records. The roster desk owns these — a supervisor assigning
@@ -512,7 +538,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         vehicle: serverRider.vehicle,
         vehiclePlate: serverRider.vehiclePlate,
         rating: serverRider.rating,
-        todayDistance: serverRider.todayDistance,
+        // Distance is the one total this device measures rather than reads: it
+        // adds up the gaps between its own GPS fixes as the courier rides.
+        // Taking the server's copy on every poll would rub out whatever has
+        // been ridden since the last telemetry tick, so the server's figure is
+        // adopted only when this device has measured nothing today — a cold
+        // start, or the first fix of a new day.
+        todayDistance:
+          prev.distanceDate === stamp ? prev.todayDistance : distanceToday(serverRider),
+        distanceDate: stamp,
         todayEarnings: serverRider.todayEarnings,
         completedCount: serverRider.completedCount,
         onTimeRate: serverRider.onTimeRate,
@@ -728,12 +762,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // they go up straight away rather than waiting for the telemetry tick.
       // Only what this device is allowed to say about itself. The vehicle and
       // plate belong to the roster desk, and the server rejects them here.
-      const { name, isOnline, batteryLevel } = updates;
-      if (name !== undefined || isOnline !== undefined || batteryLevel !== undefined) {
+      const { name, isOnline } = updates;
+      if (name !== undefined || isOnline !== undefined) {
         void push(() =>
           api.updateRider(
             riderIdRef.current,
-            { name, isOnline, batteryLevel },
+            { name, isOnline },
             tokenRef.current!
           )
         );
@@ -863,13 +897,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       // Offline, nothing else is going to credit the completion, so do it here.
       // Online the server owns these totals and the next poll brings them back.
+      //
+      // `todayDistance` is not among them. It used to add the job's booked
+      // distance — the straight line measured at booking — on top of whatever
+      // the phone had already measured for the same ride. The watch runs offline
+      // too, so the kilometres are already counted by the time this fires.
       if (status === 'delivered' && !connected) {
         const completed = orders.find((o) => o.id === orderId);
         setRider((prev) => ({
           ...prev,
           completedCount: prev.completedCount + 1,
           todayEarnings: Number((prev.todayEarnings + (completed?.price ?? 0)).toFixed(2)),
-          todayDistance: Number((prev.todayDistance + (completed?.distance ?? 0)).toFixed(2)),
         }));
       }
 
@@ -1092,6 +1130,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
    * and completely useless. `isOutsideServiceArea` is the same guard the store
    * already used to reject coordinates persisted by an older build.
    */
+
+  /**
+   * The last fix today's ridden distance was measured from.
+   *
+   * Cleared whenever the watch stops, so a courier who goes offline at the hub,
+   * rides home and comes back online in the morning does not have the ride home
+   * counted as one enormous step. The cost is one dropped segment each time the
+   * watch restarts, which undercounts by metres — the right direction to be
+   * wrong in.
+   */
+  const distanceAnchor = useRef<{ coords: Coords; accuracyM: number } | null>(null);
+
   useEffect(() => {
     if (!hydrated || !rider.isOnline) return;
 
@@ -1145,19 +1195,51 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           // exactly on top of the laundry hub and confirm their arrival at it.
           setLastFix(usable ? { coords: fix, accuracyM, at: timestamp || Date.now() } : null);
 
-          setRider((prev) => ({
-            ...prev,
-            coords: usable ? fix : HUB_COORDS,
-            // Below walking pace a heading derived from consecutive fixes is
-            // noise. Holding the last real one keeps the arrow pointing the
-            // way the courier was going rather than spinning at a junction.
-            heading:
-              reportedHeading !== null && speedKmh >= MIN_HEADING_SPEED_KMH
-                ? reportedHeading
-                : prev.heading,
-            speed: speedKmh,
-            gpsAccuracy: accuracyM ?? prev.gpsAccuracy,
-          }));
+          // How far the scooter has actually gone.
+          //
+          // Two fixes describe a movement only if the gap between them is
+          // larger than the uncertainty behind them: 8 m apart, each accurate
+          // to ±30 m, is a phone that may not have moved at all, and a scooter
+          // parked at a hostel gate for twenty minutes would otherwise ride
+          // several kilometres on jitter alone. The anchor holds its ground
+          // until the phone has demonstrably left it, so a slow creep is not
+          // discarded — it just has to add up before it counts.
+          //
+          // This runs whether or not there is a connection: the watch is the
+          // device's own, and the telemetry tick publishes the total when the
+          // network comes back.
+          let riddenKm = 0;
+          if (usable && accuracyM !== null && isActionableFix(accuracyM)) {
+            const anchor = distanceAnchor.current;
+            if (!anchor) {
+              distanceAnchor.current = { coords: fix, accuracyM };
+            } else {
+              const stepM = metresBetween(anchor.coords, fix);
+              if (stepM > Math.max(anchor.accuracyM, accuracyM)) {
+                riddenKm = stepM / 1000;
+                distanceAnchor.current = { coords: fix, accuracyM };
+              }
+            }
+          }
+
+          setRider((prev) => {
+            const stamp = todayStamp();
+            return {
+              ...prev,
+              coords: usable ? fix : HUB_COORDS,
+              // Below walking pace a heading derived from consecutive fixes is
+              // noise. Holding the last real one keeps the arrow pointing the
+              // way the courier was going rather than spinning at a junction.
+              heading:
+                reportedHeading !== null && speedKmh >= MIN_HEADING_SPEED_KMH
+                  ? reportedHeading
+                  : prev.heading,
+              speed: speedKmh,
+              gpsAccuracy: accuracyM ?? prev.gpsAccuracy,
+              todayDistance: Number((distanceToday(prev) + riddenKm).toFixed(2)),
+              distanceDate: stamp,
+            };
+          });
         }
       );
     })().catch(() => {
@@ -1168,6 +1250,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       cancelled = true;
+      // Nothing to measure the next fix against — see `distanceAnchor`.
+      distanceAnchor.current = null;
       // expo-location's own teardown throws on this SDK: removing the last
       // watcher calls `LocationEventEmitter.removeSubscription`, which
       // expo-modules-core no longer has. By the time it throws the callback is
@@ -1249,7 +1333,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             coords: current.coords,
             speed: current.speed,
             heading: current.heading,
-            batteryLevel: current.batteryLevel,
+            // The one running total this phone is the author of, rather than a
+            // reader of. See `distanceAnchor` above and `RiderTelemetry`.
+            todayDistance: current.todayDistance,
+            distanceDate: current.distanceDate,
             gpsAccuracy: current.gpsAccuracy,
             isOnline: current.isOnline,
           },

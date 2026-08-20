@@ -44,4 +44,10 @@ export {
   type Locale,
 } from './locales';
 export { coverage, translate, type Translate, type TranslateValues } from './translate';
+export {
+  jobStatusLabel,
+  paymentStatusLabel,
+  stageCopy,
+  stageLabel,
+} from './status';
 export type { TranslationKey } from './en';

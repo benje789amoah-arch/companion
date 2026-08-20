@@ -631,12 +631,15 @@ export async function transition(
       : null;
 
     if (rider) {
+      // `todayDistance` is not credited here any more. What this added was
+      // `dispatch.distanceKm` — the straight line from the hub to the pickup,
+      // measured once at booking — so it undercounted on two axes at once: a
+      // chord instead of the road, and one leg instead of the ride back. The
+      // courier's phone now reports the distance it measured between its own GPS
+      // fixes, and adding this on top of that would count the same ride twice.
       await t.riders.update(rider.id, {
         completedCount: rider.completedCount + 1,
         todayEarnings: Number((rider.todayEarnings + updated.payment.amount).toFixed(2)),
-        todayDistance: Number(
-          (rider.todayDistance + updated.dispatch.distanceKm).toFixed(2)
-        ),
       });
     }
   }

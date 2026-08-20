@@ -10,7 +10,8 @@ import MapView, { Marker, Polyline, type Region } from 'react-native-maps';
 import { LAUNDRY_HUB, routeEtaMinutes, type Booking, type Coords } from '@freshfold/core';
 import { MAP_PROVIDER } from '@freshfold/rn-maps';
 import { useRoadRoute } from '../hooks/useRoadRoute';
-import { colors, courierName, courierVehicle, humanizeStatus, radius, shadow, tints } from '../theme';
+import { jobStatusLabel, useT } from '../i18n';
+import { colors, courierName, courierVehicle, radius, shadow, tints } from '../theme';
 import MapPanel from './MapPanel';
 
 /**
@@ -66,13 +67,12 @@ class MapBoundary extends React.Component<
 }
 
 export default function TrackingMap(props: TrackingMapProps) {
+  const { t } = useT();
+
   return (
     <MapBoundary
       fallback={(message) => (
-        <MapPanel
-          booking={props.booking}
-          notice={`The map could not be loaded on this device (${message}). Positions are still live below.`}
-        />
+        <MapPanel booking={props.booking} notice={t('map.failed', { message })} />
       )}
     >
       <NativeTrackingMap {...props} />
@@ -81,6 +81,7 @@ export default function TrackingMap(props: TrackingMapProps) {
 }
 
 function NativeTrackingMap({ booking }: TrackingMapProps) {
+  const { t, locale } = useT();
   const mapRef = useRef<MapView | null>(null);
 
   const pickup = booking.pickupCoords;
@@ -142,7 +143,7 @@ function NativeTrackingMap({ booking }: TrackingMapProps) {
 
   // A booking the server has not pinned yet has nothing to draw.
   if (!pickup) {
-    return <MapPanel booking={booking} notice="This booking has no pickup pin yet." />;
+    return <MapPanel booking={booking} notice={t('map.noPin')} />;
   }
 
   return (
@@ -159,7 +160,7 @@ function NativeTrackingMap({ booking }: TrackingMapProps) {
         // which have to release the camera, and only this fires for both.
         onTouchStart={() => setFollowing(false)}
       >
-        <Marker coordinate={toLatLng(pickup)} anchor={{ x: 0.5, y: 0.5 }} title="Your address">
+        <Marker coordinate={toLatLng(pickup)} anchor={{ x: 0.5, y: 0.5 }} title={t('map.home')}>
           <View style={[styles.pin, styles.pinHome]}>
             <Home size={13} color="#FFFFFF" />
           </View>
@@ -176,8 +177,8 @@ function NativeTrackingMap({ booking }: TrackingMapProps) {
             <Marker
               coordinate={toLatLng(courier)}
               anchor={{ x: 0.5, y: 0.5 }}
-              title={courierName(booking.rider)}
-              description={courierVehicle(booking.rider)}
+              title={courierName(booking.rider, locale)}
+              description={courierVehicle(booking.rider, locale)}
             >
               <View style={styles.courierHalo}>
                 <View style={styles.courierPin}>
@@ -211,7 +212,7 @@ function NativeTrackingMap({ booking }: TrackingMapProps) {
       {!!courier && !following && (
         <Pressable
           onPress={recenter}
-          accessibilityLabel="Recenter the map on your courier"
+          accessibilityLabel={t('map.recenter')}
           hitSlop={8}
           style={({ pressed }) => [styles.recenterButton, pressed && { opacity: 0.8 }]}
         >
@@ -229,8 +230,8 @@ function NativeTrackingMap({ booking }: TrackingMapProps) {
                 every arrival time in this app used to be. With no route to read,
                 the stage is the honest answer. */}
             {etaMinutes !== null
-              ? `${etaMinutes} min away`
-              : humanizeStatus(booking.rider.jobStatus)}
+              ? t('map.eta', { minutes: etaMinutes })
+              : jobStatusLabel(t, booking.rider.jobStatus)}
           </Text>
         </View>
       )}

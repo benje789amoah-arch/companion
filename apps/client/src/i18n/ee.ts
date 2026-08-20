@@ -86,6 +86,25 @@ export const ee: Partial<Record<TranslationKey, string>> = {
   'wallet.tier.benefits': 'Wò viɖewo',
   'wallet.statement.emptyTitle': 'Naneke meli haɖe o',
 
+  // ------------------------------------------------------------ edzi kpɔkpɔ
+  //
+  // The tracking tab, and none of the dispatch vocabulary. The fifteen job
+  // statuses and eight stages say where a customer's clothes are right now, and
+  // being nearly right about that is worse than being English about it. They are
+  // the first block for a translator.
+  /** `Dze eyome` is to follow after something, which is what tracking is. */
+  'track.title': 'Dze eyome',
+  'track.section.door': 'Ʋɔtru nu',
+  'map.home': 'Wò nɔƒe',
+
+  // -------------------------------------------------------------- esi wòƒle
+  //
+  // The order screen, and one line of it. Everything else that screen says is
+  // about a stage, a bag, a photograph or a payment, and each of those is a
+  // sentence a customer uses to decide whether their order went right. The whole
+  // block goes to a translator; guessing at it would be the wrong kind of help.
+  'order.section.actions': 'Nu siwo nàte ŋu awɔ',
+
   // ------------------------------------------------------------- settings
   'settings.title': 'Ɖoɖowo',
 

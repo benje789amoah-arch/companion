@@ -38,6 +38,8 @@ export const tw: Partial<Record<TranslationKey, string>> = {
   'common.keep': 'Ma ɛnka',
   'common.remove': 'Yi fi hɔ',
   'common.add': 'Fa ka ho',
+  /** `To mu` is to shut it — the verb, which is what the button is. */
+  'common.close': 'To mu',
   'common.saving': 'Ɛrekora…',
   'common.sending': 'Ɛresoma…',
   'common.default': 'Titiriw',
@@ -126,6 +128,46 @@ export const tw: Partial<Record<TranslationKey, string>> = {
   /** `Mfasoɔ` is the benefit or the gain. */
   'wallet.tier.benefits': 'Mfasoɔ a wonya',
   'wallet.statement.emptyTitle': 'Biribiara nni hɔ',
+
+  // ------------------------------------------------------------- di akyi
+  //
+  // The tracking tab. Almost none of the dispatch vocabulary is here, and that is
+  // the deliberate part: the fifteen job statuses and eight stages are what tell a
+  // customer where their clothes are at this moment, and a word that is nearly
+  // right about that is worse than an English one they can read and act on. Those
+  // are the first block to hand a translator. What is here is the chrome — the
+  // title, the two buttons, the heading over them.
+  'track.title': 'Di akyi',
+  /** Same words as `home.live.assigning`, which this file already carries. */
+  'track.pending.title': 'Yɛrepɛ ɔsomafoɔ',
+  'track.section.door': 'Ɛpono ano',
+  /** `Nkɔmmɔdie` is conversation, the act of talking together. */
+  'track.action.chat': 'Nkɔmmɔdie',
+  'track.call': 'Frɛ ɔsomafoɔ no',
+  'track.message': 'Kyerɛw ɔsomafoɔ no',
+
+  'map.home': 'Wo adres',
+
+  // Only these two of the payment states. `Wɔatua` is "it has been paid" and
+  // `Ɛretwɛn` is "it is waiting"; the other two are about money moving back or
+  // being settled at the door, and those need a translator rather than me.
+  'status.payment.Paid': 'Wɔatua',
+  'status.payment.Pending': 'Ɛretwɛn',
+
+  // ------------------------------------------------------------ ɔdeɛ no
+  //
+  // The order screen, and four words out of forty-three. The same line as the
+  // tracking block above: the stage words, the receipt and everything the screen
+  // says about a bag, a photograph or a payment are what a customer reads to work
+  // out whether their order went right, and those go to a translator whole. The
+  // header for the screen is absent for a different reason — I do not know what
+  // Twi speakers in Accra actually call a laundry order, and inventing a word for
+  // the title of the screen is the wrong place to guess.
+  'order.section.actions': 'Deɛ wobɛtumi ayɛ',
+  /** The same `ɔsomafoɔ` the tracking block and `courier.unnamed` already use. */
+  'order.row.courier': 'Ɔsomafoɔ',
+  'order.call.title': 'Frɛ ɔfese hɔ',
+  'order.again': 'Hyɛ bio',
 
   // ------------------------------------------------------------- settings
   'settings.title': 'Nhyehyɛe',

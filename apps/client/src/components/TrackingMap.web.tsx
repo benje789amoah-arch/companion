@@ -5,13 +5,11 @@
 
 import React from 'react';
 import MapPanel from './MapPanel';
+import { useT } from '../i18n';
 
 /** `react-native-maps` has no web implementation, so the browser gets the panel. */
 export default function TrackingMapWeb(props: React.ComponentProps<typeof MapPanel>) {
-  return (
-    <MapPanel
-      {...props}
-      notice="Live tiles render on iOS and Android. Open the app in Expo Go to see the map."
-    />
-  );
+  const { t } = useT();
+
+  return <MapPanel {...props} notice={t('map.expoNotice')} />;
 }

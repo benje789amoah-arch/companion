@@ -9,6 +9,7 @@ import { ArrowRight, ClipboardCheck, Layers, QrCode, ShieldCheck } from 'lucide-
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { LaundryBag } from '@freshfold/core';
+import { useT } from '../i18n';
 import { colors, radius, tints } from '../theme';
 import { Button, Divider } from './ui';
 
@@ -32,9 +33,15 @@ interface BagScannerProps {
 type ScannerMode = 'checklist' | 'camera';
 
 export default function BagScanner({ bags: initial, reference, onConfirm, onCancel }: BagScannerProps) {
+  const { t } = useT();
   const [bags, setBags] = useState<LaundryBag[]>(() => initial.map((bag) => ({ ...bag, scanned: false })));
   const [mode, setMode] = useState<ScannerMode>('checklist');
-  const [status, setStatus] = useState('Hold a bag label inside the frame, or tick them off by hand.');
+  /**
+   * The line under the viewfinder. `null` is the opening hint rather than a copy
+   * of it, so that hint follows the language while it is still the thing on
+   * screen — a string captured into state at mount would not.
+   */
+  const [status, setStatus] = useState<string | null>(null);
   const [permission, requestPermission] = useCameraPermissions();
 
   // The camera fires continuously; ignore repeats of a code just handled.
@@ -49,13 +56,13 @@ export default function BagScanner({ bags: initial, reference, onConfirm, onCanc
 
   const tickOff = (bag: LaundryBag) => {
     markScanned(bag.id);
-    setStatus(`Checked ${bag.qrCode}.`);
+    setStatus(t('scanner.hint.checked', { code: bag.qrCode }));
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
   };
 
   const tickAll = () => {
     setBags((current) => current.map((bag) => ({ ...bag, scanned: true })));
-    setStatus('All bags accounted for.');
+    setStatus(t('scanner.hint.all'));
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
   };
 
@@ -71,26 +78,26 @@ export default function BagScanner({ bags: initial, reference, onConfirm, onCanc
 
       if (match) {
         markScanned(match.id);
-        setStatus(`Verified ${match.qrCode} — ${match.type}.`);
+        setStatus(t('scanner.hint.verified', { code: match.qrCode, type: match.type }));
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       } else {
-        setStatus(`“${data}” is not part of ${reference}.`);
+        setStatus(t('scanner.hint.foreign', { code: data, reference }));
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
       }
     },
-    [bags, markScanned, reference]
+    [bags, markScanned, reference, t]
   );
 
   const enterCameraMode = async () => {
     if (!permission?.granted) {
       const result = await requestPermission();
       if (!result.granted) {
-        setStatus('Camera access declined — tick the bags off by hand instead.');
+        setStatus(t('scanner.hint.declined'));
         return;
       }
     }
     setMode('camera');
-    setStatus('Camera live. Align a FreshFold bag label within the frame.');
+    setStatus(t('scanner.hint.live'));
   };
 
   return (
@@ -98,7 +105,7 @@ export default function BagScanner({ bags: initial, reference, onConfirm, onCanc
       <View style={styles.header}>
         <QrCode size={20} color={colors.brandSage} />
         <View style={{ flex: 1 }}>
-          <Text style={styles.title}>Check your bags</Text>
+          <Text style={styles.title}>{t('scanner.title')}</Text>
           <Text style={styles.subtitle}>{reference}</Text>
         </View>
       </View>
@@ -109,7 +116,7 @@ export default function BagScanner({ bags: initial, reference, onConfirm, onCanc
           style={[styles.modeButton, mode === 'checklist' && styles.modeButtonActive]}
         >
           <Text style={[styles.modeLabel, mode === 'checklist' && styles.modeLabelActive]}>
-            Checklist
+            {t('scanner.mode.checklist')}
           </Text>
         </Pressable>
         <Pressable
@@ -117,7 +124,7 @@ export default function BagScanner({ bags: initial, reference, onConfirm, onCanc
           style={[styles.modeButton, mode === 'camera' && styles.modeButtonActive]}
         >
           <Text style={[styles.modeLabel, mode === 'camera' && styles.modeLabelActive]}>
-            Scan with camera
+            {t('scanner.mode.camera')}
           </Text>
         </Pressable>
       </View>
@@ -133,10 +140,8 @@ export default function BagScanner({ bags: initial, reference, onConfirm, onCanc
         ) : (
           <View style={styles.viewfinderPlaceholder}>
             <QrCode size={40} color={tints.sage40} />
-            <Text style={styles.viewfinderTitle}>Every bag carries a printed code</Text>
-            <Text style={styles.viewfinderBody}>
-              Scan them as they leave, or as they come back, and keep your own count.
-            </Text>
+            <Text style={styles.viewfinderTitle}>{t('scanner.empty.title')}</Text>
+            <Text style={styles.viewfinderBody}>{t('scanner.empty.body')}</Text>
           </View>
         )}
 
@@ -147,18 +152,18 @@ export default function BagScanner({ bags: initial, reference, onConfirm, onCanc
 
         <View style={styles.statusPill}>
           <Text style={styles.statusText} numberOfLines={2}>
-            {status}
+            {status ?? t('scanner.hint.initial')}
           </Text>
         </View>
       </View>
 
       <View style={styles.checklistHeader}>
         <Text style={styles.checklistTitle}>
-          Manifest ({scannedCount}/{bags.length})
+          {t('scanner.manifest', { count: scannedCount, total: bags.length })}
         </Text>
         {!allScanned && bags.length > 0 && (
           <Pressable onPress={tickAll} style={styles.tickAll} hitSlop={6}>
-            <Text style={styles.tickAllLabel}>Tick all</Text>
+            <Text style={styles.tickAllLabel}>{t('scanner.tickAll')}</Text>
             <ArrowRight size={12} color={colors.brandSage} />
           </Pressable>
         )}
@@ -179,21 +184,21 @@ export default function BagScanner({ bags: initial, reference, onConfirm, onCanc
                 <Text style={styles.bagWeight}>{bag.weight}</Text>
               </View>
               <Text style={styles.bagCode} numberOfLines={1}>
-                {bag.qrCode} · {bag.itemCount} items
+                {t('scanner.bag.meta', { code: bag.qrCode, items: bag.itemCount })}
               </Text>
             </View>
 
             {bag.scanned ? (
               <View style={styles.verified}>
                 <ClipboardCheck size={13} color={colors.statusSuccess} />
-                <Text style={styles.verifiedLabel}>Checked</Text>
+                <Text style={styles.verifiedLabel}>{t('scanner.checked')}</Text>
               </View>
             ) : (
               <Pressable
                 onPress={() => tickOff(bag)}
                 style={({ pressed }) => [styles.tickChip, pressed && { opacity: 0.8 }]}
               >
-                <Text style={styles.tickChipLabel}>Tick</Text>
+                <Text style={styles.tickChipLabel}>{t('scanner.tick')}</Text>
               </Pressable>
             )}
           </View>
@@ -203,9 +208,17 @@ export default function BagScanner({ bags: initial, reference, onConfirm, onCanc
       <Divider style={{ marginTop: 4 }} />
 
       <View style={styles.actions}>
-        <Button label="Close" variant="ghost" onPress={onCancel} style={{ flex: 1 }} />
+        <Button label={t('common.close')} variant="ghost" onPress={onCancel} style={{ flex: 1 }} />
         <Button
-          label={scannedCount === 0 ? 'Check a bag first' : `Confirm ${scannedCount} bags`}
+          label={
+            // Three states rather than a plural rule: nothing checked yet, one
+            // bag, or a count.
+            scannedCount === 0
+              ? t('scanner.confirmNone')
+              : scannedCount === 1
+                ? t('scanner.confirmOne')
+                : t('scanner.confirmMany', { count: scannedCount })
+          }
           onPress={() => onConfirm(bags)}
           disabled={scannedCount === 0}
           icon={<ShieldCheck size={15} color="#FFFFFF" />}

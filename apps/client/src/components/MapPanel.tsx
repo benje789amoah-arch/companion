@@ -6,7 +6,8 @@
 import { Bike, Home, Warehouse } from 'lucide-react-native';
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import { LAUNDRY_HUB, distanceKm, humanizeStatus, type Booking, type Coords } from '@freshfold/core';
+import { LAUNDRY_HUB, distanceKm, type Booking, type Coords } from '@freshfold/core';
+import { jobStatusLabel, useT } from '../i18n';
 import { colors, courierName, courierVehicle, radius, shadow, tints } from '../theme';
 
 /**
@@ -17,6 +18,9 @@ import { colors, courierName, courierVehicle, radius, shadow, tints } from '../t
  * when the native map fails to mount. Everything the map communicates — where
  * the courier is, which way they are heading, how far there is to go — is
  * still here; only the tiles are missing.
+ *
+ * `notice` arrives already translated: the three callers each have a different
+ * reason for showing this panel, and each knows its own sentence.
  */
 export default function MapPanel({
   booking,
@@ -25,6 +29,8 @@ export default function MapPanel({
   booking: Booking;
   notice?: string;
 }) {
+  const { t, locale } = useT();
+
   const pickup = booking.pickupCoords;
   const hub: Coords = { lat: LAUNDRY_HUB.lat, lng: LAUNDRY_HUB.lng };
   const courier = booking.rider?.coords;
@@ -32,10 +38,8 @@ export default function MapPanel({
   return (
     <View style={styles.container}>
       <View style={styles.noticeBox}>
-        <Text style={styles.noticeTitle}>Position readout</Text>
-        <Text style={styles.noticeBody}>
-          {notice ?? 'Live tiles render on iOS and Android. Open the app on a phone for the map.'}
-        </Text>
+        <Text style={styles.noticeTitle}>{t('map.readout')}</Text>
+        <Text style={styles.noticeBody}>{notice ?? t('map.webNotice')}</Text>
       </View>
 
       {!!courier && (
@@ -45,7 +49,12 @@ export default function MapPanel({
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.rowLabel}>
-              {courierName(booking.rider)} · {courierVehicle(booking.rider)}
+              {/* The same name-and-vehicle pair the home screen's live card
+                  shows, formatted the same way, so it is the same key. */}
+              {t('home.live.courier', {
+                name: courierName(booking.rider, locale),
+                vehicle: courierVehicle(booking.rider, locale),
+              })}
             </Text>
             <Text style={styles.rowCoords}>{formatCoords(courier)}</Text>
           </View>
@@ -59,7 +68,9 @@ export default function MapPanel({
               address row below carries the live distance.
             */}
             <Text style={styles.rowEta}>
-              {booking.rider ? humanizeStatus(booking.rider.jobStatus) : '—'}
+              {booking.rider
+                ? jobStatusLabel(t, booking.rider.jobStatus)
+                : t('common.blank')}
             </Text>
           </View>
         </View>
@@ -68,7 +79,7 @@ export default function MapPanel({
       <PinRow
         icon={<Home size={13} color="#FFFFFF" />}
         tone={colors.brandGold}
-        label="Your address"
+        label={t('map.home')}
         detail={[booking.address, booking.suburb].filter(Boolean).join(', ')}
         coords={pickup}
         distanceFrom={courier}
@@ -78,7 +89,7 @@ export default function MapPanel({
         icon={<Warehouse size={12} color="#FFFFFF" />}
         tone={colors.textCharcoal}
         label={LAUNDRY_HUB.name}
-        detail="Where your garments are cared for"
+        detail={t('map.hubDetail')}
         coords={hub}
         distanceFrom={courier}
       />
@@ -101,6 +112,8 @@ function PinRow({
   coords?: Coords;
   distanceFrom?: Coords;
 }) {
+  const { t } = useT();
+
   const away =
     coords && distanceFrom ? `${distanceKm(distanceFrom, coords).toFixed(1)} km` : undefined;
 
@@ -112,9 +125,11 @@ function PinRow({
           {label}
         </Text>
         <Text style={styles.rowDetail} numberOfLines={1}>
-          {detail || '—'}
+          {detail || t('common.blank')}
         </Text>
-        <Text style={styles.rowCoords}>{coords ? formatCoords(coords) : 'No pin yet'}</Text>
+        <Text style={styles.rowCoords}>
+          {coords ? formatCoords(coords) : t('map.noPinYet')}
+        </Text>
       </View>
       {!!away && <Text style={styles.rowAway}>{away}</Text>}
     </View>

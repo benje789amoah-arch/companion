@@ -9,10 +9,10 @@ import { StyleSheet, Text, View } from 'react-native';
 import {
   BOOKING_STAGE_SEQUENCE,
   bookingProgressPercent,
-  humanizeStatus,
   type BookingStatus,
   type JobStatus,
 } from '@freshfold/core';
+import { jobStatusLabel, stageCopy, stageLabel, useT } from '../i18n';
 import { colors, radius, tints } from '../theme';
 import { ProgressBar } from './ui';
 
@@ -23,20 +23,12 @@ import { ProgressBar } from './ui';
  * the rider is actually in, shown as a live sub-line when the courier is
  * moving. Deriving the first from the second is what keeps this screen and the
  * rider's console from disagreeing about where the garments are.
+ *
+ * What each stage *means* used to live here as a `Record<BookingStatus, string>`.
+ * It is now the `status.copy.*` keys, and `stageCopy` reads them — the record's
+ * exhaustiveness survives the move, because those key names are built out of
+ * `BookingStatus` itself.
  */
-
-/** What each stage means, in the voice the client portal already uses. */
-const STAGE_COPY: Record<BookingStatus, string> = {
-  Scheduled: 'Your appointment is registered. A courier will be assigned shortly.',
-  Collecting: 'Your courier is collecting the bags and heading for the hub.',
-  'In Care': 'Checked in at the hub. Sorting and botanical stain treatment under way.',
-  'Ironing & Folding': 'Hand-pressing and boutique folding in progress.',
-  'Quality Check': 'Thread and finish inspected and packed, waiting for a courier.',
-  Delivering: 'Your courier is on the way back to your door with the finished order.',
-  Delivered: 'Delivered and signed for. Thank you for choosing FreshFold.',
-  Cancelled: 'This order was cancelled. Nothing further will be collected.',
-};
-
 export function StageTimeline({
   stage,
   dispatchStatus,
@@ -46,6 +38,8 @@ export function StageTimeline({
   dispatchStatus?: JobStatus;
   compact?: boolean;
 }) {
+  const { t } = useT();
+
   const cancelled = stage === 'Cancelled';
   const currentIndex = BOOKING_STAGE_SEQUENCE.indexOf(stage);
   const percent = bookingProgressPercent(stage);
@@ -54,7 +48,10 @@ export function StageTimeline({
     return (
       <View style={{ gap: 7 }}>
         <View style={styles.compactRow}>
-          <Text style={styles.compactStage}>{cancelled ? 'Cancelled' : stage}</Text>
+          {/* `cancelled` is `stage === 'Cancelled'`, so the stage already is the
+              word — the ternary that stood here chose between a literal
+              'Cancelled' and a stage that could only have been 'Cancelled'. */}
+          <Text style={styles.compactStage}>{stageLabel(t, stage)}</Text>
           <Text style={styles.compactPercent}>{percent}%</Text>
         </View>
         <ProgressBar percent={percent} tone={cancelled ? 'gold' : 'sage'} />
@@ -66,16 +63,19 @@ export function StageTimeline({
     <View style={{ gap: 14 }}>
       <View style={{ gap: 7 }}>
         <View style={styles.compactRow}>
-          <Text style={styles.headline}>{cancelled ? 'Cancelled' : stage}</Text>
+          <Text style={styles.headline}>{stageLabel(t, stage)}</Text>
           <Text style={styles.compactPercent}>{percent}%</Text>
         </View>
         <ProgressBar percent={percent} tone={cancelled ? 'gold' : 'sage'} height={7} />
-        <Text style={styles.copy}>{STAGE_COPY[stage]}</Text>
+        <Text style={styles.copy}>{stageCopy(t, stage)}</Text>
         {!!dispatchStatus && !cancelled && (
           <View style={styles.liveRow}>
             <View style={styles.liveDot} />
             <Text style={styles.liveLabel}>
-              Dispatch: {humanizeStatus(dispatchStatus).toLowerCase()}
+              {/* The status goes into the sentence as it is written. This line
+                  used to lower-case it, which reads well in English and mangles
+                  any language whose capitalisation carries meaning. */}
+              {t('track.dispatch', { status: jobStatusLabel(t, dispatchStatus) })}
             </Text>
           </View>
         )}
@@ -112,7 +112,7 @@ export function StageTimeline({
                   ]}
                   numberOfLines={2}
                 >
-                  {step}
+                  {stageLabel(t, step)}
                 </Text>
               </View>
             );

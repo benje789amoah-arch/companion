@@ -186,12 +186,6 @@ export const DEFAULT_AVATAR =
   'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=200';
 
 /**
- * `navigating_to_pickup` -> `Navigating to pickup`. Re-exported from the shared
- * package so the customer app and the rider console label a status identically.
- */
-export { humanizeStatus } from '@freshfold/core';
-
-/**
  * Money, dates and ages, in one of the app's languages.
  *
  * Every one of these takes `locale` as an optional last argument defaulting to

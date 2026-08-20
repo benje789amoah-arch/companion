@@ -194,7 +194,6 @@ export function seedRiders(): StoredRider[] {
       // a 5.0 rating and a 96.5% acceptance rate would be a claim.
       rating: 0,
       isOnline: false,
-      batteryLevel: 100,
       gpsAccuracy: 0,
       speed: 0,
       heading: 0,
@@ -202,6 +201,7 @@ export function seedRiders(): StoredRider[] {
       // shared hub rather than copied, so a relocation moves this too.
       coords: { lat: LAUNDRY_HUB.lat, lng: LAUNDRY_HUB.lng },
       todayDistance: 0,
+      distanceDate: '',
       todayEarnings: 0,
       completedCount: 0,
       onTimeRate: 0,

@@ -29,6 +29,7 @@ export const fr: Partial<Record<TranslationKey, string>> = {
   'common.keep': 'Garder',
   'common.remove': 'Supprimer',
   'common.add': 'Ajouter',
+  'common.close': 'Fermer',
   'common.saving': 'Enregistrement…',
   'common.sending': 'Envoi…',
   'common.default': 'Par défaut',
@@ -52,6 +53,55 @@ export const fr: Partial<Record<TranslationKey, string>> = {
   // -------------------------------------------------------------- courier
   'courier.unnamed': 'Votre coursier',
   'courier.vehiclePending': 'Détails du véhicule à venir',
+
+  // ------------------------------------------------------------------ état
+  //
+  // `atelier` pour le hub où le linge est traité — « blanchisserie » désigne le
+  // commerce, pas l’atelier où passe la commande.
+  'status.job.unassigned': 'Non attribué',
+  'status.job.assigned': 'Attribué',
+  'status.job.navigating_to_pickup': 'En route vers le retrait',
+  'status.job.arrived_at_pickup': 'Arrivé au retrait',
+  'status.job.pickup_scanned': 'Retrait scanné',
+  'status.job.picked_up': 'Récupéré',
+  'status.job.navigating_to_laundry': 'En route vers l’atelier',
+  'status.job.arrived_at_laundry': 'Arrivé à l’atelier',
+  'status.job.dropped_off': 'Déposé',
+  'status.job.processing': 'En traitement',
+  'status.job.ready_for_delivery': 'Prêt pour la livraison',
+  'status.job.navigating_to_delivery': 'En route vers la livraison',
+  'status.job.arrived_at_delivery': 'Arrivé à la livraison',
+  'status.job.delivered': 'Livré',
+  'status.job.cancelled': 'Annulé',
+
+  // `Pris en charge` pour l’étape et `En traitement` pour l’état de répartition :
+  // l’anglais dit « In Care » et « processing », et les deux se retrouvent sur le
+  // même écran — l’étape au-dessus de la barre, l’état dans la ligne en direct
+  // juste en dessous. Deux mots distincts, donc.
+  'status.stage.Scheduled': 'Programmé',
+  'status.stage.Collecting': 'Collecte',
+  'status.stage.In Care': 'Pris en charge',
+  'status.stage.Ironing & Folding': 'Repassage et pliage',
+  'status.stage.Quality Check': 'Contrôle qualité',
+  'status.stage.Delivering': 'Livraison',
+  'status.stage.Delivered': 'Livré',
+  'status.stage.Cancelled': 'Annulé',
+
+  'status.copy.Scheduled': 'Votre rendez-vous est enregistré. Un coursier sera attribué sous peu.',
+  'status.copy.Collecting': 'Votre coursier récupère les sacs et se dirige vers l’atelier.',
+  'status.copy.In Care':
+    'Réception à l’atelier. Tri et traitement botanique des taches en cours.',
+  'status.copy.Ironing & Folding': 'Repassage à la main et pliage soigné en cours.',
+  'status.copy.Quality Check':
+    'Coutures et finitions inspectées, commande emballée, en attente d’un coursier.',
+  'status.copy.Delivering': 'Votre coursier repart vers votre porte avec la commande terminée.',
+  'status.copy.Delivered': 'Livré et signé. Merci d’avoir choisi FreshFold.',
+  'status.copy.Cancelled': 'Cette commande a été annulée. Rien de plus ne sera collecté.',
+
+  'status.payment.Pending': 'En attente',
+  'status.payment.Paid': 'Payé',
+  'status.payment.Pay on Pickup': 'Paiement au retrait',
+  'status.payment.Refunded': 'Remboursé',
 
   // ------------------------------------------------------------ accueil
   'home.greeting.morning': 'Bonjour',
@@ -247,6 +297,222 @@ export const fr: Partial<Record<TranslationKey, string>> = {
   'book.done.paid': 'Payé',
   'book.done.another': 'Réserver à nouveau',
   'book.done.track': 'Suivre',
+
+  // ------------------------------------------------------------------ suivi
+  'track.title': 'Suivi',
+
+  'track.empty.title': 'Rien en cours',
+  'track.empty.body':
+    'Dès que vous réservez une collecte, la progression du coursier s’affiche ici en temps réel.',
+
+  'track.pending.title': 'Attribution d’un coursier',
+  'track.pending.body':
+    'Votre réservation est sur le tableau de répartition. Dès qu’un coursier l’accepte, sa position et ses coordonnées apparaissent ici.',
+
+  'track.section.door': 'À la porte',
+  'track.section.order': 'Cette commande',
+
+  'track.action.scan': 'Vérifier les sacs',
+  'track.action.scanCaption': 'Scannez le manifeste vous-même',
+  'track.action.issue': 'Signaler un problème',
+  'track.action.issueCaption': 'Photographiez un vêtement',
+  'track.action.chat': 'Conversation',
+  'track.action.chatCaption': 'Écrire à la répartition',
+  'track.action.chatOne': '1 message',
+  'track.action.chatMany': '{count} messages',
+  'track.action.full': 'Commande complète',
+  'track.action.fullCaption': 'Manifeste, preuve, reçu',
+
+  'track.row.payment': 'Paiement',
+  'track.row.paymentValue': '{status} · {method}',
+  'track.row.collectionValue': '{date} · {time}',
+  'track.open': 'Ouvrir la commande',
+
+  'track.call': 'Appeler le coursier',
+  'track.message': 'Écrire au coursier',
+
+  // « Répartition » est le mot employé partout ailleurs dans ce fichier pour le
+  // tableau de dispatch ; l’état arrive déjà traduit par `status.job.*`.
+  'track.dispatch': 'Répartition : {status}',
+
+  // -------------------------------------------------------------- remise
+  'handoff.label': 'Code de collecte',
+  'handoff.atDoor': 'Votre coursier est à la porte',
+  'handoff.waiting': 'À montrer à l’arrivée du coursier',
+  'handoff.body':
+    'Votre coursier scannera le code ou demandera les quatre chiffres. Ne confiez les sacs à personne qui ne peut pas le vérifier.',
+  'handoff.hide': 'Masquer',
+  'handoff.hideLabel': 'Masquer le code de collecte',
+  'handoff.show': 'Afficher à nouveau le QR et le code',
+  'handoff.showLabel': 'Afficher le code de collecte',
+  'handoff.tied':
+    'Le code est lié à la commande {id} et ne fonctionne que pour cette collecte.',
+
+  // -------------------------------------------------------------- carte
+  'map.home': 'Votre adresse',
+  'map.recenter': 'Recentrer la carte sur votre coursier',
+  // « à 8 min » est ce qu’on dit ; « 8 min de distance » ne se dit pas.
+  'map.eta': 'à {minutes} min',
+  'map.noPin': 'Cette réservation n’a pas encore de point de retrait.',
+  // {message} est l’erreur de la vue native, laissée en anglais telle qu’elle
+  // arrive.
+  'map.failed':
+    'La carte n’a pas pu être chargée sur cet appareil ({message}). Les positions restent en direct ci-dessous.',
+  'map.readout': 'Relevé des positions',
+  'map.webNotice':
+    'Les tuiles en direct s’affichent sur iOS et Android. Ouvrez l’application sur un téléphone pour voir la carte.',
+  'map.expoNotice':
+    'Les tuiles en direct s’affichent sur iOS et Android. Ouvrez l’application dans Expo Go pour voir la carte.',
+  'map.hubDetail': 'Là où vos vêtements sont traités',
+  'map.noPinYet': 'Pas encore de point',
+
+  // ------------------------------------------------------------- la commande
+  'order.title': 'Commande',
+  'order.missing.title': 'Commande introuvable',
+  'order.missing.body':
+    'Cette référence n’est pas dans votre historique. Si vous avez réservé sur le site, connectez-vous avec la même adresse e-mail pour la voir ici.',
+
+  'order.cancel.action': 'Annuler cette commande',
+  'order.cancel.title': 'Annuler cette commande ?',
+  'order.cancel.body':
+    'Le coursier sera rappelé. Toute somme déjà payée est recréditée sur votre portefeuille par le service conciergerie.',
+  // « Garder » seul répond à la question ; l’anglais ajoute « it » parce que sa
+  // grammaire le réclame, le français non.
+  'order.cancel.keep': 'Garder',
+  'order.cancel.confirm': 'Annuler',
+
+  'order.section.actions': 'Ce que vous pouvez faire',
+  'order.section.manifest': 'Contenu des sacs',
+  'order.section.details': 'Détails',
+  'order.section.proof': 'Preuve de service',
+
+  'order.sign.title': 'Signer la livraison',
+  'order.sign.captionCode':
+    'Votre coursier est à la porte. Communiquez-lui le code {code}.',
+  'order.sign.caption': 'Votre coursier est à la porte.',
+
+  'order.scan.title': 'Vérifier le contenu des sacs',
+  'order.scan.checked': '{count} sur {total} vérifiés par vous',
+  'order.scan.bagsOne': '1 sac sur cette commande',
+  'order.scan.bagsMany': '{count} sacs sur cette commande',
+
+  'order.issue.caption': 'Photographiez un vêtement et dites-nous ce qui s’est passé',
+  'order.chat.caption': 'Écrire au coursier ou à la répartition',
+
+  'order.call.title': 'Appeler la conciergerie',
+  // « Au sujet de » plutôt que « À propos de » : on appelle au sujet d’une
+  // course, « à propos » introduit un thème.
+  'order.call.caption': 'Au sujet de {name} · {vehicle}',
+
+  'order.manifest.verified': '{count}/{total} vérifiés par vous',
+  'order.bag.meta': '{code} · {items} articles · {weight}',
+
+  'order.row.booked': 'Réservée',
+  'order.row.plan': 'Abonnement',
+  'order.row.care': 'Consignes d’entretien',
+  'order.row.courierNote': 'Note du coursier',
+  'order.row.courier': 'Coursier',
+  'order.row.courierValue': '{name} · {status}',
+
+  // Le participe s’accorde avec ce qui est photographié : un vêtement collecté,
+  // une signature apposée. « Collecté » au masculin pour le linge en général.
+  'order.proof.pickupPhoto': 'Collecté',
+  'order.proof.pickupSignature': 'Signé à la collecte',
+  'order.proof.deliveryPhoto': 'Livré',
+  'order.proof.deliverySignature': 'Signé à la livraison',
+  'order.proof.vector': 'Signature enregistrée',
+
+  'order.receipt.open': 'Voir le reçu',
+  // Ligne de reçu, donc une date : « Collecte le … », d’où le nom de l’étape et
+  // non le participe utilisé sous les photos.
+  'order.receipt.collected': 'Collecte',
+  'order.receipt.returned': 'Retour',
+  'order.receipt.method': 'Moyen de paiement',
+  'order.receipt.status': 'Statut',
+  'order.receipt.reference': 'Référence',
+
+  'order.again': 'Réserver à nouveau',
+
+  // ------------------------------------------------------------ le scanneur
+  'scanner.title': 'Vérifiez vos sacs',
+  'scanner.mode.checklist': 'Liste',
+  'scanner.mode.camera': 'Scanner à la caméra',
+
+  'scanner.hint.initial':
+    'Placez une étiquette de sac dans le cadre, ou cochez-les à la main.',
+  'scanner.hint.checked': '{code} coché.',
+  'scanner.hint.all': 'Tous les sacs sont là.',
+  'scanner.hint.verified': '{code} vérifié — {type}.',
+  'scanner.hint.foreign': '« {code} » ne fait pas partie de {reference}.',
+  'scanner.hint.declined':
+    'Accès à la caméra refusé — cochez les sacs à la main à la place.',
+  'scanner.hint.live':
+    'Caméra activée. Alignez une étiquette de sac FreshFold dans le cadre.',
+
+  'scanner.empty.title': 'Chaque sac porte un code imprimé',
+  'scanner.empty.body':
+    'Scannez-les au départ, ou au retour, et gardez votre propre compte.',
+
+  'scanner.manifest': 'Contenu ({count}/{total})',
+  'scanner.tickAll': 'Tout cocher',
+  'scanner.bag.meta': '{code} · {items} articles',
+  'scanner.checked': 'Coché',
+  'scanner.tick': 'Cocher',
+  'scanner.confirmNone': 'Cochez d’abord un sac',
+  'scanner.confirmOne': 'Confirmer 1 sac',
+  'scanner.confirmMany': 'Confirmer {count} sacs',
+
+  // ------------------------------------------------------------- le problème
+  'issue.title': 'Signaler un problème',
+  'issue.subtitle':
+    'Tout ce qui ne va pas est retraité à nos frais — dites-nous ce qui s’est passé.',
+
+  // Les cinq motifs sont aussi le texte envoyé : ils sont rédigés à la première
+  // personne, comme les écrirait la personne qui les choisit.
+  'issue.reason.stain': 'Un vêtement est revenu avec une tache',
+  'issue.reason.missing': 'Il manque quelque chose dans le sac',
+  'issue.reason.damaged': 'Un vêtement a été abîmé',
+  'issue.reason.finish': 'La finition n’est pas celle que j’ai demandée',
+  'issue.reason.late': 'La commande est arrivée en retard',
+
+  'issue.field': 'Que s’est-il passé ?',
+  'issue.placeholder':
+    'Le blazer bleu marine a une marque sur le poignet gauche, elle était là au retour.',
+
+  'issue.camera.take': 'Prendre une photo',
+  'issue.camera.title': 'Ajoutez une photo',
+  'issue.camera.body':
+    'Une photo règle la plupart des cas en un message — facultatif, mais ça aide.',
+  'issue.camera.enable': 'Activer la caméra',
+  'issue.camera.empty': 'La caméra n’a rien renvoyé. Réessayez.',
+  'issue.camera.unavailable':
+    'La caméra est indisponible. Vous pouvez tout de même envoyer le signalement sans photo.',
+
+  'issue.retake': 'Reprendre',
+  'issue.send': 'Envoyer le signalement',
+  'issue.assurance':
+    'Votre signalement part à la conciergerie et au coursier de cette course, dans le même fil.',
+
+  // ------------------------------------------------------------- la signature
+  'sign.title': 'Signez votre livraison',
+  'sign.subtitle': 'Vérifiez que tout est là, puis signez ci-dessous.',
+  'sign.subtitleOne': 'Vérifiez que le sac est là, puis signez ci-dessous.',
+  'sign.subtitleMany': 'Vérifiez que les {count} sacs sont là, puis signez ci-dessous.',
+  'sign.you': 'vous',
+
+  'sign.code.label': 'Lisez ceci à votre coursier',
+  'sign.code.hint':
+    'Ne le donnez qu’une fois votre linge réellement entre vos mains. Signer ci-dessous l’envoie pour vous.',
+  'sign.refused':
+    'La répartition n’a pas accepté. Demandez au coursier d’essayer depuis sa console.',
+
+  // Le « X » marque l’endroit et ne se traduit pas.
+  'sign.here': 'X SIGNEZ ICI',
+  'sign.notice':
+    'Signer confirme que le compte des vêtements correspond et clôt la commande. Tout problème constaté ensuite peut encore être signalé depuis l’écran de la commande.',
+  'sign.clear': 'Effacer',
+  'sign.confirm': 'Confirmer la livraison',
+  'sign.later': 'Pas encore',
 
   // ---------------------------------------------------------- portefeuille
   'wallet.title': 'Portefeuille',

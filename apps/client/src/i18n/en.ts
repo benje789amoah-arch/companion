@@ -31,6 +31,8 @@ export const en = {
   'common.keep': 'Keep',
   'common.remove': 'Remove',
   'common.add': 'Add',
+  /** Dismisses a sheet. The sheets' own scrim and back gesture say nothing. */
+  'common.close': 'Close',
   'common.saving': 'Saving…',
   'common.sending': 'Sending…',
   'common.default': 'Default',
@@ -72,6 +74,75 @@ export const en = {
   // a job can legitimately have a courier assigned before their name lands.
   'courier.unnamed': 'Your courier',
   'courier.vehiclePending': 'Vehicle details pending',
+
+  // ---------------------------------------------------------------- status
+  //
+  // The dispatch vocabulary: the fifteen `JobStatus` values a courier moves
+  // through, the eight `BookingStatus` stages the customer is shown, and the four
+  // `PaymentStatus` values.
+  //
+  // These are safe to translate where the sentences the server composes are not,
+  // and the difference is that these are closed sets. There are exactly fifteen,
+  // eight and four of them, they are declared in `packages/core/src/types.ts`, and
+  // the helpers in `./status.ts` build these key names out of the union types
+  // themselves — so adding a stage in core fails this app's build until the stage
+  // has a word here. A sentence the server writes has no such floor under it.
+  //
+  // The key names are the wire values verbatim, spaces and ampersand included.
+  // `status.stage.Ironing & Folding` is ugly and unmistakable, and deriving the
+  // key from the value is exactly what buys the exhaustiveness check. None of this
+  // changes what travels on the wire: core's `humanizeStatus` is untouched, so the
+  // desk console, the rider app and the database keep the one English vocabulary
+  // they share.
+  'status.job.unassigned': 'Unassigned',
+  'status.job.assigned': 'Assigned',
+  'status.job.navigating_to_pickup': 'Navigating to pickup',
+  'status.job.arrived_at_pickup': 'Arrived at pickup',
+  'status.job.pickup_scanned': 'Pickup scanned',
+  'status.job.picked_up': 'Picked up',
+  'status.job.navigating_to_laundry': 'Navigating to laundry',
+  'status.job.arrived_at_laundry': 'Arrived at laundry',
+  'status.job.dropped_off': 'Dropped off',
+  'status.job.processing': 'Processing',
+  'status.job.ready_for_delivery': 'Ready for delivery',
+  'status.job.navigating_to_delivery': 'Navigating to delivery',
+  'status.job.arrived_at_delivery': 'Arrived at delivery',
+  'status.job.delivered': 'Delivered',
+  'status.job.cancelled': 'Cancelled',
+
+  // The seven stages of the progress bar, plus cancelled. Deliberately separate
+  // keys from the job statuses that share an English word: `Delivered` the stage
+  // and `delivered` the dispatch state are one event told at two grains, and a
+  // language that wants to distinguish them should be free to.
+  'status.stage.Scheduled': 'Scheduled',
+  'status.stage.Collecting': 'Collecting',
+  'status.stage.In Care': 'In Care',
+  'status.stage.Ironing & Folding': 'Ironing & Folding',
+  'status.stage.Quality Check': 'Quality Check',
+  'status.stage.Delivering': 'Delivering',
+  'status.stage.Delivered': 'Delivered',
+  'status.stage.Cancelled': 'Cancelled',
+
+  // What each stage means, in the voice the client portal already used. Moved here
+  // out of `StageTimeline`, which held them in a `Record<BookingStatus, string>` —
+  // the record is now the key name, and the set is still checked whole.
+  'status.copy.Scheduled': 'Your appointment is registered. A courier will be assigned shortly.',
+  'status.copy.Collecting': 'Your courier is collecting the bags and heading for the hub.',
+  'status.copy.In Care':
+    'Checked in at the hub. Sorting and botanical stain treatment under way.',
+  'status.copy.Ironing & Folding': 'Hand-pressing and boutique folding in progress.',
+  'status.copy.Quality Check': 'Thread and finish inspected and packed, waiting for a courier.',
+  'status.copy.Delivering':
+    'Your courier is on the way back to your door with the finished order.',
+  'status.copy.Delivered': 'Delivered and signed for. Thank you for choosing FreshFold.',
+  'status.copy.Cancelled': 'This order was cancelled. Nothing further will be collected.',
+
+  // `Pay on Pickup` is the arrangement, not an instruction — it is what a receipt
+  // row says about an order that will be settled at the door.
+  'status.payment.Pending': 'Pending',
+  'status.payment.Paid': 'Paid',
+  'status.payment.Pay on Pickup': 'Pay on Pickup',
+  'status.payment.Refunded': 'Refunded',
 
   // ------------------------------------------------------------------ home
   //
@@ -315,6 +386,297 @@ export const en = {
   'book.done.paid': 'Paid',
   'book.done.another': 'Book another',
   'book.done.track': 'Track it',
+
+  // ----------------------------------------------------------------- track
+  //
+  // The tracking tab. What it says about *where the order is* is not here — that
+  // vocabulary is the `status.*` block above, shared with every other screen that
+  // shows a stage. This is the chrome around it.
+  //
+  // Six of the summary rows borrow their labels from the booking flow rather than
+  // saying the same word twice: `book.summary.service`, `book.summary.address`,
+  // `book.summary.total`, `book.done.collection` and `book.done.return` label the
+  // same fields there that they label here. Only `track.row.payment` is new,
+  // because the booking flow never puts a "Payment" label on a row.
+  'track.title': 'Track',
+
+  'track.empty.title': 'Nothing in flight',
+  'track.empty.body':
+    'Once you book a pickup, the courier’s progress shows up here in real time.',
+
+  // Deliberately not shared with `home.live.assigning`, which says the same three
+  // words. There it is a caption inside a compact pill; here it is the headline of
+  // a card with a paragraph under it. A language that wants a short form for one
+  // and a full phrase for the other should not have to pick.
+  'track.pending.title': 'Assigning a courier',
+  'track.pending.body':
+    'Your booking is on the dispatch board. As soon as a courier accepts it, their position and contact appear here.',
+
+  'track.section.door': 'At the door',
+  'track.section.order': 'This order',
+
+  'track.action.scan': 'Verify bags',
+  'track.action.scanCaption': 'Scan the manifest yourself',
+  'track.action.issue': 'Report an issue',
+  'track.action.issueCaption': 'Photograph a garment',
+  'track.action.chat': 'Conversation',
+  'track.action.chatCaption': 'Message dispatch',
+  // Two keys and the call site picks, which is how counted phrases are done
+  // throughout this dictionary — Twi, Ga and Ewe do not inflect the noun for
+  // number, so plural machinery would exist to serve English alone.
+  'track.action.chatOne': '1 message',
+  'track.action.chatMany': '{count} messages',
+  'track.action.full': 'Full order',
+  'track.action.fullCaption': 'Manifest, proof, receipt',
+
+  'track.row.payment': 'Payment',
+  /** The status and the method, which is the server's own word for it. */
+  'track.row.paymentValue': '{status} · {method}',
+  'track.row.collectionValue': '{date} · {time}',
+  'track.open': 'Open full order',
+
+  /** Screen-reader labels for the two round buttons on the courier card. */
+  'track.call': 'Call the courier',
+  'track.message': 'Message the courier',
+
+  /**
+   * The live sub-line under the progress bar. The status is interpolated rather
+   * than lower-cased into the sentence — the English original called
+   * `.toLowerCase()` on it, which is fine for English and wrong for any language
+   * whose casing carries meaning.
+   */
+  'track.dispatch': 'Dispatch: {status}',
+
+  // --------------------------------------------------------------- handoff
+  //
+  // The collection code, shown on this tab and on the order screen. The four
+  // digits and the QR payload are not strings in any language.
+  'handoff.label': 'Collection code',
+  'handoff.atDoor': 'Your courier is at the door',
+  'handoff.waiting': 'Show this when the courier arrives',
+  'handoff.body':
+    'Your courier will scan the code or ask for the four digits. Don’t hand over the bags to anyone who cannot check it.',
+  'handoff.hide': 'Hide',
+  'handoff.hideLabel': 'Hide the collection code',
+  'handoff.show': 'Show the QR and code again',
+  'handoff.showLabel': 'Show the collection code',
+  'handoff.tied': 'The code is tied to order {id} and works only for this collection.',
+
+  // ------------------------------------------------------------------- map
+  //
+  // The live map and the readout that stands in for it — on web, where
+  // `react-native-maps` has no implementation, and on a device where the native
+  // view fails to mount. The hub's name is core data and stays as it is.
+  //
+  // The courier line borrows `home.live.courier`: it is the same name-and-vehicle
+  // pair, formatted the same way, in both places.
+  'map.home': 'Your address',
+  'map.recenter': 'Recenter the map on your courier',
+  /** The routing engine's estimate. Absent for the straight-line fallback. */
+  'map.eta': '{minutes} min away',
+  'map.noPin': 'This booking has no pickup pin yet.',
+  /** {message} is the native view's own error, which arrives in English. */
+  'map.failed':
+    'The map could not be loaded on this device ({message}). Positions are still live below.',
+  'map.readout': 'Position readout',
+  'map.webNotice': 'Live tiles render on iOS and Android. Open the app on a phone for the map.',
+  'map.expoNotice':
+    'Live tiles render on iOS and Android. Open the app in Expo Go to see the map.',
+  'map.hubDetail': 'Where your garments are cared for',
+  'map.noPinYet': 'No pin yet',
+
+  // ----------------------------------------------------------------- order
+  //
+  // One order, in full — the screen behind every "open the order" tap.
+  //
+  // Less of it is here than the screen's length suggests, because it renders
+  // `StageTimeline`, `TrackingMap` and `HandoffCard`: the stage words, the map
+  // readout and the collection code are already keyed above. What is left is this
+  // screen's own copy.
+  //
+  // Nine of its rows and three of its action labels borrow keys the booking flow
+  // and the track tab already have. They are the same field and the same control
+  // said in two places, which is the test — `Service` labels the service on both
+  // screens, and the control that opens the issue reporter is one control.
+  //
+  // What is deliberately *not* borrowed: `order.receipt.collected` says the same
+  // word as `order.proof.pickupPhoto`. One is a row label in a receipt, the other
+  // a caption under a photograph, and a language that wants a noun for one and a
+  // participle for the other should not have to choose.
+  //
+  // Bag types, QR codes, the plan id and the add-on names are dispatch and
+  // catalogue data. They are not copy and are rendered as they arrive.
+  'order.title': 'Order',
+  'order.missing.title': 'Order not found',
+  'order.missing.body':
+    'This reference is not in your history. If you booked it on the website, sign in with the same email to see it here.',
+
+  // The cancel confirmation. An OS alert rather than one of the app's sheets, so
+  // the two button labels are its own and not the kit's.
+  'order.cancel.action': 'Cancel this order',
+  'order.cancel.title': 'Cancel this order?',
+  'order.cancel.body':
+    'The courier will be stood down. Anything already paid is refunded to your wallet by the concierge desk.',
+  'order.cancel.keep': 'Keep it',
+  'order.cancel.confirm': 'Cancel order',
+
+  'order.section.actions': 'Things you can do',
+  'order.section.manifest': 'Bag manifest',
+  'order.section.details': 'Details',
+  'order.section.proof': 'Proof of service',
+
+  'order.sign.title': 'Sign for delivery',
+  /**
+   * The code is readable on purpose. It was masked to `••••` at first, which left
+   * the one person who is supposed to hold it unable to see it.
+   */
+  'order.sign.captionCode': 'Your courier is at the door. Read them code {code}.',
+  'order.sign.caption': 'Your courier is at the door.',
+
+  'order.scan.title': 'Verify the bag manifest',
+  'order.scan.checked': '{count} of {total} checked by you',
+  'order.scan.bagsOne': '1 bag on this order',
+  'order.scan.bagsMany': '{count} bags on this order',
+
+  'order.issue.caption': 'Photograph a garment and tell us what happened',
+  'order.chat.caption': 'Message the courier or dispatch',
+
+  'order.call.title': 'Call the concierge desk',
+  /**
+   * The desk, not the courier: couriers ride on their own handsets and their
+   * numbers are not the customer's to have. The caption names the courier so it is
+   * clear which job the call is about — and it is a different sentence from
+   * `home.live.courier`, which is the pair on its own.
+   */
+  'order.call.caption': 'About {name} · {vehicle}',
+
+  'order.manifest.verified': '{count}/{total} verified by you',
+  'order.bag.meta': '{code} · {items} items · {weight}',
+
+  'order.row.booked': 'Booked',
+  'order.row.plan': 'Plan',
+  'order.row.care': 'Care notes',
+  'order.row.courierNote': 'Courier note',
+  'order.row.courier': 'Courier',
+  /** Name and dispatch state. Not `home.live.courier`, which pairs name with vehicle. */
+  'order.row.courierValue': '{name} · {status}',
+
+  'order.proof.pickupPhoto': 'Collected',
+  'order.proof.pickupSignature': 'Signed at pickup',
+  'order.proof.deliveryPhoto': 'Delivered',
+  'order.proof.deliverySignature': 'Signed on delivery',
+  /** Stands in when the pad could not rasterise and the raw path was saved. */
+  'order.proof.vector': 'Signature on file',
+
+  'order.receipt.open': 'View receipt',
+  'order.receipt.collected': 'Collected',
+  'order.receipt.returned': 'Returned',
+  'order.receipt.method': 'Method',
+  'order.receipt.status': 'Status',
+  'order.receipt.reference': 'Reference',
+
+  'order.again': 'Book this again',
+
+  // --------------------------------------------------------------- scanner
+  //
+  // The customer's own pass over their bag manifest. The bag types, codes and
+  // weights are printed on the bags and arrive as dispatch data; the frame around
+  // them is here.
+  //
+  // The status line under the viewfinder is seven sentences rather than one with a
+  // slot, because they say different things — a code checked off, a code that
+  // belongs to somebody else's order, a camera that was refused. Each is its own
+  // key so each can be its own sentence.
+  'scanner.title': 'Check your bags',
+  'scanner.mode.checklist': 'Checklist',
+  'scanner.mode.camera': 'Scan with camera',
+
+  'scanner.hint.initial': 'Hold a bag label inside the frame, or tick them off by hand.',
+  'scanner.hint.checked': 'Checked {code}.',
+  'scanner.hint.all': 'All bags accounted for.',
+  'scanner.hint.verified': 'Verified {code} — {type}.',
+  /** A code that scanned cleanly but belongs to a different order. */
+  'scanner.hint.foreign': '“{code}” is not part of {reference}.',
+  'scanner.hint.declined': 'Camera access declined — tick the bags off by hand instead.',
+  'scanner.hint.live': 'Camera live. Align a FreshFold bag label within the frame.',
+
+  'scanner.empty.title': 'Every bag carries a printed code',
+  'scanner.empty.body':
+    'Scan them as they leave, or as they come back, and keep your own count.',
+
+  'scanner.manifest': 'Manifest ({count}/{total})',
+  'scanner.tickAll': 'Tick all',
+  /** No weight in this one — the weight has its own badge on the row. */
+  'scanner.bag.meta': '{code} · {items} items',
+  /** The badge on a row already done. `scanner.hint.checked` is the sentence. */
+  'scanner.checked': 'Checked',
+  'scanner.tick': 'Tick',
+  'scanner.confirmNone': 'Check a bag first',
+  'scanner.confirmOne': 'Confirm 1 bag',
+  'scanner.confirmMany': 'Confirm {count} bags',
+
+  // ----------------------------------------------------------------- issue
+  //
+  // Reporting a problem with a garment.
+  //
+  // The five reasons are copy *and* payload: tapping one writes it into the note
+  // that goes onto the job record and into the courier's thread. Translating them
+  // means the desk can be handed a report in Twi — which is already true of the
+  // field below them, where a customer types in whatever language they think in,
+  // and the desk is in Accra. A canned reason that stayed English would be the odd
+  // one out.
+  'issue.title': 'Report an issue',
+  'issue.subtitle': 'Anything not right gets re-treated at our cost — tell us what happened.',
+
+  'issue.reason.stain': 'A garment came back with a stain still on it',
+  'issue.reason.missing': 'Something is missing from the bag',
+  'issue.reason.damaged': 'A garment was damaged',
+  'issue.reason.finish': 'The finish is not what I asked for',
+  'issue.reason.late': 'The order arrived late',
+
+  'issue.field': 'What happened?',
+  'issue.placeholder':
+    'The navy blazer has a mark on the left cuff that was there when it came back.',
+
+  'issue.camera.take': 'Take photo',
+  'issue.camera.title': 'Add a photo',
+  'issue.camera.body': 'A picture settles most of these in one message — optional, but it helps.',
+  'issue.camera.enable': 'Enable camera',
+  'issue.camera.empty': 'The camera returned nothing. Try again.',
+  'issue.camera.unavailable':
+    'The camera is unavailable. You can still send the report without a photo.',
+
+  'issue.retake': 'Retake',
+  'issue.send': 'Send report',
+  'issue.assurance':
+    'Your report goes to the concierge desk and the courier on this job, in the same thread.',
+
+  // ------------------------------------------------------------------ sign
+  //
+  // Signing for a delivery. The code is shown rather than asked for: it belongs to
+  // the customer, and typing it back to themselves would prove nothing.
+  'sign.title': 'Sign for your delivery',
+  'sign.subtitle': 'Check everything is present, then sign below.',
+  'sign.subtitleOne': 'Check the bag is present, then sign below.',
+  'sign.subtitleMany': 'Check all {count} bags are present, then sign below.',
+  /**
+   * Stands in for the customer's name under the signature line, and reads as part
+   * of the sentence there rather than as a label — lower case on purpose.
+   */
+  'sign.you': 'you',
+
+  'sign.code.label': 'Read this to your courier',
+  'sign.code.hint':
+    'Only give it once your laundry is actually in your hands. Signing below sends it for you.',
+  'sign.refused': 'Dispatch would not accept that. Ask the courier to try from their console.',
+
+  /** The `X` is where the mark goes and stays put in every language. */
+  'sign.here': 'X SIGN HERE',
+  'sign.notice':
+    'Signing confirms the garment count matches and closes the order. Anything wrong after this can still be reported from the order screen.',
+  'sign.clear': 'Clear',
+  'sign.confirm': 'Confirm delivery',
+  'sign.later': 'Not yet',
 
   // ---------------------------------------------------------------- wallet
   //

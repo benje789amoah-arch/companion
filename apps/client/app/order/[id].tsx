@@ -22,7 +22,7 @@ import {
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { bagsForJob, humanizeStatus, type JobStatus } from '@freshfold/core';
+import { bagsForJob, type JobStatus } from '@freshfold/core';
 
 /**
  * Dispatch states in which the bags are still with the customer. `unassigned`
@@ -54,6 +54,12 @@ import {
 } from '../../src/components/ui';
 import { useClient } from '../../src/store/ClientStore';
 import {
+  jobStatusLabel,
+  paymentStatusLabel,
+  stageLabel,
+  useT,
+} from '../../src/i18n';
+import {
   colors,
   courierName,
   courierVehicle,
@@ -78,6 +84,7 @@ import {
 export default function OrderDetailScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ id: string; action?: string }>();
+  const { t, locale } = useT();
   const {
     bookingById,
     loadBookingProof,
@@ -133,14 +140,16 @@ export default function OrderDetailScreen() {
     if (!proof) return [];
 
     const shots: { label: string; uri?: string }[] = [
-      { label: 'Collected', uri: proof.pickupPhoto },
-      { label: 'Signed at pickup', uri: proof.pickupSignature },
-      { label: 'Delivered', uri: proof.deliveryPhoto },
-      { label: 'Signed on delivery', uri: proof.deliverySignature },
+      { label: t('order.proof.pickupPhoto'), uri: proof.pickupPhoto },
+      { label: t('order.proof.pickupSignature'), uri: proof.pickupSignature },
+      { label: t('order.proof.deliveryPhoto'), uri: proof.deliveryPhoto },
+      { label: t('order.proof.deliverySignature'), uri: proof.deliverySignature },
     ];
 
     return shots.filter((shot): shot is { label: string; uri: string } => !!shot.uri);
-  }, [booking?.proof]);
+    // `t` is memoised on the locale, so this re-runs when the language changes
+    // and not on every render.
+  }, [booking?.proof, t]);
 
   const atTheDoor = booking?.rider?.jobStatus === 'arrived_at_delivery';
   const closed = booking?.status === 'Delivered' || booking?.status === 'Cancelled';
@@ -155,12 +164,12 @@ export default function OrderDetailScreen() {
     if (!booking) return;
 
     Alert.alert(
-      'Cancel this order?',
-      'The courier will be stood down. Anything already paid is refunded to your wallet by the concierge desk.',
+      t('order.cancel.title'),
+      t('order.cancel.body'),
       [
-        { text: 'Keep it', style: 'cancel' },
+        { text: t('order.cancel.keep'), style: 'cancel' },
         {
-          text: 'Cancel order',
+          text: t('order.cancel.confirm'),
           style: 'destructive',
           onPress: () => {
             cancelBooking(booking.id);
@@ -169,17 +178,17 @@ export default function OrderDetailScreen() {
         },
       ]
     );
-  }, [booking, cancelBooking, router]);
+  }, [booking, cancelBooking, router, t]);
 
   if (!booking) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
-        <Header title="Order" onBack={() => router.back()} />
+        <Header title={t('order.title')} onBack={() => router.back()} />
         <View style={{ padding: 20 }}>
           <EmptyState
-            title="Order not found"
-            body="This reference is not in your history. If you booked it on the website, sign in with the same email to see it here."
-            action="Back"
+            title={t('order.missing.title')}
+            body={t('order.missing.body')}
+            action={t('common.back')}
             onAction={() => router.back()}
           />
         </View>
@@ -200,7 +209,7 @@ export default function OrderDetailScreen() {
         <Card style={{ gap: 12 }}>
           <View style={styles.statusHead}>
             <Badge
-              label={booking.status}
+              label={stageLabel(t, booking.status)}
               tone={
                 booking.status === 'Delivered'
                   ? 'success'
@@ -209,8 +218,14 @@ export default function OrderDetailScreen() {
                     : 'sage'
               }
             />
-            <Badge label={booking.paymentStatus ?? 'Pending'} tone={paymentTone(booking)} />
-            <Text style={styles.amount}>{formatCedis(booking.amount ?? 0)}</Text>
+            {/* An order with no payment state recorded is one nobody has paid
+                for, which is what `Pending` says — the same assumption
+                `paymentTone` beside it already makes. */}
+            <Badge
+              label={paymentStatusLabel(t, booking.paymentStatus ?? 'Pending')}
+              tone={paymentTone(booking)}
+            />
+            <Text style={styles.amount}>{formatCedis(booking.amount ?? 0, locale)}</Text>
           </View>
 
           <StageTimeline stage={booking.status} dispatchStatus={booking.rider?.jobStatus} />
@@ -227,12 +242,12 @@ export default function OrderDetailScreen() {
         {/* -------------------------------------------------------- actions */}
         {!closed && (
           <View>
-            <SectionLabel>Things you can do</SectionLabel>
+            <SectionLabel>{t('order.section.actions')}</SectionLabel>
             <View style={{ gap: 9, marginTop: 10 }}>
               {atTheDoor && (
                 <ActionRow
                   icon={<PenLine size={16} color={colors.brandSage} />}
-                  title="Sign for delivery"
+                  title={t('order.sign.title')}
                   /*
                     Readable, because the whole point is that the customer
                     reads it out. It used to be masked to `••••`, which left
@@ -241,8 +256,8 @@ export default function OrderDetailScreen() {
                   */
                   caption={
                     booking.deliveryOtp
-                      ? `Your courier is at the door. Read them code ${booking.deliveryOtp}.`
-                      : 'Your courier is at the door.'
+                      ? t('order.sign.captionCode', { code: booking.deliveryOtp })
+                      : t('order.sign.caption')
                   }
                   onPress={() => setSheet('sign')}
                   emphasis
@@ -250,24 +265,37 @@ export default function OrderDetailScreen() {
               )}
               <ActionRow
                 icon={<QrCode size={16} color={colors.brandSage} />}
-                title="Verify the bag manifest"
+                title={t('order.scan.title')}
                 caption={
+                  // Two keys and a branch rather than a plural rule: the
+                  // singular is its own string, so a language that says it
+                  // differently can.
                   verified.length > 0
-                    ? `${verified.length} of ${bags.length} checked by you`
-                    : `${bags.length} bag${bags.length === 1 ? '' : 's'} on this order`
+                    ? t('order.scan.checked', { count: verified.length, total: bags.length })
+                    : bags.length === 1
+                      ? t('order.scan.bagsOne')
+                      : t('order.scan.bagsMany', { count: bags.length })
                 }
                 onPress={() => setSheet('scan')}
               />
               <ActionRow
                 icon={<Camera size={16} color={colors.brandSage} />}
-                title="Report an issue"
-                caption="Photograph a garment and tell us what happened"
+                // The control that opens the issue reporter, labelled the same
+                // way as the tile that opens it from the track tab.
+                title={t('track.action.issue')}
+                caption={t('order.issue.caption')}
                 onPress={() => setSheet('issue')}
               />
               <ActionRow
                 icon={<MessageSquare size={16} color={colors.brandSage} />}
-                title="Conversation"
-                caption={thread.length > 0 ? `${thread.length} messages` : 'Message the courier or dispatch'}
+                title={t('track.action.chat')}
+                caption={
+                  thread.length === 1
+                    ? t('track.action.chatOne')
+                    : thread.length > 1
+                      ? t('track.action.chatMany', { count: thread.length })
+                      : t('order.chat.caption')
+                }
                 onPress={() => router.push({ pathname: '/chat', params: { id: booking.id } })}
               />
               {/*
@@ -280,8 +308,11 @@ export default function OrderDetailScreen() {
               {!!booking.rider && (
                 <ActionRow
                   icon={<Phone size={16} color={colors.brandSage} />}
-                  title="Call the concierge desk"
-                  caption={`About ${courierName(booking.rider)} · ${courierVehicle(booking.rider)}`}
+                  title={t('order.call.title')}
+                  caption={t('order.call.caption', {
+                    name: courierName(booking.rider, locale),
+                    vehicle: courierVehicle(booking.rider, locale),
+                  })}
                   onPress={() =>
                     Linking.openURL(`tel:${CONTACT.phone.replace(/\s/g, '')}`)
                   }
@@ -294,9 +325,9 @@ export default function OrderDetailScreen() {
         {/* -------------------------------------------------------- manifest */}
         <Card style={{ gap: 11 }}>
           <View style={styles.cardHead}>
-            <SectionLabel>Bag manifest</SectionLabel>
+            <SectionLabel>{t('order.section.manifest')}</SectionLabel>
             <Text style={styles.cardHeadMeta}>
-              {verified.length}/{bags.length} verified by you
+              {t('order.manifest.verified', { count: verified.length, total: bags.length })}
             </Text>
           </View>
 
@@ -314,8 +345,14 @@ export default function OrderDetailScreen() {
                   <Text style={styles.bagType} numberOfLines={1}>
                     {bag.type}
                   </Text>
+                  {/* The bag's type and code are dispatch data, printed on the
+                      bag itself. Only the frame around them is copy. */}
                   <Text style={styles.bagMeta}>
-                    {bag.qrCode} · {bag.itemCount} items · {bag.weight}
+                    {t('order.bag.meta', {
+                      code: bag.qrCode,
+                      items: bag.itemCount,
+                      weight: bag.weight,
+                    })}
                   </Text>
                 </View>
                 {isVerified && <Check size={14} color={colors.statusSuccess} strokeWidth={3} />}
@@ -326,24 +363,42 @@ export default function OrderDetailScreen() {
 
         {/* ---------------------------------------------------------- detail */}
         <Card style={{ gap: 10 }}>
-          <SectionLabel>Details</SectionLabel>
-          <Row label="Service" value={booking.serviceType} />
-          <Row label="Collection" value={`${formatDate(booking.pickupDate)} · ${booking.pickupTime}`} />
-          <Row label="Return" value={formatDate(booking.deliveryDate)} />
-          <Row label="Address" value={[booking.address, booking.suburb, booking.city].filter(Boolean).join(', ')} />
-          <Row label="Booked" value={formatDate(booking.createdAt)} />
-          {!!booking.planId && <Row label="Plan" value={booking.planId} />}
+          <SectionLabel>{t('order.section.details')}</SectionLabel>
+          {/* Four of these labels are the booking flow's own and one is the
+              track tab's — the same field labelled the same way, so the same
+              key. The service name, the plan id and the add-on names are
+              catalogue data and are rendered as they arrive. */}
+          <Row label={t('book.summary.service')} value={booking.serviceType} />
+          <Row
+            label={t('book.done.collection')}
+            value={t('track.row.collectionValue', {
+              date: formatDate(booking.pickupDate, locale),
+              time: booking.pickupTime,
+            })}
+          />
+          <Row label={t('book.done.return')} value={formatDate(booking.deliveryDate, locale)} />
+          <Row
+            label={t('book.summary.address')}
+            value={[booking.address, booking.suburb, booking.city].filter(Boolean).join(', ')}
+          />
+          <Row label={t('order.row.booked')} value={formatDate(booking.createdAt, locale)} />
+          {!!booking.planId && <Row label={t('order.row.plan')} value={booking.planId} />}
           {!!booking.specialInstructions && (
-            <Row label="Care notes" value={booking.specialInstructions} />
+            <Row label={t('order.row.care')} value={booking.specialInstructions} />
           )}
           {!!booking.specialtyAddons?.length && (
-            <Row label="Add-ons" value={booking.specialtyAddons.join(', ')} />
+            <Row label={t('book.summary.addons')} value={booking.specialtyAddons.join(', ')} />
           )}
-          {!!booking.riderNote && <Row label="Courier note" value={booking.riderNote} />}
+          {!!booking.riderNote && (
+            <Row label={t('order.row.courierNote')} value={booking.riderNote} />
+          )}
           {!!booking.rider && (
             <Row
-              label="Courier"
-              value={`${courierName(booking.rider)} · ${humanizeStatus(booking.rider.jobStatus)}`}
+              label={t('order.row.courier')}
+              value={t('order.row.courierValue', {
+                name: courierName(booking.rider, locale),
+                status: jobStatusLabel(t, booking.rider.jobStatus),
+              })}
             />
           )}
         </Card>
@@ -351,7 +406,7 @@ export default function OrderDetailScreen() {
         {/* ----------------------------------------------------------- proof */}
         {proofShots.length > 0 && (
           <Card style={{ gap: 10 }}>
-            <SectionLabel>Proof of service</SectionLabel>
+            <SectionLabel>{t('order.section.proof')}</SectionLabel>
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -364,7 +419,7 @@ export default function OrderDetailScreen() {
                   {shot.uri.startsWith('freshfold-signature:') ? (
                     <View style={[styles.proofImage, styles.proofVector]}>
                       <PenLine size={18} color={colors.brandStone} />
-                      <Text style={styles.proofVectorLabel}>Signature on file</Text>
+                      <Text style={styles.proofVectorLabel}>{t('order.proof.vector')}</Text>
                     </View>
                   ) : (
                     <Image source={{ uri: shot.uri }} style={styles.proofImage} />
@@ -379,14 +434,14 @@ export default function OrderDetailScreen() {
         {/* --------------------------------------------------------- closing */}
         <View style={{ gap: 9 }}>
           <Button
-            label="View receipt"
+            label={t('order.receipt.open')}
             variant="ghost"
             onPress={() => setSheet('receipt')}
             icon={<Receipt size={15} color={colors.textCharcoal} />}
           />
           {closed ? (
             <Button
-              label="Book this again"
+              label={t('order.again')}
               onPress={() =>
                 router.push({ pathname: '/(tabs)/book', params: { serviceId: booking.serviceType } })
               }
@@ -394,7 +449,7 @@ export default function OrderDetailScreen() {
             />
           ) : (
             <Button
-              label="Cancel this order"
+              label={t('order.cancel.action')}
               variant="danger"
               onPress={onCancel}
               icon={<Ban size={15} color={colors.statusError} />}
@@ -442,22 +497,35 @@ export default function OrderDetailScreen() {
 
       <Sheet visible={sheet === 'receipt'} onClose={() => setSheet(null)}>
         <View style={styles.receipt}>
+          {/* The company's name, not a string in any language. */}
           <Text style={styles.receiptTitle}>FreshFold Laundry Co.</Text>
           <Text style={styles.receiptRef}>{booking.id}</Text>
           <Divider style={{ marginVertical: 12 }} />
 
-          <Row label="Service" value={booking.serviceType} />
-          <Row label="Collected" value={formatDate(booking.pickupDate)} />
-          <Row label="Returned" value={formatDate(booking.deliveryDate)} />
-          <Row label="Method" value={booking.paymentMethod ?? '—'} />
-          <Row label="Status" value={booking.paymentStatus ?? 'Pending'} />
-          {!!booking.transactionRef && <Row label="Reference" value={booking.transactionRef} />}
+          <Row label={t('book.summary.service')} value={booking.serviceType} />
+          <Row label={t('order.receipt.collected')} value={formatDate(booking.pickupDate, locale)} />
+          <Row label={t('order.receipt.returned')} value={formatDate(booking.deliveryDate, locale)} />
+          {/* The method is a free-form string the server writes and is rendered
+              as it arrives; the status beside it is a closed union, so it is
+              translated. `Row` supplies the blank when there is no method. */}
+          <Row label={t('order.receipt.method')} value={booking.paymentMethod ?? ''} />
+          <Row
+            label={t('order.receipt.status')}
+            value={paymentStatusLabel(t, booking.paymentStatus ?? 'Pending')}
+          />
+          {!!booking.transactionRef && (
+            <Row label={t('order.receipt.reference')} value={booking.transactionRef} />
+          )}
 
           <Divider style={{ marginVertical: 12 }} />
-          <Row label="Total" value={formatCedis(booking.amount ?? 0)} emphasis />
+          <Row
+            label={t('book.summary.total')}
+            value={formatCedis(booking.amount ?? 0, locale)}
+            emphasis
+          />
 
           <Button
-            label="Close"
+            label={t('common.close')}
             variant="ghost"
             onPress={() => setSheet(null)}
             style={{ marginTop: 18 }}
@@ -531,10 +599,14 @@ function ActionRow({
 }
 
 function Row({ label, value, emphasis }: { label: string; value: string; emphasis?: boolean }) {
+  const { t } = useT();
+
   return (
     <View style={styles.row}>
       <Text style={styles.rowLabel}>{label}</Text>
-      <Text style={[styles.rowValue, emphasis && styles.rowValueStrong]}>{value || '—'}</Text>
+      <Text style={[styles.rowValue, emphasis && styles.rowValueStrong]}>
+        {value || t('common.blank')}
+      </Text>
     </View>
   );
 }

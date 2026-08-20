@@ -407,7 +407,6 @@ export interface RiderState {
   vehiclePlate: string;
   rating: number;
   isOnline: boolean;
-  batteryLevel: number;
   /** in meters */
   gpsAccuracy: number;
   /** in km/h */
@@ -415,7 +414,36 @@ export interface RiderState {
   /** in degrees */
   heading: number;
   coords: Coords;
+  /**
+   * Kilometres ridden today, measured, and the device-local date they were
+   * measured on.
+   *
+   * The phone is the only thing that knows how far the scooter actually went,
+   * so it adds up the gaps between its own GPS fixes and reports the running
+   * total. What this held before was two guesses: a flat `2.1` credited by the
+   * courier's phone on every pickup signature, and the straight-line hub-to-
+   * pickup distance frozen at booking time credited by the server on every
+   * delivery — a chord instead of a road, and one leg instead of the ride back.
+   *
+   * `distanceDate` is what makes "today" true. Nothing ever reset this figure,
+   * so it was a lifetime total under a label that said otherwise. The count
+   * restarts when the device's own calendar date moves on, because a courier's
+   * day ends at midnight where they are standing rather than in UTC.
+   *
+   * It is a floor rather than a total: the location watch is a foreground one,
+   * so kilometres ridden with the console closed are not counted. Counting them
+   * needs a background location task, which the courier app does not have —
+   * until it does, this understates the ride rather than inventing the rest of
+   * it.
+   */
   todayDistance: number;
+  /** `YYYY-MM-DD`, device-local, or `''` for a courier who has ridden nowhere. */
+  distanceDate: string;
+  /**
+   * Cedis earned. Server-authored from jobs it saw completed, and — unlike the
+   * distance above — never reset, so this is a running total rather than one
+   * day's. Resetting it is a payroll decision, not a display one.
+   */
   todayEarnings: number;
   completedCount: number;
   onTimeRate: number;
@@ -433,9 +461,16 @@ export interface RiderState {
  * Telemetry the rider app pushes to the server on a timer.
  *
  * Only what the phone can honestly claim about itself: where it is, how fast,
- * whose name is on it. The vehicle and its plate are company property assigned
- * by a supervisor, and the employee ID is a sign-in identifier — none of those
- * are a courier's to declare, so none of them are in here.
+ * how far it has ridden today, whose name is on it. The vehicle and its plate
+ * are company property assigned by a supervisor, and the employee ID is a
+ * sign-in identifier — none of those are a courier's to declare, so none of them
+ * are in here.
+ *
+ * `todayDistance` is, and `todayEarnings` is not. That is not an inconsistency:
+ * distance is a measurement only this phone is in a position to make, and
+ * earnings are money the server works out from jobs it saw completed. A phone
+ * can overstate its own mileage — which a supervisor can see against the jobs
+ * on the board — but it cannot pay itself.
  */
 export type RiderTelemetry = Partial<
   Pick<
@@ -445,8 +480,9 @@ export type RiderTelemetry = Partial<
     | 'coords'
     | 'speed'
     | 'heading'
-    | 'batteryLevel'
     | 'gpsAccuracy'
+    | 'todayDistance'
+    | 'distanceDate'
   >
 >;
 

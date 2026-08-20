@@ -8,6 +8,7 @@ import { Check, KeyRound, Pencil, RotateCcw, ShieldCheck } from 'lucide-react-na
 import React, { useMemo, useRef, useState } from 'react';
 import { PanResponder, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
+import { useT } from '../i18n';
 import { colors, radius, tints } from '../theme';
 import { Button, Divider } from './ui';
 
@@ -28,6 +29,7 @@ interface DeliveryConfirmProps {
   /** Commits the signature against this order's code. False if it is refused. */
   onConfirm: (signature: string, code: string) => Promise<boolean>;
   onCancel?: () => void;
+  /** Printed under the signature line. Falls back to `sign.you` when absent. */
   customerName?: string;
   bagCount?: number;
   /** This order's delivery code — the customer's to read out. */
@@ -39,10 +41,11 @@ const PAD_HEIGHT = 170;
 export default function DeliveryConfirm({
   onConfirm,
   onCancel,
-  customerName = 'you',
+  customerName,
   bagCount,
   deliveryCode,
 }: DeliveryConfirmProps) {
+  const { t } = useT();
   /** Completed strokes, plus the one currently under the finger. */
   const [strokes, setStrokes] = useState<string[]>([]);
   const [currentStroke, setCurrentStroke] = useState('');
@@ -128,7 +131,7 @@ export default function DeliveryConfirm({
       const ok = await onConfirm(signature, deliveryCode ?? '');
 
       if (!ok) {
-        setError('Dispatch would not accept that. Ask the courier to try from their console.');
+        setError(t('sign.refused'));
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
@@ -143,11 +146,17 @@ export default function DeliveryConfirm({
       <View style={styles.header}>
         <Pencil size={19} color={colors.brandSage} />
         <View style={{ flex: 1 }}>
-          <Text style={styles.title}>Sign for your delivery</Text>
+          <Text style={styles.title}>{t('sign.title')}</Text>
           <Text style={styles.subtitle}>
-            {bagCount
-              ? `Check all ${bagCount} bags are present, then sign below.`
-              : 'Check everything is present, then sign below.'}
+            {/* Three keys and a branch rather than a plural rule. The English
+                singular was wrong before this — a one-bag order read "Check
+                all 1 bags" — and a language that says a counted noun
+                differently should not have to inherit that. */}
+            {bagCount === 1
+              ? t('sign.subtitleOne')
+              : bagCount
+                ? t('sign.subtitleMany', { count: bagCount })
+                : t('sign.subtitle')}
           </Text>
         </View>
       </View>
@@ -157,19 +166,19 @@ export default function DeliveryConfirm({
       <View style={styles.codeCard}>
         <KeyRound size={15} color={colors.brandSage} />
         <View style={{ flex: 1 }}>
-          <Text style={styles.codeLabel}>Read this to your courier</Text>
-          <Text style={styles.codeValue}>{deliveryCode ?? '—'}</Text>
+          <Text style={styles.codeLabel}>{t('sign.code.label')}</Text>
+          <Text style={styles.codeValue}>{deliveryCode ?? t('common.blank')}</Text>
         </View>
       </View>
-      <Text style={styles.codeHint}>
-        Only give it once your laundry is actually in your hands. Signing below sends it for you.
-      </Text>
+      <Text style={styles.codeHint}>{t('sign.code.hint')}</Text>
       {!!error && <Text style={styles.codeError}>{error}</Text>}
 
       <View style={styles.pad} {...panResponder.panHandlers}>
         <View style={styles.signLine} pointerEvents="none">
-          <Text style={styles.signHint}>X SIGN HERE</Text>
-          <Text style={styles.signHintRight}>{customerName}</Text>
+          <Text style={styles.signHint}>{t('sign.here')}</Text>
+          {/* The customer's own name when the caller knows it. The stand-in is
+              a key rather than a prop default so it follows the language. */}
+          <Text style={styles.signHintRight}>{customerName || t('sign.you')}</Text>
         </View>
 
         <Svg ref={svgRef} style={StyleSheet.absoluteFill} pointerEvents="none">
@@ -199,17 +208,14 @@ export default function DeliveryConfirm({
 
       <View style={styles.notice}>
         <ShieldCheck size={14} color={colors.brandSage} />
-        <Text style={styles.noticeText}>
-          Signing confirms the garment count matches and closes the order. Anything wrong after
-          this can still be reported from the order screen.
-        </Text>
+        <Text style={styles.noticeText}>{t('sign.notice')}</Text>
       </View>
 
       <Divider />
 
       <View style={styles.actions}>
         <Button
-          label="Clear"
+          label={t('sign.clear')}
           variant="ghost"
           onPress={clear}
           disabled={!hasSigned}
@@ -217,7 +223,7 @@ export default function DeliveryConfirm({
           style={{ flex: 1 }}
         />
         <Button
-          label="Confirm delivery"
+          label={t('sign.confirm')}
           onPress={confirm}
           disabled={!ready}
           loading={saving}
@@ -227,7 +233,7 @@ export default function DeliveryConfirm({
       </View>
 
       {!!onCancel && (
-        <Button label="Not yet" variant="ghost" size="sm" onPress={onCancel} />
+        <Button label={t('sign.later')} variant="ghost" size="sm" onPress={onCancel} />
       )}
     </ScrollView>
   );

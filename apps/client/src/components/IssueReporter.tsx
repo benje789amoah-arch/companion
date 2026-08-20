@@ -7,6 +7,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Camera, Check, ImageIcon, RotateCcw, TriangleAlert } from 'lucide-react-native';
 import React, { useEffect, useRef, useState } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useT } from '../i18n';
 import { colors, radius, tints } from '../theme';
 import { Button, Divider, Field } from './ui';
 
@@ -25,16 +26,26 @@ interface IssueReporterProps {
   onCancel?: () => void;
 }
 
-/** Reasons worth one tap, drawn from what the care guarantee actually covers. */
-const REASONS = [
-  'A garment came back with a stain still on it',
-  'Something is missing from the bag',
-  'A garment was damaged',
-  'The finish is not what I asked for',
-  'The order arrived late',
-];
+/**
+ * Reasons worth one tap, drawn from what the care guarantee actually covers.
+ *
+ * Keys rather than sentences, because tapping one *writes* it into the note — the
+ * chip is copy and payload at once, and what the desk reads on the job record is
+ * whichever of these the customer chose. So the note can reach the desk in Twi.
+ * That is already true of the field below, where somebody types in the language
+ * they think in, and the desk is in Accra; a canned reason that stayed English
+ * would be the odd one out.
+ */
+const REASON_KEYS = [
+  'issue.reason.stain',
+  'issue.reason.missing',
+  'issue.reason.damaged',
+  'issue.reason.finish',
+  'issue.reason.late',
+] as const;
 
 export default function IssueReporter({ onSubmit, onCancel }: IssueReporterProps) {
+  const { t } = useT();
   const [note, setNote] = useState('');
   const [captured, setCaptured] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -59,9 +70,9 @@ export default function IssueReporter({ onSubmit, onCancel }: IssueReporterProps
     try {
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.6 });
       if (photo?.uri) setCaptured(photo.uri);
-      else setError('The camera returned nothing. Try again.');
+      else setError(t('issue.camera.empty'));
     } catch {
-      setError('The camera is unavailable. You can still send the report without a photo.');
+      setError(t('issue.camera.unavailable'));
     } finally {
       setBusy(false);
     }
@@ -72,19 +83,18 @@ export default function IssueReporter({ onSubmit, onCancel }: IssueReporterProps
       <View style={styles.header}>
         <TriangleAlert size={19} color={colors.statusWarning} />
         <View style={{ flex: 1 }}>
-          <Text style={styles.title}>Report an issue</Text>
-          <Text style={styles.subtitle}>
-            Anything not right gets re-treated at our cost — tell us what happened.
-          </Text>
+          <Text style={styles.title}>{t('issue.title')}</Text>
+          <Text style={styles.subtitle}>{t('issue.subtitle')}</Text>
         </View>
       </View>
 
       <View style={styles.reasonWrap}>
-        {REASONS.map((reason) => {
+        {REASON_KEYS.map((key) => {
+          const reason = t(key);
           const active = note === reason;
           return (
             <Pressable
-              key={reason}
+              key={key}
               onPress={() => setNote(active ? '' : reason)}
               style={[styles.reasonChip, active && styles.reasonChipActive]}
             >
@@ -95,10 +105,10 @@ export default function IssueReporter({ onSubmit, onCancel }: IssueReporterProps
       </View>
 
       <Field
-        label="What happened?"
+        label={t('issue.field')}
         value={note}
         onChangeText={setNote}
-        placeholder="The navy blazer has a mark on the left cuff that was there when it came back."
+        placeholder={t('issue.placeholder')}
         multiline
       />
 
@@ -110,7 +120,7 @@ export default function IssueReporter({ onSubmit, onCancel }: IssueReporterProps
             <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
             <Pressable
               onPress={takePicture}
-              accessibilityLabel="Take photo"
+              accessibilityLabel={t('issue.camera.take')}
               style={({ pressed }) => [styles.shutter, pressed && { transform: [{ scale: 0.94 }] }]}
             >
               <View style={styles.shutterInner} />
@@ -119,12 +129,10 @@ export default function IssueReporter({ onSubmit, onCancel }: IssueReporterProps
         ) : (
           <View style={styles.permissionPane}>
             <ImageIcon size={30} color="rgba(255,255,255,0.4)" />
-            <Text style={styles.permissionTitle}>Add a photo</Text>
-            <Text style={styles.permissionBody}>
-              A picture settles most of these in one message — optional, but it helps.
-            </Text>
+            <Text style={styles.permissionTitle}>{t('issue.camera.title')}</Text>
+            <Text style={styles.permissionBody}>{t('issue.camera.body')}</Text>
             <Button
-              label="Enable camera"
+              label={t('issue.camera.enable')}
               variant="outline"
               size="sm"
               onPress={() => void requestPermission()}
@@ -146,17 +154,17 @@ export default function IssueReporter({ onSubmit, onCancel }: IssueReporterProps
       <View style={styles.actions}>
         {captured ? (
           <Button
-            label="Retake"
+            label={t('issue.retake')}
             variant="ghost"
             onPress={() => setCaptured(null)}
             icon={<RotateCcw size={14} color={colors.textCharcoal} />}
             style={{ flex: 1 }}
           />
         ) : (
-          <Button label="Cancel" variant="ghost" onPress={onCancel} style={{ flex: 1 }} />
+          <Button label={t('common.cancel')} variant="ghost" onPress={onCancel} style={{ flex: 1 }} />
         )}
         <Button
-          label="Send report"
+          label={t('issue.send')}
           onPress={() => onSubmit(note.trim(), captured ?? undefined)}
           disabled={!note.trim()}
           icon={<Check size={15} color="#FFFFFF" />}
@@ -166,9 +174,7 @@ export default function IssueReporter({ onSubmit, onCancel }: IssueReporterProps
 
       <View style={styles.assurance}>
         <Camera size={13} color={colors.brandSage} />
-        <Text style={styles.assuranceText}>
-          Your report goes to the concierge desk and the courier on this job, in the same thread.
-        </Text>
+        <Text style={styles.assuranceText}>{t('issue.assurance')}</Text>
       </View>
     </ScrollView>
   );

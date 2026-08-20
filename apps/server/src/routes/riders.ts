@@ -63,6 +63,12 @@ function newEmployeeId(existing: string[]): string {
  * alongside the position fields. Anything not named here is dropped without
  * comment, so a field added to the roster tomorrow is not writable by a phone
  * the moment it exists.
+ *
+ * `todayDistance` is here and `todayEarnings` is not, which is not the
+ * inconsistency it looks like: how far a scooter went is a measurement only that
+ * phone is in a position to make, and earnings are money this server works out
+ * from jobs it saw completed. A phone can overstate its own mileage — which a
+ * supervisor can see against the jobs on the board — but it cannot pay itself.
  */
 function telemetryFrom(body: unknown): RiderTelemetry {
   const source = (body ?? {}) as Record<string, unknown>;
@@ -72,8 +78,21 @@ function telemetryFrom(body: unknown): RiderTelemetry {
   if (typeof source.isOnline === 'boolean') telemetry.isOnline = source.isOnline;
   if (typeof source.speed === 'number') telemetry.speed = source.speed;
   if (typeof source.heading === 'number') telemetry.heading = source.heading;
-  if (typeof source.batteryLevel === 'number') telemetry.batteryLevel = source.batteryLevel;
   if (typeof source.gpsAccuracy === 'number') telemetry.gpsAccuracy = source.gpsAccuracy;
+
+  // Kilometres ridden today, as the phone measured them, and the device-local
+  // date it measured them on. Nothing here reads that date — it is stored so the
+  // same phone can tell today from yesterday after a cold start — but a column
+  // that takes any string takes a paragraph, so the shape is checked.
+  if (Number.isFinite(source.todayDistance) && (source.todayDistance as number) >= 0) {
+    telemetry.todayDistance = source.todayDistance as number;
+  }
+  if (
+    typeof source.distanceDate === 'string' &&
+    /^\d{4}-\d{2}-\d{2}$/.test(source.distanceDate)
+  ) {
+    telemetry.distanceDate = source.distanceDate;
+  }
 
   const coords = source.coords as { lat?: unknown; lng?: unknown } | undefined;
   if (typeof coords?.lat === 'number' && typeof coords?.lng === 'number') {
@@ -294,12 +313,12 @@ ridersRouter.post(
         vehiclePlate: vehiclePlate.trim(),
         rating: 0,
         isOnline: false,
-        batteryLevel: 100,
         gpsAccuracy: 0,
         speed: 0,
         heading: 0,
         coords: { lat: LAUNDRY_HUB.lat, lng: LAUNDRY_HUB.lng },
         todayDistance: 0,
+        distanceDate: '',
         todayEarnings: 0,
         completedCount: 0,
         onTimeRate: 0,

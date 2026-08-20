@@ -196,13 +196,13 @@ export interface RiderRow {
   vehicle: string;
   vehicle_plate: string;
   is_online: boolean;
-  battery_level: number;
   gps_accuracy: number;
   speed: number;
   heading: number;
   coords: Coords;
   rating: number;
   today_distance: number;
+  distance_date: string;
   today_earnings: number;
   completed_count: number;
   on_time_rate: number;
@@ -360,13 +360,13 @@ export function toRider(row: RiderRow): StoredRider {
     vehicle: row.vehicle,
     vehiclePlate: row.vehicle_plate,
     isOnline: row.is_online,
-    batteryLevel: row.battery_level,
     gpsAccuracy: row.gps_accuracy,
     speed: row.speed,
     heading: row.heading,
     coords: row.coords,
     rating: row.rating,
     todayDistance: row.today_distance,
+    distanceDate: row.distance_date,
     todayEarnings: row.today_earnings,
     completedCount: row.completed_count,
     onTimeRate: row.on_time_rate,

@@ -93,6 +93,21 @@ booked it — on the website or in the customer app.
 >
 > While a leg is in progress the watch tightens to `BestForNavigation` and a fix
 > every 5 m; off a leg it relaxes to save the battery.
+>
+> **Ridden today** is measured by the same watch, not estimated. It adds up the
+> gaps between successive fixes the phone is willing to vouch for, and only counts
+> a gap larger than the accuracy behind it — a step of 8 m between two fixes each
+> accurate to ±30 m is a phone that may not have moved, and a scooter parked for
+> twenty minutes would otherwise ride kilometres on jitter alone. It runs offline
+> too; the telemetry tick publishes the total when signal returns. The figure
+> restarts at the device's own midnight, which is what makes "today" true — before
+> this, the tile said *Shift distance* and showed a lifetime total built from a flat
+> 2.1 km credited on every pickup signature plus a straight line drawn at booking.
+>
+> It is a floor, not a total: this is a foreground watch, so kilometres ridden with
+> the console closed are not counted. Counting those needs a background location
+> task the app does not have — so the tile understates the ride rather than
+> guessing at the rest of it.
 
 ## Architecture
 

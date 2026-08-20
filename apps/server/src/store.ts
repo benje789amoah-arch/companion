@@ -96,13 +96,13 @@ const RIDER_COLUMNS: Record<string, string> = {
   vehicle: 'vehicle',
   vehiclePlate: 'vehicle_plate',
   isOnline: 'is_online',
-  batteryLevel: 'battery_level',
   gpsAccuracy: 'gps_accuracy',
   speed: 'speed',
   heading: 'heading',
   coords: 'coords',
   rating: 'rating',
   todayDistance: 'today_distance',
+  distanceDate: 'distance_date',
   todayEarnings: 'today_earnings',
   completedCount: 'completed_count',
   onTimeRate: 'on_time_rate',
@@ -329,19 +329,25 @@ function repositories(exec: Executor) {
       },
 
       async insert(rider: StoredRider): Promise<StoredRider> {
+        // `distanceDate` is defaulted rather than required below: `import-json`
+        // inserts records straight from a dump, and one written before ridden
+        // distance carried a date has no stamp to give. An empty stamp reads as
+        // "nothing ridden today", which is the truth about a figure nobody can
+        // date.
         const rows = await exec<RiderRow[]>`
           insert into riders (
             id, employee_id, phone, name, avatar, vehicle, vehicle_plate,
-            is_online, battery_level, gps_accuracy, speed, heading, coords,
-            rating, today_distance, today_earnings, completed_count,
+            is_online, gps_accuracy, speed, heading, coords,
+            rating, today_distance, distance_date, today_earnings, completed_count,
             on_time_rate, acceptance_rate, completion_rate,
             pin_salt, pin_hash, must_change_pin, pin_expires_at, active
           ) values (
             ${rider.id}, ${rider.employeeId}, ${rider.phone}, ${rider.name},
             ${rider.avatar}, ${rider.vehicle}, ${rider.vehiclePlate},
-            ${rider.isOnline}, ${rider.batteryLevel}, ${rider.gpsAccuracy},
+            ${rider.isOnline}, ${rider.gpsAccuracy},
             ${rider.speed}, ${rider.heading}, ${exec.json(rider.coords as never)},
-            ${rider.rating}, ${rider.todayDistance}, ${rider.todayEarnings},
+            ${rider.rating}, ${rider.todayDistance}, ${rider.distanceDate ?? ''},
+            ${rider.todayEarnings},
             ${rider.completedCount}, ${rider.onTimeRate}, ${rider.acceptanceRate},
             ${rider.completionRate}, ${rider.pinSalt ?? null}, ${rider.pinHash ?? null},
             ${rider.mustChangePin ?? false}, ${rider.pinExpiresAt ?? null},

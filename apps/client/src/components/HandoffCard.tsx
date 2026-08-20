@@ -9,6 +9,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { buildHandoffPayload, type Booking } from '@freshfold/core';
 import QRCode from './QRCode';
 import { Card, SectionLabel } from './ui';
+import { useT } from '../i18n';
 import { colors, radius, tints } from '../theme';
 
 /**
@@ -26,6 +27,7 @@ import { colors, radius, tints } from '../theme';
  * the Hide control.
  */
 export default function HandoffCard({ booking }: { booking: Booking }) {
+  const { t } = useT();
   const [revealed, setRevealed] = useState(true);
 
   if (!booking.pickupOtp) return null;
@@ -40,17 +42,14 @@ export default function HandoffCard({ booking }: { booking: Booking }) {
           <ScanLine size={17} color={arrived ? colors.brandGold : colors.brandSage} />
         </View>
         <View style={{ flex: 1 }}>
-          <SectionLabel>Collection code</SectionLabel>
+          <SectionLabel>{t('handoff.label')}</SectionLabel>
           <Text style={styles.title}>
-            {arrived ? 'Your courier is at the door' : 'Show this when the courier arrives'}
+            {arrived ? t('handoff.atDoor') : t('handoff.waiting')}
           </Text>
         </View>
       </View>
 
-      <Text style={styles.body}>
-        Your courier will scan the code or ask for the four digits. Don't hand over the bags to
-        anyone who cannot check it.
-      </Text>
+      <Text style={styles.body}>{t('handoff.body')}</Text>
 
       {revealed ? (
         <View style={styles.revealed}>
@@ -68,32 +67,30 @@ export default function HandoffCard({ booking }: { booking: Booking }) {
 
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Hide the collection code"
+            accessibilityLabel={t('handoff.hideLabel')}
             onPress={() => setRevealed(false)}
             hitSlop={8}
             style={styles.toggle}
           >
             <EyeOff size={13} color={colors.textSlate} />
-            <Text style={styles.toggleLabel}>Hide</Text>
+            <Text style={styles.toggleLabel}>{t('handoff.hide')}</Text>
           </Pressable>
         </View>
       ) : (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Show the collection code"
+          accessibilityLabel={t('handoff.showLabel')}
           onPress={() => setRevealed(true)}
           style={({ pressed }) => [styles.reveal, pressed && { opacity: 0.85 }]}
         >
           <Eye size={15} color={colors.brandSage} />
-          <Text style={styles.revealLabel}>Show the QR and code again</Text>
+          <Text style={styles.revealLabel}>{t('handoff.show')}</Text>
         </Pressable>
       )}
 
       <View style={styles.assurance}>
         <ShieldCheck size={13} color={colors.brandSage} />
-        <Text style={styles.assuranceText}>
-          The code is tied to order {booking.id} and works only for this collection.
-        </Text>
+        <Text style={styles.assuranceText}>{t('handoff.tied', { id: booking.id })}</Text>
       </View>
     </Card>
   );

@@ -34,14 +34,17 @@ export const INITIAL_RIDER: RiderState = {
   vehiclePlate: '',
   rating: 0,
   isOnline: false,
-  batteryLevel: 100,
   gpsAccuracy: 0,
   speed: 0,
   heading: 0,
   // Starts at the hub. The device's own fix replaces this as soon as the
   // courier goes online and location is granted.
   coords: { ...LAUNDRY_HUB_COORDS },
+  // No date, so nothing has been ridden today: the first fix the phone is
+  // willing to measure against stamps today's and counts up from zero. See
+  // `distanceDate` on `RiderState`.
   todayDistance: 0,
+  distanceDate: '',
   todayEarnings: 0,
   completedCount: 0,
   onTimeRate: 0,
