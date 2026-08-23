@@ -181,7 +181,11 @@ export const tw: Partial<Record<TranslationKey, string>> = {
   'settings.details.saved': 'Wɔakora.',
 
   'settings.security.title': 'Ahobammɔ',
-  'settings.security.biometric': 'Fa wo nsateaa bue',
+  // `settings.security.biometric` was 'Fa wo nsateaa bue' — "use your finger to
+  // open" — which described the unlock, back when the row was a sign-in
+  // shortcut. The row is now the lock itself, so the line has been dropped to
+  // fall back to English rather than label a switch with the wrong half of what
+  // it does. A Twi speaker should render "Lock the app".
 
   'settings.addresses.title': 'Adres ahodoɔ',
 

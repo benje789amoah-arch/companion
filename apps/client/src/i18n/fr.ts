@@ -628,9 +628,9 @@ export const fr: Partial<Record<TranslationKey, string>> = {
     'Votre nom, votre numéro et votre mot de passe appartiennent au compte, comme vos adresses enregistrées : connectez-vous et celles ci-dessous vous suivent, sur le site comme sur tout téléphone que vous utilisez. Les réglages d’alertes appartiennent à ce téléphone.',
 
   'settings.security.title': 'Sécurité',
-  'settings.security.biometric': 'Déverrouiller par biométrie',
+  'settings.security.biometric': 'Verrouiller l’application',
   'settings.security.biometricOn':
-    'Utilisez Face ID ou votre empreinte au lieu de saisir votre mot de passe.',
+    'Demander Face ID ou votre empreinte à l’ouverture de FreshFold, puis à nouveau après une minute en arrière-plan.',
   'settings.security.biometricOff': 'Aucune biométrie enregistrée sur cet appareil.',
   'settings.security.reset': 'M’envoyer un lien de réinitialisation',
   'settings.security.resetCaption':
@@ -775,4 +775,17 @@ export const fr: Partial<Record<TranslationKey, string>> = {
   'address.save': 'Enregistrer l’adresse',
   'address.saveChanges': 'Enregistrer les modifications',
   'address.fallbackLabel': 'Adresse de collecte',
+
+  // ------------------------------------------------------ verrouillage
+  'lock.title': 'FreshFold est verrouillé',
+  'lock.body':
+    'Vos commandes, votre portefeuille et vos adresses enregistrées sont derrière le verrou biométrique activé dans les réglages.',
+  'lock.unlock': 'Déverrouiller',
+  'lock.retry': 'Réessayer',
+  'lock.prompt': 'Déverrouiller FreshFold',
+  'lock.fallback': 'Utiliser le code de l’appareil',
+  'lock.failed': 'Cela ne correspond pas.',
+  'lock.unavailable':
+    'Cet appareil n’a plus de biométrie enregistrée : le verrou ne peut donc plus être ouvert ici. Vous déconnecter garde FreshFold utilisable, et vos commandes restent sur votre compte.',
+  'lock.signOut': 'Me déconnecter à la place',
 };

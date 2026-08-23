@@ -805,9 +805,9 @@ export const en = {
     'Your name, number and password live on the account, and so do your saved addresses — sign in and the ones below move with you, to the website and to any phone you use. The alert settings belong to this phone.',
 
   'settings.security.title': 'Security',
-  'settings.security.biometric': 'Unlock with biometrics',
+  'settings.security.biometric': 'Lock the app',
   'settings.security.biometricOn':
-    'Use Face ID or your fingerprint instead of typing your password.',
+    'Ask for Face ID or your fingerprint when FreshFold opens, and again after it has been in the background a minute.',
   'settings.security.biometricOff': 'No biometric enrolled on this device.',
   'settings.security.reset': 'Email me a password reset link',
   'settings.security.resetCaption': 'The link sets a new password. It is good for one hour.',
@@ -978,6 +978,25 @@ export const en = {
   'address.saveChanges': 'Save changes',
   /** Used when the customer saved an address without naming it. */
   'address.fallbackLabel': 'Pickup address',
+
+  // ------------------------------------------------------------- app lock
+  'lock.title': 'FreshFold is locked',
+  'lock.body':
+    'Your orders, wallet and saved addresses are behind the biometric lock you turned on in settings.',
+  'lock.unlock': 'Unlock',
+  'lock.retry': 'Try again',
+  // The two strings inside the system sheet. iOS shows the fallback as a button
+  // that asks for the phone's own passcode, which is the device's passcode and
+  // not the FreshFold password — the wording has to say which.
+  'lock.prompt': 'Unlock FreshFold',
+  'lock.fallback': 'Use device passcode',
+  'lock.failed': 'That did not match.',
+  // Said only once the sensor has actually answered — see `biometricChecked`.
+  // Signing out is the only honest way past a lock whose key has gone missing:
+  // nothing on the device can prove who is holding it any more.
+  'lock.unavailable':
+    'This phone has no biometric enrolled any more, so the lock cannot be opened here. Signing out keeps FreshFold usable, and your orders stay on your account.',
+  'lock.signOut': 'Sign out instead',
 } as const;
 
 /**

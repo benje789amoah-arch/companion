@@ -8,6 +8,7 @@ import { StatusBar } from 'expo-status-bar';
 import React from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import AppLock from '../src/components/AppLock';
 import { ClientProvider } from '../src/store/ClientStore';
 import { PreferencesProvider } from '../src/store/PreferencesStore';
 import { SessionProvider } from '../src/store/SessionStore';
@@ -19,8 +20,8 @@ import { colors } from '../src/theme';
  * wallet writes through the session's account record.
  *
  * `PreferencesProvider` is outermost because it depends on neither and both
- * read from it — the sign-in screen offers biometric unlock, and the data layer
- * filters the alerts feed by which kinds the customer wants.
+ * read from it — the app lock reads whether biometric unlock is on, and the data
+ * layer filters the alerts feed by which kinds the customer wants.
  */
 export default function RootLayout() {
   return (
@@ -63,6 +64,12 @@ export default function RootLayout() {
                   options={{ presentation: 'modal', animation: 'slide_from_bottom' }}
                 />
               </Stack>
+              {/*
+                Last, and so on top of every route: the lock has to cover
+                whichever screen the app was left on. It draws nothing while
+                unlocked.
+              */}
+              <AppLock />
             </ClientProvider>
           </SessionProvider>
         </PreferencesProvider>

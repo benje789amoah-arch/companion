@@ -8,7 +8,6 @@ import * as Haptics from 'expo-haptics';
 import {
   ArrowLeft,
   AtSign,
-  Fingerprint,
   KeyRound,
   Mail,
   Phone,
@@ -33,8 +32,7 @@ import {
   limitPhoneInput,
 } from '@freshfold/core';
 import { KeyboardAvoider } from '../src/components/KeyboardAvoider';
-import { Button, Card, Divider, Field, Segmented } from '../src/components/ui';
-import { usePreferences } from '../src/store/PreferencesStore';
+import { Button, Card, Field, Segmented } from '../src/components/ui';
 import { useSession } from '../src/store/SessionStore';
 import { colors, radius, shadow, tints } from '../src/theme';
 
@@ -56,10 +54,7 @@ export default function AuthScreen() {
     register,
     checkContact,
     requestPasswordReset,
-    biometricAvailable,
-    promptBiometric,
   } = useSession();
-  const { biometricEnabled } = usePreferences();
 
   const [mode, setMode] = useState<Mode>(params.mode === 'register' ? 'register' : 'signin');
   const [identifier, setIdentifier] = useState('');
@@ -192,11 +187,6 @@ export default function AuthScreen() {
       setBusy(false);
     }
   }, [mode, identifier, password, name, email, phone, confirm, signIn, register, done]);
-
-  const unlockWithBiometric = useCallback(async () => {
-    const ok = await promptBiometric();
-    if (ok) done();
-  }, [promptBiometric, done]);
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -345,17 +335,12 @@ export default function AuthScreen() {
               size="lg"
             />
 
-            {mode === 'signin' && biometricAvailable && biometricEnabled && (
-              <>
-                <Divider />
-                <Button
-                  label="Unlock with biometrics"
-                  variant="ghost"
-                  onPress={unlockWithBiometric}
-                  icon={<Fingerprint size={15} color={colors.textCharcoal} />}
-                />
-              </>
-            )}
+            {/*
+              A biometric button used to sit here, and could not work: a
+              biometric proves who is holding the phone, not what the password
+              is, so there was nothing for it to sign in *with*. It now guards
+              the session it can actually speak for — see `AppLock`.
+            */}
           </Card>
 
           <View style={styles.assurance}>

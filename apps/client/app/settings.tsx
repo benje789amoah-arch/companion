@@ -155,12 +155,17 @@ export default function SettingsScreen() {
    * re-applies the profile whenever a poll or a wallet payment brings back a
    * fresh copy, and re-seeding on that would wipe out whatever was half-typed
    * at the moment it landed.
+   *
+   * `resetNotice` is cleared here too. It names the address the link went to, so
+   * carrying it across a change of account would show one customer's email
+   * on another customer's settings screen.
    */
   useEffect(() => {
     setName(account?.name ?? '');
     setPhone(limitPhoneInput(account?.phone ?? ''));
     setProfileError('');
     setProfileNotice('');
+    setResetNotice('');
   }, [account?.email]);
 
   // Both sides through `limitPhoneInput`, so a stored `+233 24 456 7801` and a
@@ -369,7 +374,10 @@ export default function SettingsScreen() {
               />
 
               {!!profileError && <Text style={styles.error}>{profileError}</Text>}
-              {!!profileNotice && !profileError && (
+              {/* Withdrawn as soon as the form is dirty again: it says what was
+                  saved, and once the fields have moved on it is describing
+                  something other than what is on screen. */}
+              {!!profileNotice && !profileError && !dirty && (
                 <Text style={styles.notice}>{profileNotice}</Text>
               )}
 

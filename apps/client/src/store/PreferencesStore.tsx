@@ -119,24 +119,41 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
   const [hydrated, setHydrated] = useState(false);
 
   /**
-   * Whether the customer has changed something already.
+   * Changes made before the stored file came back, kept so they can be replayed.
    *
    * The read below is asynchronous, so in principle a switch could be flipped
-   * while it is still in flight. Landing the stored value on top of that would
-   * silently undo it.
+   * while it is still in flight, and landing the stored value on top of that
+   * would silently undo it. Discarding the stored value instead — which is what
+   * this used to do — is the worse trade: one file holds the language, the
+   * theme, the biometric opt-in *and* all three alert toggles, so an early tap
+   * on any one of them threw away the other five, and the persist effect below
+   * then wrote those defaults back over what the customer had actually chosen.
+   *
+   * So neither side is dropped. The stored file is the base and the early
+   * changes go on top of it, which is the order they would have happened in had
+   * the read been instant. Every patch here is an idempotent field set, so
+   * replaying one that already reached `preferences` lands on the same value.
    */
-  const touched = useRef(false);
+  const early = useRef<((current: Preferences) => Preferences)[]>([]);
+
+  /** Mirrors `hydrated` for `update`, which must not re-create itself on it. */
+  const hydratedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
 
     void (async () => {
       const stored = await readJson<unknown>(STORAGE_KEYS.preferences, null);
-      if (cancelled || touched.current) {
-        if (!cancelled) setHydrated(true);
-        return;
-      }
-      setPreferences(coerce(stored));
+      if (cancelled) return;
+
+      const base = coerce(stored);
+      setPreferences(early.current.reduce((current, patch) => patch(current), base));
+      early.current = [];
+
+      // Before `setHydrated`, so a change arriving between the two is treated as
+      // what it is — a change to a hydrated store — rather than queued a second
+      // time into a list nothing will replay again.
+      hydratedRef.current = true;
       setHydrated(true);
     })();
 
@@ -154,7 +171,7 @@ export function PreferencesProvider({ children }: { children: React.ReactNode })
   }, [hydrated, preferences]);
 
   const update = useCallback((patch: (current: Preferences) => Preferences) => {
-    touched.current = true;
+    if (!hydratedRef.current) early.current.push(patch);
     setPreferences((current) => {
       const next = patch(current);
       return next === current ? current : next;

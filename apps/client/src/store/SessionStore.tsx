@@ -39,8 +39,25 @@ interface SessionState {
    * calls.
    */
   biometricAvailable: boolean;
-  /** Prompts for the device biometric. Resolves false if it fails or is off. */
-  promptBiometric: () => Promise<boolean>;
+  /**
+   * Whether the check above has actually run.
+   *
+   * `biometricAvailable` is false both while the probe is in flight and when the
+   * answer is no, and the lock screen has to tell those apart: it must not tell
+   * a customer their sensor is gone during the two frames before the sensor
+   * answers.
+   */
+  biometricChecked: boolean;
+  /**
+   * Prompts for the device biometric. Resolves false if it fails or is off.
+   *
+   * The wording is the caller's, because this store has no dictionary and the
+   * sheet is the customer's own language everywhere else. The device passcode
+   * fallback is left enabled: it authenticates the person holding the phone just
+   * as well, and a lock with no second route is a lock that strands whoever's
+   * sensor is wet.
+   */
+  promptBiometric: (prompt?: { message: string; fallback: string }) => Promise<boolean>;
 
   signIn: (identifier: string, password: string) => Promise<UserAccount>;
   register: (payload: {
@@ -96,6 +113,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [account, setAccount] = useState<UserAccount | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [biometricChecked, setBiometricChecked] = useState(false);
 
   // Restore on launch: the cached profile paints immediately, then the token is
   // re-validated. A token the server no longer honours drops the session rather
@@ -152,9 +170,15 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         LocalAuthentication.hasHardwareAsync(),
         LocalAuthentication.isEnrolledAsync(),
       ]);
-      if (!cancelled) setBiometricAvailable(hasHardware && enrolled);
+      if (!cancelled) {
+        setBiometricAvailable(hasHardware && enrolled);
+        setBiometricChecked(true);
+      }
     })().catch(() => {
-      if (!cancelled) setBiometricAvailable(false);
+      if (!cancelled) {
+        setBiometricAvailable(false);
+        setBiometricChecked(true);
+      }
     });
 
     return () => {
@@ -240,18 +264,21 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     void writeJson(STORAGE_KEYS.account, next);
   }, []);
 
-  const promptBiometric = useCallback(async () => {
-    if (!biometricAvailable) return false;
-    try {
-      const result = await LocalAuthentication.authenticateAsync({
-        promptMessage: 'Unlock FreshFold',
-        fallbackLabel: 'Use password',
-      });
-      return result.success;
-    } catch {
-      return false;
-    }
-  }, [biometricAvailable]);
+  const promptBiometric = useCallback<SessionState['promptBiometric']>(
+    async (prompt) => {
+      if (!biometricAvailable) return false;
+      try {
+        const result = await LocalAuthentication.authenticateAsync({
+          promptMessage: prompt?.message ?? 'Unlock FreshFold',
+          fallbackLabel: prompt?.fallback ?? 'Use device passcode',
+        });
+        return result.success;
+      } catch {
+        return false;
+      }
+    },
+    [biometricAvailable]
+  );
 
   const value = useMemo<SessionState>(
     () => ({
@@ -260,6 +287,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       token,
       isAuthenticated: phase === 'authenticated' && !!account,
       biometricAvailable,
+      biometricChecked,
       promptBiometric,
       signIn,
       register,
@@ -276,6 +304,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       account,
       token,
       biometricAvailable,
+      biometricChecked,
       promptBiometric,
       signIn,
       register,
