@@ -4,7 +4,7 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
-import type { Booking } from '@freshfold/core';
+import { EMAIL_SHAPE, type Booking } from '@freshfold/core';
 import { bookingSetupMail, sendMail } from './email';
 import { store, type StoredSetupToken } from './store';
 
@@ -81,8 +81,14 @@ export function setupLink(token: string): string {
   return `${appOrigin()}/#portal?setup=${token}`;
 }
 
-/** Rough enough to skip an obvious non-address; Resend judges the rest. */
-export const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/**
+ * Rough enough to skip an obvious non-address; Resend judges the rest.
+ *
+ * Re-exported from `@freshfold/core` rather than declared here, so that the two
+ * booking forms reject the same addresses this refuses to mail. The existing
+ * importers of `EMAIL_SHAPE` keep working unchanged.
+ */
+export { EMAIL_SHAPE };
 
 /**
  * Mails a customer their booking confirmation and the way into the portal.

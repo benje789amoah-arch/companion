@@ -270,6 +270,8 @@ export const fr: Partial<Record<TranslationKey, string>> = {
   'book.error.pin': 'Placez le repère de collecte pour que le coursier sache où frapper.',
   'book.error.name': 'Dites-nous qui demander à la porte.',
   'book.error.phone': 'Un numéro de téléphone permet au coursier de vous joindre.',
+  'book.error.paystackEmail':
+    'Ajoutez votre adresse e-mail pour payer en ligne — Paystack y envoie le reçu.',
   'book.error.walletSignIn': 'Connectez-vous pour payer depuis votre portefeuille FreshFold.',
   'book.error.walletShort':
     'Votre portefeuille contient {amount}. Choisissez un autre moyen ou rechargez-le.',

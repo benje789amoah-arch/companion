@@ -24,6 +24,15 @@ interface AddressAutocompleteProps {
   onPlaceSelected: (detail: PlaceDetail) => void;
   placeholder?: string;
   className?: string;
+  /**
+   * Put on the text field itself, so a caller's `<label htmlFor>` reaches it.
+   *
+   * The input is several elements down from here, so without this every caller
+   * writing a label beside this control was writing an orphaned one — the text
+   * reads as a label and behaves as decoration, and clicking it focuses
+   * nothing.
+   */
+  id?: string;
 }
 
 /** Long enough that the list is not rebuilt on every keystroke. */
@@ -35,6 +44,7 @@ export default function AddressAutocomplete({
   onPlaceSelected,
   placeholder,
   className,
+  id,
 }: AddressAutocompleteProps) {
   const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([]);
   const [open, setOpen] = useState(false);
@@ -162,6 +172,7 @@ export default function AddressAutocomplete({
   return (
     <div ref={wrapperRef} className="relative">
       <input
+        id={id}
         type="text"
         required
         value={value}

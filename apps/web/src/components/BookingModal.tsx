@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Calendar, MapPin, Sparkles, Clock, ShieldCheck, CheckCircle, Smartphone, CreditCard, Wallet, Banknote, Lock, CheckCircle2, QrCode } from 'lucide-react';
 import {
@@ -12,6 +12,8 @@ import {
   encodeFinish,
   isCompletePhone,
   isGarmentService,
+  isoDaysFromNow,
+  isoPlusDays,
   limitPhoneInput,
   newJobId,
   quoteBooking,
@@ -26,6 +28,7 @@ import * as store from '../services/store';
 import { BOOKABLE_SERVICE_ITEMS } from '../data';
 import AddressAutocomplete from './AddressAutocomplete';
 import PickupPinField, { type PinOrigin } from './PickupPinField';
+import { usePaystackReturn } from './PaystackReturn';
 
 interface BookingModalProps {
   isOpen: boolean;
@@ -108,7 +111,16 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
     setPaystackLoading(true);
     setPaystackError('');
     try {
-      const userEmail = email || (loggedInUser?.email) || 'patron@freshfold.com';
+      // No invented fallback. This ran with `'patron@freshfold.com'` when the
+      // form and the session were both blank, and that address is wrong twice
+      // over: Paystack mails the receipt to it, and `/accounts/wallet` matches
+      // the payer against the session before it credits anything — so a
+      // customer who paid under the placeholder is refused their own money with
+      // `reference-not-yours`. Asked for here rather than discovered there.
+      const userEmail = email.trim() || loggedInUser?.email || '';
+      if (!userEmail) {
+        throw new Error('Add your email address above before paying — the receipt is sent there.');
+      }
       const res = await fetch('/api/paystack/initialize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -147,7 +159,18 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
     }
   };
 
-  const handlePaystackVerify = async () => {
+  /**
+   * Asks the server what became of the reference this screen opened.
+   *
+   * `announce` is what separates the two callers. The button below is a
+   * question the customer just asked, so every outcome deserves an answer —
+   * including "still pending", which is the one that tells them the checkout is
+   * not finished. The automatic call from `usePaystackReturn` is not a
+   * question: the redirect fires for an abandoned checkout as readily as a paid
+   * one, so a pending result there is the ordinary case and popping an alert
+   * over it would be scolding somebody for closing a window.
+   */
+  const runPaystackVerify = async (announce: boolean) => {
     if (!paystackRef) return;
     setPaystackLoading(true);
     setPaystackError('');
@@ -160,16 +183,25 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
       if (data.data && data.data.status === 'success') {
         setIsPaid(true);
         setTransactionRef(data.data.reference || paystackRef);
-        alert('Paystack payment verified successfully!');
-      } else {
+        if (announce) alert('Paystack payment verified successfully!');
+      } else if (announce) {
         alert(`Paystack transaction status: ${data.data?.status || 'pending'}. Please complete payment on Paystack checkout and try again.`);
       }
     } catch (err: any) {
+      // Surfaced on the panel either way — it is the one outcome the customer
+      // cannot act on without being told.
       setPaystackError(err.message || 'Error verifying Paystack payment.');
     } finally {
       setPaystackLoading(false);
     }
   };
+
+  const handlePaystackVerify = () => runPaystackVerify(true);
+
+  // The checkout popup coming back is as good a moment to check as the button.
+  // Gated on there being a reference at all, so this window is not listening
+  // for messages before it has opened anything.
+  usePaystackReturn(useCallback(() => void runPaystackVerify(false), [paystackRef]), !!paystackRef);
   
   const [isSuccess, setIsSuccess] = useState(false);
   const [createdBooking, setCreatedBooking] = useState<Booking | null>(null);
@@ -310,12 +342,18 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
   );
   const estimatedPrice = estimate.total;
 
-  // Set default tomorrow date on open
+  /**
+   * Opens on tomorrow.
+   *
+   * Through `isoDaysFromNow` rather than `new Date()` + `setDate` +
+   * `toISOString`, which was three timezone frames in three lines and landed on
+   * the wrong day either side of Greenwich: on a phone in Tokyo it offered
+   * *today* all morning, and on one in Los Angeles it skipped to the day after
+   * tomorrow from six in the evening. Correct in Accra at every hour, which is
+   * why nothing here ever saw it.
+   */
   useEffect(() => {
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowStr = tomorrow.toISOString().split('T')[0];
-    setPickupDate(tomorrowStr);
+    setPickupDate(isoDaysFromNow(1));
   }, [isOpen]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -355,10 +393,17 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
       return;
     }
 
-    // Standard 24h layout delivery schedule
-    const delivDate = new Date(pickupDate);
-    delivDate.setDate(delivDate.getDate() + 1);
-    const deliveryDateStr = delivDate.toISOString().split('T')[0];
+    /**
+     * Standard 24h layout delivery schedule.
+     *
+     * `isoPlusDays` is calendar arithmetic with no timezone in it. What was here
+     * happened to agree with it everywhere — adding one local day to a UTC
+     * midnight lands on the next UTC midnight whatever the offset — but it was
+     * right by cancellation rather than by construction, and it sat one edit
+     * away from not being. The fallback covers a pickup date that is blank or
+     * half-typed, which `handleSubmit` has already refused above.
+     */
+    const deliveryDateStr = isoPlusDays(pickupDate, 1) ?? isoDaysFromNow(2);
 
     const newBooking: Booking = {
       id: bookingId,
@@ -599,7 +644,10 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                   02. Transit Logistics
                 </h4>
                 <div>
-                  <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
+                  <label
+                    htmlFor="booking-address"
+                    className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5"
+                  >
                     Contactless Doorstep / Locker Pickup Address *
                   </label>
                   {/* Choosing a suggestion places the pin on the building, so
@@ -607,6 +655,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                       already in the right place. Typing straight past the list
                       still works — it is a text field first. */}
                   <AddressAutocomplete
+                    id="booking-address"
                     value={address}
                     onChange={setAddress}
                     onPlaceSelected={(detail) => {

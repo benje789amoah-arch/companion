@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { Suspense, lazy, useState, useEffect } from 'react';
 import Header from './components/Header';
 import Hero from './components/Hero';
 import Services from './components/Services';
@@ -9,15 +9,44 @@ import HowItWorks from './components/HowItWorks';
 import TargetCustomers from './components/TargetCustomers';
 import Contact from './components/Contact';
 import Footer from './components/Footer';
-import BookingModal from './components/BookingModal';
-import ClientPortal from './components/ClientPortal';
-import AdminDashboard from './components/AdminDashboard';
-import AdminLogin from './components/AdminLogin';
-import ChatbotWidget from './components/ChatbotWidget';
 import { Booking } from './types';
 import * as store from './services/store';
 import { Sparkles, ArrowUp, Check } from 'lucide-react';
 
+/**
+ * The four heavy surfaces, split out of the first load.
+ *
+ * All of these are already conditional — the portal renders behind `#portal`,
+ * the desk behind `#admin`, the booking form behind a button — but a static
+ * import puts them in the entry chunk regardless, so every visitor to the
+ * marketing page was downloading the supervisor dashboard, the client portal,
+ * Leaflet and the Google Maps bindings before the hero rendered. That was the
+ * bulk of a 1.5 MB single chunk.
+ *
+ * `lazy` makes the conditional render the thing that fetches them. A visitor who
+ * never opens the portal never pays for it; one who does waits on a chunk over a
+ * connection that has already warmed up, behind the `Suspense` fallback below.
+ *
+ * `Contact`, `Hero` and the rest stay static: they are the page.
+ */
+const BookingModal = lazy(() => import('./components/BookingModal'));
+const ClientPortal = lazy(() => import('./components/ClientPortal'));
+const AdminDashboard = lazy(() => import('./components/AdminDashboard'));
+const AdminLogin = lazy(() => import('./components/AdminLogin'));
+const ChatbotWidget = lazy(() => import('./components/ChatbotWidget'));
+const PaystackReturn = lazy(() => import('./components/PaystackReturn'));
+
+/**
+ * What shows while one of those chunks is on the wire.
+ *
+ * Deliberately not a spinner over the whole page. Each of these mounts into a
+ * space that was empty a moment ago — a modal, an overlay — so an empty space is
+ * the honest intermediate state, and a full-screen loader would be a bigger
+ * interruption than the wait it describes.
+ */
+const Deferred = ({ children }: { children: React.ReactNode }) => (
+  <Suspense fallback={null}>{children}</Suspense>
+);
 export default function App() {
   const [isBookingOpen, setIsBookingOpen] = useState(false);
   const [preselectedService, setPreselectedService] = useState('');
@@ -52,6 +81,15 @@ export default function App() {
    * afterwards would put the whole ledger on screen for a frame.
    */
   const [isSupervisor, setIsSupervisor] = useState<boolean | null>(null);
+
+  /**
+   * Whether Paystack has just sent this window back.
+   *
+   * Its own branch rather than a third portal flag, because it replaces the
+   * whole page: what lands here is usually a 600×750 popup, and a marketing
+   * site is the wrong thing to put in one. See `PaystackReturn`.
+   */
+  const [isPaystackReturn, setIsPaystackReturn] = useState(false);
 
   // Re-validate the stored desk token whenever the admin route is entered. It
   // is checked against the server every time rather than trusted from storage —
@@ -109,6 +147,16 @@ export default function App() {
   useEffect(() => {
     const handleHashAndParams = () => {
       const hash = window.location.hash;
+
+      // Checked first, and returning early: this branch owns the whole window,
+      // so none of the portal/admin flags below should be touched on the way
+      // through.
+      if (hash.startsWith('#paystack-success')) {
+        setIsPaystackReturn(true);
+        return;
+      }
+      setIsPaystackReturn(false);
+
       if (hash.startsWith('#portal')) {
         setIsPortalOpen(true);
         setIsAdminOpen(false);
@@ -195,9 +243,19 @@ export default function App() {
     setActiveBookings((prev) => [newBooking, ...prev]);
   };
 
+  // Before anything else, and instead of everything else. The header, the
+  // marketing sections and the chat bubble are all wrong in a checkout popup.
+  if (isPaystackReturn) {
+    return (
+      <Deferred>
+        <PaystackReturn />
+      </Deferred>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-brand-charcoal text-white font-sans antialiased selection:bg-brand-sage selection:text-brand-charcoal">
-      
+
       {/* Universal Floater Header */}
       <Header
         onOpenBooking={() => handleOpenBookingWithService('')}
@@ -241,65 +299,78 @@ export default function App() {
       <Footer />
 
       {/* Digital Scheduling Modal form container */}
-      <BookingModal
-        isOpen={isBookingOpen}
-        onClose={() => {
-          setIsBookingOpen(false);
-          setPreselectedService('');
-        }}
-        preselectedService={preselectedService}
-        onBookingCreated={handleBookingCreated}
-      />
+      {/* Mounted only once opened: `lazy` fetches on first render, and this
+          modal renders nothing until `isOpen`, so gating here is what keeps its
+          chunk off the marketing page. */}
+      {isBookingOpen && (
+        <Deferred>
+          <BookingModal
+            isOpen={isBookingOpen}
+            onClose={() => {
+              setIsBookingOpen(false);
+              setPreselectedService('');
+            }}
+            preselectedService={preselectedService}
+            onBookingCreated={handleBookingCreated}
+          />
+        </Deferred>
+      )}
 
       {/* Immersive password-setup & progress-tracking Client Portal */}
       {isPortalOpen && (
-        <ClientPortal
-          isOpen={isPortalOpen}
-          onClose={() => {
-            setIsPortalOpen(false);
-            window.location.hash = '';
-          }}
-          bookingIdParam={portalBookingId}
-          setupTokenParam={portalSetupToken}
-          activeBookings={activeBookings}
-          onUpdateBookings={(updated) => {
-            setActiveBookings(updated);
-            store.writeBookings(updated);
-          }}
-          onOpenBooking={() => {
-            setIsBookingOpen(true);
-          }}
-        />
+        <Deferred>
+          <ClientPortal
+            isOpen={isPortalOpen}
+            onClose={() => {
+              setIsPortalOpen(false);
+              window.location.hash = '';
+            }}
+            bookingIdParam={portalBookingId}
+            setupTokenParam={portalSetupToken}
+            activeBookings={activeBookings}
+            onUpdateBookings={(updated) => {
+              setActiveBookings(updated);
+              store.writeBookings(updated);
+            }}
+            onOpenBooking={() => {
+              setIsBookingOpen(true);
+            }}
+          />
+        </Deferred>
       )}
 
       {/* Supervisor desk — behind a real login, not a URL fragment. */}
       {isAdminOpen && isSupervisor === false && (
-        <AdminLogin
-          onAuthenticated={() => setIsSupervisor(true)}
-          onClose={() => {
-            setIsAdminOpen(false);
-            window.location.hash = '';
-          }}
-        />
+        <Deferred>
+          <AdminLogin
+            onAuthenticated={() => setIsSupervisor(true)}
+            onClose={() => {
+              setIsAdminOpen(false);
+              window.location.hash = '';
+            }}
+          />
+        </Deferred>
       )}
 
       {isAdminOpen && isSupervisor === true && (
-        <AdminDashboard
-          isOpen={isAdminOpen}
-          onClose={() => {
-            setIsAdminOpen(false);
-            window.location.hash = '';
-          }}
-          onSignOut={() => {
-            void store.adminLogout();
-            setIsSupervisor(false);
-          }}
-          activeBookings={activeBookings}
-          onUpdateBookings={(updated) => {
-            setActiveBookings(updated);
-            store.writeBookings(updated);
-          }}
-        />
+        <Deferred>
+          <AdminDashboard
+            isOpen={isAdminOpen}
+            onClose={() => {
+              setIsAdminOpen(false);
+              window.location.hash = '';
+            }}
+            onSignOut={() => {
+              void store.adminLogout();
+              setIsSupervisor(false);
+            }}
+            activeBookings={activeBookings}
+            onUpdateBookings={(updated) => {
+              setActiveBookings(updated);
+              store.writeBookings(updated);
+            }}
+          />
+        </Deferred>
       )}
 
       {/*
@@ -338,7 +409,9 @@ export default function App() {
       )}
 
       {/* AI Chatbot Widget */}
-      <ChatbotWidget />
+      <Deferred>
+        <ChatbotWidget />
+      </Deferred>
 
     </div>
   );

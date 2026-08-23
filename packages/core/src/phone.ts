@@ -70,3 +70,29 @@ export function samePhone(a: string | undefined, b: string | undefined): boolean
   const left = phoneKey(a);
   return left.length === 9 && left === phoneKey(b);
 }
+
+// ---------------------------------------------------------------------------
+// Email
+// ---------------------------------------------------------------------------
+
+/**
+ * What counts as an email address, for the one question anything here asks of
+ * one: is there something to send to.
+ *
+ * Deliberately loose. This is not an attempt to decide which addresses exist —
+ * only delivery answers that, which is why the confirmation link exists — but
+ * to catch the blank field, the typo with no `@`, and the domain with no dot.
+ * A stricter pattern buys nothing and costs the occasional real customer with
+ * an address it has not heard of.
+ *
+ * It lives beside the phone rules and for the same reason: the booking form on
+ * the website, the one in the customer app and the setup-link check on the
+ * server all have to agree about what an address is, and three copies of a
+ * regular expression do not stay equal.
+ */
+export const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Whether there is an address here worth sending a receipt to. */
+export function isEmailShaped(value: string | undefined | null): boolean {
+  return typeof value === 'string' && EMAIL_SHAPE.test(value.trim());
+}

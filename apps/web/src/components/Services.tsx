@@ -2,16 +2,70 @@ import { useState } from 'react';
 import { motion } from 'motion/react';
 import { SERVICES } from '../data';
 import { ServiceItem } from '../types';
-import * as Lucide from 'lucide-react';
+import {
+  Armchair,
+  Bed,
+  Briefcase,
+  Car,
+  ChevronRight,
+  Crown,
+  Droplet,
+  Feather,
+  GraduationCap,
+  Hand,
+  Home,
+  Ruler,
+  ShieldCheck,
+  Shirt,
+  Sparkles,
+  Truck,
+  Wind,
+  Zap,
+  type LucideIcon,
+} from 'lucide-react';
 
 interface ServicesProps {
   onSelectService: (serviceName: string) => void;
 }
 
-// Helper to look up Lucide icons by name string
+/**
+ * The icons a service card can ask for, by the name in `SERVICE_PRESENTATION`.
+ *
+ * An explicit map, and it has to stay one. This was
+ * `import * as Lucide from 'lucide-react'` with a `(Lucide as any)[name]`
+ * lookup, which reads as harmless and was the single largest thing on the site:
+ * a namespace import indexed by a runtime string cannot be tree-shaken, so the
+ * bundler had no choice but to include *every* icon Lucide ships — around
+ * fifteen hundred of them — in the chunk the marketing page loads first, to
+ * render the thirteen below.
+ *
+ * The cost of the explicit version is that adding an icon means adding it here
+ * as well as in `data.ts`. That is the trade, and it is the right way round:
+ * forgetting falls back to `Sparkles` exactly as the old lookup did, and the
+ * failure is a wrong icon on one card rather than a megabyte on every visit.
+ */
+const SERVICE_ICONS: Record<string, LucideIcon> = {
+  Armchair,
+  Bed,
+  Briefcase,
+  Car,
+  Crown,
+  Droplet,
+  Feather,
+  GraduationCap,
+  Hand,
+  Home,
+  Ruler,
+  ShieldCheck,
+  Shirt,
+  Sparkles,
+  Truck,
+  Wind,
+  Zap,
+};
+
 const IconRenderer = ({ name, className }: { name: string; className: string }) => {
-  const IconComponent = (Lucide as any)[name];
-  if (!IconComponent) return <Lucide.Sparkles className={className} />;
+  const IconComponent = SERVICE_ICONS[name] ?? Sparkles;
   return <IconComponent className={className} />;
 };
 
@@ -115,7 +169,7 @@ export default function Services({ onSelectService }: ServicesProps) {
                     className="text-brand-sage hover:text-white font-sans text-xs uppercase tracking-widest font-semibold flex items-center space-x-1 transition-colors group/btn cursor-pointer"
                   >
                     <span>Book Care</span>
-                    <Lucide.ChevronRight className="w-3 h-3 transform group-hover/btn:translate-x-1 transition-transform" />
+                    <ChevronRight className="w-3 h-3 transform group-hover/btn:translate-x-1 transition-transform" />
                   </button>
                 </div>
               </div>

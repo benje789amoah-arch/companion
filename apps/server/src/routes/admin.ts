@@ -6,6 +6,7 @@
 import { Router } from 'express';
 import { bearerToken, createSession, requireSupervisor, revokeSession } from '../auth';
 import { verifySecret } from '../passwords';
+import { credentialLimit } from '../rateLimit';
 import { store, type StoredSupervisor, type SupervisorProfile } from '../store';
 import { guard } from '../helpers';
 
@@ -28,8 +29,22 @@ function profile(supervisor: StoredSupervisor): SupervisorProfile {
   return { id: supervisor.id, name: supervisor.name, email: supervisor.email };
 }
 
+/**
+ * Sign in to the desk.
+ *
+ * Limited like the other two credential checks, and it is the session with the
+ * most behind it — this token edits the ledger and empties the roster. The desk
+ * is a handful of people at a handful of machines, so a ceiling that would be
+ * restrictive on a customer route is invisible here.
+ */
 adminRouter.post(
   '/login',
+  ...credentialLimit({
+    perIdentifier: 10,
+    perAddress: 30,
+    windowMs: 15 * 60 * 1000,
+    field: 'email',
+  }),
   guard(async (req, res) => {
     const { email, password } = (req.body ?? {}) as { email?: string; password?: string };
 

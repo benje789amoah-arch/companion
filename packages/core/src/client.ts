@@ -864,18 +864,6 @@ export function createClient(options: ClientOptions) {
     listTransactions: (token: string) =>
       request<PaymentTransaction[]>('/transactions', { headers: bearer(token) }),
 
-    /**
-     * Upserts by `reference`, so replaying a queued write is safe.
-     *
-     * `userEmail` is overwritten server-side with the session's address — a row
-     * filed against somebody else is a line on their statement.
-     */
-    recordTransaction: (transaction: PaymentTransaction, token: string) =>
-      request<PaymentTransaction>('/transactions', {
-        ...json('POST', transaction),
-        headers: bearer(token),
-      }),
-
     // -- Integrations ------------------------------------------------------
     chat: (history: ChatMessage[]) =>
       request<{ reply: string }>('/chat', json('POST', { history })),

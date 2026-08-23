@@ -356,6 +356,8 @@ export const en = {
   'book.error.pin': 'Set the pickup pin so the courier knows where to knock.',
   'book.error.name': 'Tell us who to ask for at the door.',
   'book.error.phone': 'A phone number lets the courier reach you.',
+  'book.error.paystackEmail':
+    'Add your email address to pay online — Paystack sends the receipt there.',
   'book.error.walletSignIn': 'Sign in to pay from your FreshFold wallet.',
   'book.error.walletShort': 'Your wallet holds {amount}. Choose another method or top up.',
   'book.error.save': 'Could not save that booking. It is queued and will send when you reconnect.',

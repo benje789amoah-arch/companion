@@ -10,6 +10,7 @@ import { bearerToken, createSession, requireAuth, revokeSession } from '../auth'
 import { passwordResetMail, sendMail, verificationMail, type Mail } from '../email';
 import { settleAccountByEmail } from '../membership';
 import { hashPassword, sanitize, verifyPassword } from '../passwords';
+import { credentialLimit } from '../rateLimit';
 import {
   EMAIL_SHAPE,
   findSetupToken,
@@ -630,8 +631,29 @@ function escapeAttribute(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
+/**
+ * Sign in.
+ *
+ * The loosest of the three credential limits, because it guards the strongest
+ * credential and the largest population: a password of at least
+ * `MIN_PASSWORD_LENGTH`, held by every customer, several of whom will be behind
+ * one university NAT at the same time. Fifteen tries a quarter-hour is well past
+ * what somebody who has forgotten which of two passwords they used needs, and
+ * nowhere near enough to walk a dictionary.
+ *
+ * `/register`, `/forgot` and `/reset` are deliberately not limited here.
+ * `/forgot` has its own per-account cooldown and answers identically either
+ * way, `/reset` needs a 32-byte token before it does anything at all, and
+ * `/register` creates rather than guesses.
+ */
 authRouter.post(
   '/login',
+  ...credentialLimit({
+    perIdentifier: 15,
+    perAddress: 50,
+    windowMs: 15 * 60 * 1000,
+    field: 'identifier',
+  }),
   guard(async (req, res) => {
     const { identifier, password } = req.body as { identifier?: string; password?: string };
 

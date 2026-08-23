@@ -15,6 +15,7 @@ export * from './types';
 export * from './status';
 export * from './geo';
 export * from './phone';
+export * from './dates';
 export * from './addresses';
 export * from './route';
 export * from './places';

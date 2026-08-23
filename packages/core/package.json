@@ -10,6 +10,10 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "check": "tsx src/money.check.ts && tsx src/details.check.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
   }
 }

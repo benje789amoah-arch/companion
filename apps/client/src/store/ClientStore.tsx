@@ -172,7 +172,6 @@ type PendingWrite =
   | { kind: 'booking:delete'; id: string }
   | { kind: 'message:post'; message: Message }
   | { kind: 'notification:read'; id: string }
-  | { kind: 'transaction:record'; transaction: PaymentTransaction }
   /**
    * The whole book, not the entry that changed.
    *
@@ -309,7 +308,6 @@ interface ClientState extends Mirror {
   chargeWallet: (amount: number, description: string, bookingId?: string) => Promise<boolean>;
   /** Spends care points on a reward from the shared catalogue. */
   redeemReward: (rewardId: string) => Promise<RedeemResult>;
-  recordTransaction: (transaction: PaymentTransaction) => void;
   /**
    * Starts or switches a plan. The server prices it — including the credit for
    * an unused part of a running plan — debits the wallet once and writes the
@@ -514,10 +512,6 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
         // The feed is per-session, so there is nothing to mark without one.
         if (!tokenRef.current) return;
         await api.markNotificationRead(write.id, tokenRef.current);
-        return;
-      case 'transaction:record':
-        if (!tokenRef.current) return;
-        await api.recordTransaction(write.transaction, tokenRef.current);
         return;
       case 'order:status':
         await api.updateOrderStatus(write.id, write.patch, bookingAuthRef.current(write.id));
@@ -1037,20 +1031,6 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
 
   // ---------------------------------------------------------------- wallet
 
-  const recordTransaction = useCallback<ClientState['recordTransaction']>(
-    (transaction) => {
-      commit((current) => ({
-        ...current,
-        transactions: [
-          transaction,
-          ...current.transactions.filter((t) => t.reference !== transaction.reference),
-        ],
-      }));
-      enqueue({ kind: 'transaction:record', transaction });
-    },
-    [commit, enqueue]
-  );
-
   const walletBalance = account?.walletBalance ?? 0;
   const points = account?.points ?? 0;
 
@@ -1504,7 +1484,6 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       topUpWallet,
       chargeWallet,
       redeemReward,
-      recordTransaction,
       subscribeToPlan,
       cancelPlan,
       resumePlan,
@@ -1547,7 +1526,6 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       topUpWallet,
       chargeWallet,
       redeemReward,
-      recordTransaction,
       subscribeToPlan,
       cancelPlan,
       resumePlan,

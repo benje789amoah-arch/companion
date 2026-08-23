@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Booking, UserAccount } from '../types';
 import * as store from '../services/store';
@@ -10,6 +10,7 @@ import {
   LOYALTY_REWARDS,
   MAX_SAVED_ADDRESSES,
   PHONE_DIGITS,
+  PHONE_LENGTH_MESSAGE,
   SERVICE_SUBURBS,
   bookingProgressPercent,
   decodeFinish,
@@ -35,6 +36,8 @@ import {
 } from 'lucide-react';
 import LiveDispatchMap from './LiveDispatchMap';
 import HandoffCode from './HandoffCode';
+import AddressAutocomplete from './AddressAutocomplete';
+import { usePaystackReturn } from './PaystackReturn';
 
 /**
  * Dispatch states in which the bags are still with the customer, and the
@@ -279,7 +282,14 @@ export default function ClientPortal({
     setTopUpPaystackLoading(true);
     setTopUpPaystackError('');
     try {
-      const userEmail = currentUser?.email || 'patron@freshfold.com';
+      // Same rule as the booking path above, and it bites harder here: the
+      // top-up route matches Paystack's payer against the session before it
+      // credits, so a payment made under an invented address is collected and
+      // then refused as `reference-not-yours`.
+      const userEmail = currentUser?.email;
+      if (!userEmail) {
+        throw new Error('Sign in again before topping up — we could not read your account.');
+      }
       const res = await fetch('/api/paystack/initialize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -306,7 +316,14 @@ export default function ClientPortal({
     }
   };
 
-  const handleWalletPaystackVerify = async () => {
+  /**
+   * `announce` separates the button from the automatic call, for the reason
+   * given on the booking form's copy of this: the redirect fires for an
+   * abandoned checkout too, so "still pending" is an answer worth giving
+   * somebody who asked and worth swallowing for somebody who just closed a
+   * window.
+   */
+  const runWalletVerify = async (announce: boolean) => {
     if (!topUpPaystackRef) return;
     setTopUpPaystackLoading(true);
     setTopUpPaystackError('');
@@ -330,7 +347,7 @@ export default function ClientPortal({
           `Wallet topped up via Paystack. ` +
           `New balance: ₵${(account.walletBalance ?? 0).toFixed(2)} GHS`
         );
-      } else {
+      } else if (announce) {
         alert(`Status: ${data.data?.status || 'pending'}. Complete payment in Paystack checkout and retry.`);
       }
     } catch (err: any) {
@@ -339,6 +356,24 @@ export default function ClientPortal({
       setTopUpPaystackLoading(false);
     }
   };
+
+  const handleWalletPaystackVerify = () => runWalletVerify(true);
+
+  /**
+   * The checkout popup coming back, routed to whichever checkout opened it.
+   *
+   * Two can be in flight from this screen — settling a bill and topping up —
+   * but only one at a time: each is a modal, and opening either closes the
+   * other. The top-up is checked first because it is the one whose modal sits
+   * on top when both have a stale reference behind them.
+   */
+  usePaystackReturn(
+    useCallback(() => {
+      if (topUpPaystackRef) void runWalletVerify(false);
+      else if (paystackRef && payModalBooking) void handlePortalPaystackVerify();
+    }, [topUpPaystackRef, paystackRef, payModalBooking]),
+    !!topUpPaystackRef || !!paystackRef
+  );
 
   // Filter & Concierge states
   const [orderFilter, setOrderFilter] = useState<'all' | 'active' | 'completed'>('all');
@@ -391,6 +426,139 @@ export default function ClientPortal({
   const [addressSaving, setAddressSaving] = useState(false);
 
   const savedAddresses = currentUser?.addresses ?? [];
+
+  /**
+   * Seeded from the account, and re-seeded only on a *different* account.
+   *
+   * Keyed on the email rather than on `currentUser`, for the reason the customer
+   * app's settings screen is: `pullAccount` re-applies the profile every five
+   * seconds, and re-seeding on that would wipe out whatever was half-typed at
+   * the moment a poll landed.
+   */
+  useEffect(() => {
+    setProfileName(currentUser?.name ?? '');
+    setProfilePhone(limitPhoneInput(currentUser?.phone ?? ''));
+    setProfileError('');
+    setSavedSettingsMsg('');
+  }, [currentUser?.email]);
+
+  // Both sides through `limitPhoneInput`, so a stored `+233 24 456 7801` and a
+  // typed `0244567801` compare equal rather than reading as an edit.
+  const profileDirty =
+    profileName.trim() !== (currentUser?.name ?? '').trim() ||
+    profilePhone !== limitPhoneInput(currentUser?.phone ?? '');
+
+  const saveProfileDetails = async () => {
+    const trimmed = profileName.trim();
+    setProfileError('');
+    setSavedSettingsMsg('');
+
+    if (!trimmed) {
+      setProfileError('Tell us who to ask for at the door.');
+      return;
+    }
+    if (!isCompletePhone(profilePhone)) {
+      setProfileError(PHONE_LENGTH_MESSAGE);
+      return;
+    }
+
+    // Whether the number moved, worked out before the save — afterwards the
+    // account has already been replaced with the one we just wrote.
+    const numberChanged = !samePhone(profilePhone, currentUser?.phone ?? '');
+
+    setProfileSaving(true);
+    try {
+      await store.saveProfile({ name: trimmed, phone: profilePhone });
+      setSavedSettingsMsg(
+        numberChanged
+          ? // Worth saying plainly: dispatch finds a visitor's orders by the
+            // number they booked on, so moving the number moves which of them
+            // this account can see.
+            'Details saved. Orders booked on your old number will no longer appear here.'
+          : 'Details saved.'
+      );
+    } catch (error) {
+      // The server's own sentence where it has one — for a number already in
+      // use it names that specifically, which a generic message would lose.
+      setProfileError(
+        error instanceof ApiError ? error.message : 'Could not save that just now.'
+      );
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  /**
+   * Writes the address book back, whole.
+   *
+   * The whole array rather than the entry that changed, because that is what
+   * `PUT /accounts/addresses` replaces — and because it makes the write
+   * idempotent, which matters against a five-second poll. `withAddress` and
+   * `withoutAddress` from core do the merging, so the ids, the ordering and the
+   * single default behave the same here as in the app.
+   */
+  const commitAddresses = async (next: SavedAddress[], onDone?: () => void) => {
+    setAddressError('');
+    setAddressSaving(true);
+    try {
+      await store.saveAddresses(next);
+      onDone?.();
+    } catch (error) {
+      setAddressError(
+        error instanceof ApiError ? error.message : 'Could not save your addresses just now.'
+      );
+    } finally {
+      setAddressSaving(false);
+    }
+  };
+
+  const saveAddressDraft = async () => {
+    if (!addressDraft) return;
+
+    const address = addressDraft.address.trim();
+    const suburb = addressDraft.suburb.trim();
+
+    setAddressError('');
+    if (!address) {
+      setAddressError('We need an address to collect from.');
+      return;
+    }
+    if (!suburb) {
+      setAddressError('Choose the suburb this address is in.');
+      return;
+    }
+
+    const entry: SavedAddress = {
+      ...addressDraft,
+      address,
+      suburb,
+      // The suburb stands in for a label nobody typed, which is what
+      // `normaliseAddresses` would do anyway — done here so the field the
+      // customer sees and the one that gets stored agree.
+      label: addressDraft.label.trim() || suburb,
+    };
+
+    await commitAddresses(withAddress(savedAddresses, entry), () => setAddressDraft(null));
+  };
+
+  /**
+   * Opens the sheet on a new entry.
+   *
+   * The id is minted here rather than by the server so that saving an edit
+   * lands on the same entry the phone is showing instead of appending a
+   * near-duplicate beside it. First entry claims the default; after that the
+   * customer chooses.
+   */
+  const startNewAddress = () => {
+    setAddressError('');
+    setAddressDraft({
+      id: `addr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      label: '',
+      address: '',
+      suburb: SERVICE_SUBURBS[0] ?? '',
+      isDefault: savedAddresses.length === 0,
+    });
+  };
 
   const [redeemedRewardMsg, setRedeemedRewardMsg] = useState('');
 
@@ -1711,10 +1879,7 @@ export default function ClientPortal({
                               <div className="pt-2 border-t border-white/5 flex justify-end">
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    setPayModalBooking(booking);
-                                    setPayMomoNum(booking.momoNumber || booking.phone);
-                                  }}
+                                  onClick={() => setPayModalBooking(booking)}
                                   className="px-4 py-2 bg-brand-gold text-black rounded-xl text-xs font-bold font-mono uppercase tracking-wider hover:bg-yellow-400 transition-all flex items-center gap-1.5 cursor-pointer shadow-md"
                                 >
                                   <Smartphone className="w-3.5 h-3.5" /> Settle Online Now (₵{displayAmount(booking).toFixed(2)} GHS)
@@ -1826,87 +1991,289 @@ export default function ClientPortal({
 
               {/* TAB 4: ACCOUNT SETTINGS */}
               {activePortalTab === 'settings' && (
-                <div className="max-w-2xl mx-auto bg-[#161616] rounded-2xl border border-white/10 p-6 space-y-6 shadow-2xl">
-                  <div className="space-y-1 pb-4 border-b border-white/10">
-                    <span className="font-mono text-[9px] text-brand-sage uppercase tracking-widest block font-bold">PATRON ACCOUNT PREFERENCES</span>
-                    <h4 className="font-serif text-xl text-white">Default Delivery & Care Settings</h4>
-                  </div>
+                <div className="max-w-2xl mx-auto space-y-5">
 
-                  {savedSettingsMsg && (
-                    <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs rounded-xl flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span>{savedSettingsMsg}</span>
-                    </div>
-                  )}
-
-                  <div className="space-y-4">
-                    <div className="space-y-1.5">
-                      <label className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Primary Delivery Suburb</label>
-                      <select
-                        value={userSuburb}
-                        onChange={(e) => setUserSuburb(e.target.value)}
-                        className="w-full bg-black text-white text-xs p-3 rounded-xl border border-white/10 font-sans focus:border-brand-sage focus:outline-none"
-                      >
-                        <option value="Ayeduase">Ayeduase (KNUST Gaza / Brunei / Hall 7)</option>
-                        <option value="Bomso">Bomso (Bomso Hill / Junction)</option>
-                        <option value="Kotei">Kotei (Kotei Junction / Campus Extension)</option>
-                        <option value="Kentinkrono">Kentinkrono</option>
-                        <option value="KNUST Campus">KNUST Central Campus</option>
-                      </select>
+                  {/* ---------------------------------------------- details */}
+                  <div className="bg-[#161616] rounded-2xl border border-white/10 p-6 space-y-5 shadow-2xl">
+                    <div className="space-y-1 pb-4 border-b border-white/10">
+                      <span className="font-mono text-[9px] text-brand-sage uppercase tracking-widest block font-bold">PATRON ACCOUNT</span>
+                      <h4 className="font-serif text-xl text-white">Your Details</h4>
+                      <p className="text-[11px] text-stone-400 leading-relaxed pt-1">
+                        The name your courier asks for at the door, and the number they call from it.
+                      </p>
                     </div>
 
-                    <div className="space-y-1.5">
-                      <label className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Full Physical Address / Landmark</label>
-                      <input
-                        type="text"
-                        value={userAddress}
-                        onChange={(e) => setUserAddress(e.target.value)}
-                        className="w-full bg-black text-white text-xs p-3 rounded-xl border border-white/10 font-sans focus:border-brand-sage focus:outline-none"
-                      />
-                    </div>
+                    {savedSettingsMsg && !profileDirty && (
+                      <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs rounded-xl flex items-center gap-2">
+                        <CheckCircle2 className="w-4 h-4 shrink-0" />
+                        <span>{savedSettingsMsg}</span>
+                      </div>
+                    )}
 
-                    <div className="space-y-1.5">
-                      <label className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Hostel / Hall / House Name (Optional)</label>
-                      <input
-                        type="text"
-                        placeholder="e.g. Gaza Hostel, Brunei, Hall 7, or Plot 14"
-                        value={userHostel}
-                        onChange={(e) => setUserHostel(e.target.value)}
-                        className="w-full bg-black text-white text-xs p-3 rounded-xl border border-white/10 font-sans focus:border-brand-sage focus:outline-none"
-                      />
-                    </div>
+                    {profileError && (
+                      <div className="p-3 bg-red-500/10 border border-red-500/30 text-red-400 text-xs rounded-xl flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 shrink-0" />
+                        <span>{profileError}</span>
+                      </div>
+                    )}
 
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-4">
                       <div className="space-y-1.5">
-                        <label className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Registered Email</label>
+                        <label htmlFor="patron-name" className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Name</label>
                         <input
+                          id="patron-name"
+                          type="text"
+                          value={profileName}
+                          onChange={(e) => setProfileName(e.target.value)}
+                          placeholder="Ama Mensah"
+                          className="w-full bg-black text-white text-xs p-3 rounded-xl border border-white/10 font-sans focus:border-brand-sage focus:outline-none"
+                        />
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label htmlFor="patron-phone" className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Contact Phone</label>
+                        <input
+                          id="patron-phone"
+                          type="tel"
+                          inputMode="numeric"
+                          value={profilePhone}
+                          /* Through `limitPhoneInput`, so the eleventh digit
+                             simply never lands rather than being rejected under
+                             a full box afterwards. */
+                          onChange={(e) => setProfilePhone(limitPhoneInput(e.target.value))}
+                          placeholder={`${PHONE_DIGITS} digits — e.g. 0550001234`}
+                          className="w-full bg-black text-white text-xs p-3 rounded-xl border border-white/10 font-mono focus:border-brand-sage focus:outline-none"
+                        />
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label htmlFor="patron-email" className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Registered Email</label>
+                        <input
+                          id="patron-email"
                           type="text"
                           disabled
                           value={currentUser.email}
                           className="w-full bg-black/50 text-stone-400 text-xs p-3 rounded-xl border border-white/5 font-mono cursor-not-allowed"
                         />
+                        <p className="text-[10px] text-stone-500 pt-0.5">
+                          Your address is your sign-in. Contact the desk to change it.
+                        </p>
                       </div>
-                      <div className="space-y-1.5">
-                        <label className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Contact Phone</label>
-                        <input
-                          type="text"
-                          disabled
-                          value={currentUser.phone}
-                          className="w-full bg-black/50 text-stone-400 text-xs p-3 rounded-xl border border-white/5 font-mono cursor-not-allowed"
-                        />
+
+                      <button
+                        type="button"
+                        onClick={saveProfileDetails}
+                        disabled={!profileDirty || profileSaving}
+                        className={`w-full py-3 rounded-xl text-xs font-bold font-sans uppercase tracking-widest transition-all shadow-lg mt-1 ${
+                          profileDirty && !profileSaving
+                            ? 'bg-brand-sage text-white hover:bg-brand-sage-light cursor-pointer'
+                            : 'bg-white/10 text-stone-500 cursor-not-allowed'
+                        }`}
+                      >
+                        {profileSaving ? 'Saving…' : 'Save Details'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* --------------------------------------- address book */}
+                  <div className="bg-[#161616] rounded-2xl border border-white/10 p-6 space-y-5 shadow-2xl">
+                    <div className="flex items-start justify-between gap-3 pb-4 border-b border-white/10">
+                      <div className="space-y-1">
+                        <span className="font-mono text-[9px] text-brand-sage uppercase tracking-widest block font-bold">COLLECTION POINTS</span>
+                        <h4 className="font-serif text-xl text-white">Saved Addresses</h4>
+                        <p className="text-[11px] text-stone-400 leading-relaxed pt-1">
+                          Kept in step with the FreshFold app — an address added on your phone appears here.
+                        </p>
                       </div>
+                      {savedAddresses.length < MAX_SAVED_ADDRESSES && !addressDraft && (
+                        <button
+                          type="button"
+                          onClick={startNewAddress}
+                          className="px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-xl text-[10px] font-bold font-mono uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+                        >
+                          <Plus className="w-3.5 h-3.5" /> Add
+                        </button>
+                      )}
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSavedSettingsMsg('Settings updated successfully!');
-                        setTimeout(() => setSavedSettingsMsg(''), 3000);
-                      }}
-                      className="w-full py-3 bg-brand-sage text-white rounded-xl text-xs font-bold font-sans uppercase tracking-widest hover:bg-brand-sage-light transition-all cursor-pointer shadow-lg mt-2"
-                    >
-                      Save Preferences
-                    </button>
+                    {addressError && (
+                      <div className="p-3 bg-red-500/10 border border-red-500/30 text-red-400 text-xs rounded-xl flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 shrink-0" />
+                        <span>{addressError}</span>
+                      </div>
+                    )}
+
+                    {savedAddresses.length === 0 && !addressDraft && (
+                      <p className="text-xs text-stone-500 py-2">
+                        No saved addresses yet. Add one and it will be offered the next time you book.
+                      </p>
+                    )}
+
+                    <div className="space-y-2.5">
+                      {savedAddresses.map((saved) => (
+                        <div
+                          key={saved.id}
+                          className="p-3.5 bg-black/40 rounded-xl border border-white/10 flex items-start justify-between gap-3"
+                        >
+                          <div className="space-y-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-white text-xs font-bold">{saved.label}</span>
+                              {saved.isDefault && (
+                                <span className="px-1.5 py-0.5 bg-brand-sage/20 text-brand-sage rounded text-[8px] font-mono font-bold uppercase tracking-wider">
+                                  Default
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-stone-400 leading-relaxed break-words">
+                              {saved.address}
+                            </p>
+                            <p className="text-[10px] text-stone-500 font-mono">{saved.suburb}</p>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {!saved.isDefault && (
+                              <button
+                                type="button"
+                                disabled={addressSaving}
+                                /* `withAddress` clears the flag from everyone
+                                   else when the incoming entry claims it, so
+                                   this is the whole of "make default". */
+                                onClick={() =>
+                                  commitAddresses(
+                                    withAddress(savedAddresses, { ...saved, isDefault: true })
+                                  )
+                                }
+                                title="Make this the default"
+                                className="p-2 bg-white/5 hover:bg-white/10 rounded-lg text-stone-400 hover:text-brand-sage transition-all cursor-pointer disabled:cursor-not-allowed"
+                              >
+                                <CheckCircle className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              disabled={addressSaving}
+                              onClick={() => {
+                                setAddressDraft(saved);
+                                setAddressError('');
+                              }}
+                              title="Edit"
+                              className="p-2 bg-white/5 hover:bg-white/10 rounded-lg text-stone-400 hover:text-white transition-all cursor-pointer disabled:cursor-not-allowed"
+                            >
+                              <MapPin className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={addressSaving}
+                              onClick={() => commitAddresses(withoutAddress(savedAddresses, saved.id))}
+                              title="Remove"
+                              className="p-2 bg-white/5 hover:bg-red-500/20 rounded-lg text-stone-400 hover:text-red-400 transition-all cursor-pointer disabled:cursor-not-allowed"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {savedAddresses.length >= MAX_SAVED_ADDRESSES && !addressDraft && (
+                      <p className="text-[11px] text-stone-500">{ADDRESS_LIMIT_MESSAGE}</p>
+                    )}
+
+                    {addressDraft && (
+                      <div className="p-4 bg-black/40 rounded-xl border border-brand-sage/30 space-y-3.5">
+                        <span className="font-mono text-[9px] text-brand-sage uppercase tracking-widest block font-bold">
+                          {savedAddresses.some((saved) => saved.id === addressDraft.id)
+                            ? 'Edit Address'
+                            : 'New Address'}
+                        </span>
+
+                        <div className="space-y-1.5">
+                          <label htmlFor="addr-label" className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Label</label>
+                          <input
+                            id="addr-label"
+                            type="text"
+                            value={addressDraft.label}
+                            onChange={(e) => setAddressDraft({ ...addressDraft, label: e.target.value })}
+                            placeholder="Home, hostel, office…"
+                            className="w-full bg-black text-white text-xs p-3 rounded-xl border border-white/10 font-sans focus:border-brand-sage focus:outline-none"
+                          />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label htmlFor="addr-line" className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Address or Landmark</label>
+                          {/* The same lookup the booking form uses. Choosing a
+                              suggestion also carries the coordinate across, so an
+                              address saved here arrives with a pin rather than
+                              falling back to the middle of its suburb. */}
+                          <AddressAutocomplete
+                            id="addr-line"
+                            value={addressDraft.address}
+                            onChange={(next) => setAddressDraft({ ...addressDraft, address: next })}
+                            onPlaceSelected={(detail) =>
+                              setAddressDraft({
+                                ...addressDraft,
+                                address: detail.address,
+                                coords: detail.coords,
+                              })
+                            }
+                            placeholder="Evandy Hostel, Block B, Room 304"
+                            className="w-full bg-black text-white text-xs p-3 rounded-xl border border-white/10 font-sans focus:border-brand-sage focus:outline-none"
+                          />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label htmlFor="addr-suburb" className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Suburb</label>
+                          <select
+                            id="addr-suburb"
+                            value={addressDraft.suburb}
+                            onChange={(e) => setAddressDraft({ ...addressDraft, suburb: e.target.value })}
+                            className="w-full bg-black text-white text-xs p-3 rounded-xl border border-white/10 font-sans focus:border-brand-sage focus:outline-none"
+                          >
+                            {/* From core, so this list and the one the courier's
+                                distances are computed against cannot drift. */}
+                            {SERVICE_SUBURBS.map((suburb) => (
+                              <option key={suburb} value={suburb}>{suburb}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <label className="flex items-center gap-2.5 cursor-pointer pt-0.5">
+                          <input
+                            type="checkbox"
+                            checked={addressDraft.isDefault}
+                            onChange={(e) => setAddressDraft({ ...addressDraft, isDefault: e.target.checked })}
+                            className="accent-brand-sage w-3.5 h-3.5 cursor-pointer"
+                          />
+                          <span className="text-[11px] text-stone-300">Collect from here by default</span>
+                        </label>
+
+                        <div className="flex gap-2.5 pt-1">
+                          <button
+                            type="button"
+                            onClick={saveAddressDraft}
+                            disabled={addressSaving}
+                            className={`flex-1 py-2.5 rounded-xl text-[10px] font-bold font-sans uppercase tracking-widest transition-all ${
+                              addressSaving
+                                ? 'bg-white/10 text-stone-500 cursor-not-allowed'
+                                : 'bg-brand-sage text-white hover:bg-brand-sage-light cursor-pointer'
+                            }`}
+                          >
+                            {addressSaving ? 'Saving…' : 'Save Address'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAddressDraft(null);
+                              setAddressError('');
+                            }}
+                            disabled={addressSaving}
+                            className="px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-stone-300 rounded-xl text-[10px] font-bold font-sans uppercase tracking-widest transition-all cursor-pointer disabled:cursor-not-allowed"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

@@ -255,10 +255,10 @@ rider app over the LAN.
 | `GET /riders`, `GET/PATCH /riders/:id` | Roster, presence and live telemetry — all behind a courier session; a rider may only PATCH their own record |
 | `GET/POST /messages` | One conversation per job, all three surfaces. `?orderId=` is any party to that job; without it, the whole board's traffic, supervisor only and paged (`?limit=`, default 500) |
 | `GET/POST /notifications`, `POST /notifications/:id/read` | Rider alerts |
-| `GET/PUT /accounts` | Customer accounts |
-| `GET/POST /transactions` | Payment ledger; `?email=` scopes it to one customer |
-| `GET /jobs` | Canonical records, for debugging |
-| `POST /reset` | Empty the ledger back to a fresh install |
+| `GET/PUT /accounts`, `PUT /accounts/addresses` | Customer accounts and the saved address book. `GET` is the desk's directory; `PUT` writes the caller's own record |
+| `GET /transactions` | Payment ledger, scoped by the token: a customer's own statement, or the whole ledger for the desk. Read-only — every row is written server-side by a wallet movement |
+| `GET /jobs` | Canonical records, for debugging. Supervisor only |
+| `POST /reset` | Empty the ledger back to a fresh install. Supervisor only, and refused outright in production |
 | `POST /chat` | Gemini-backed "Foldie" concierge chatbot |
 | `POST /paystack/initialize`, `GET /paystack/verify/:ref` | Payments |
 | `POST /paystack/webhook` | Paystack's own settlement callback. HMAC-signed with the secret key, read as raw bytes, and the only route that credits a wallet without anyone asking it to |
@@ -526,6 +526,35 @@ need; nothing is required to run the demo locally.
 | `EXPO_PUBLIC_API_URL` | mobile, client | Only if the server isn't on the dev machine |
 | `EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_KEY` | mobile, client | Standalone Android builds only |
 
+## Checks
+
+```bash
+npm test
+```
+
+Type-checks every workspace and runs the assertion suites. There is no test
+framework here: the suites are plain `*.check.ts` scripts that compare values,
+print a line each and exit non-zero, which is enough for what they cover and
+less machinery than it would replace.
+
+| | |
+|---|---|
+| `npm run lint` | `tsc --noEmit` across every workspace |
+| `npm run check` | The assertion suites only |
+| `npm test` | Both |
+
+What is covered: the pricing, membership and loyalty arithmetic
+(`packages/core/src/money.check.ts`), calendar dates, the address book, phone
+and email rules (`details.check.ts`), the courier's job assignment
+(`apps/mobile/src/store/workload.check.ts`) and the bag scanner (`scan.check.ts`).
+That is deliberately the pure-function core — the money and the dispatch rules —
+rather than the routes or the screens.
+
+The two builds run `tsc --noEmit` before they emit anything. That is not
+redundant with `npm run lint`: Vite and esbuild both strip types without checking
+them, so a type error used to produce a clean build and a runtime crash. It has
+done exactly that at least once.
+
 ## Building for production
 
 ```bash
@@ -536,6 +565,11 @@ npm start
 `build` compiles the website to `apps/web/dist` and bundles the server to
 `apps/server/dist/server.cjs`. `start` runs the server, which serves the website
 itself — one process, one port.
+
+The website is split: the marketing page is the entry chunk, and the client
+portal, the supervisor desk, the booking form and the map libraries are fetched
+when something asks for them. A visitor who never opens the portal never
+downloads it.
 
 ## Credentials
 
@@ -553,34 +587,20 @@ fills with people who registered; see [The database](#the-database).
 
 ## Known limitations
 
-- **The booking write routes are still open.** All three roles authenticate now,
-  but `POST/PATCH/DELETE /bookings` and `PATCH /orders/:id/status` do not check
-  who is calling. The supervisor desk needs a login to *open*, and its roster
-  actions are authorised — but the ledger edits it makes travel over routes that
-  would accept them from anyone. Requiring the desk token on those writes is the
-  remaining half of this work.
+Kept honest deliberately: several entries here described work that had since been
+done, which is worse than no list — it understated the product to anyone reading
+it and pointed a contributor at problems that were already closed. What follows
+is what is actually open.
+
 - **A courier's PIN is four digits.** That is the right shape for someone
   wearing gloves at a doorstep and the wrong shape for resisting a guessing
-  attack: 10,000 possibilities and no rate limit on `POST /riders/login`. The
-  handful of failed attempts a real thief needs would go unnoticed. Locking an
-  account after a few misses is the smallest fix; the login already returns one
-  message for "wrong PIN" and "no such courier", so it leaks nothing about who
-  is on the roster.
-- **Collection codes are only as private as `GET /api/bookings`.** That route
-  is unauthenticated, and the booking projection now carries `pickupOtp`, so
-  anyone who can reach the API can read every customer's code and walk up to a
-  door with it. The code raises the bar against an opportunist, not against
-  someone who has found the API. Scoping that route to the signed-in customer
-  is the fix, and it is the same work as authorizing the write routes below.
-- **`PATCH /orders/:id/status` is unauthenticated**, and the customer app uses
-  it to sign for its own delivery. That is the correct actor for that
-  transition, but nothing on the server proves the caller owns the job — the
-  handover code is checked on the device, not at the API. Authorizing the write
-  routes closes this along with the point above.
+  attack. `POST /riders/login` is now rate-limited — eight attempts per employee
+  ID per quarter hour, and thirty per address — which puts a full walk of the
+  10,000-key space beyond three hundred hours. The limiter is in-memory, so it
+  resets on deploy and is per-instance; a longer PIN, or a lockout recorded on
+  the roster row, is the stronger fix.
 - **Sessions are bearer tokens in `localStorage`**, which is XSS-readable. A
   same-site HTTP-only cookie would be the stronger choice.
-- **No rate limiting** on `/api/auth/login`, so nothing slows down an
-  online password-guessing attempt.
 - **CORS defaults to permissive in development** so a phone on the LAN can
   reach the API. Set `CORS_ORIGINS` in production; leaving it unset there blocks
   cross-origin requests and logs a warning.
@@ -591,5 +611,37 @@ fills with people who registered; see [The database](#the-database).
   report a courier 200 km from a pickup. That means the courier does not appear
   to move unless the phone does — there is no longer anything driving the map
   on its own.
-- **Sync is polling**, every 4–5 seconds. Fine at this scale; websockets or SSE
+- **Sync is polling**, every 4-5 seconds. Fine at this scale; websockets or SSE
   would be the upgrade.
+- **Twi, Ga and Ewe are drafts.** The customer app offers five languages and
+  two of them are finished. `translate` falls back key by key rather than
+  dropping a whole language, and the settings screen badges each one and warns
+  when the language on screen is partial — so this is visible to the customer
+  rather than silent. Run `npm run i18n --workspace @freshfold/client` for the
+  coverage table, or `-- gaa` for one language's outstanding keys with the
+  English beside them. Finishing them needs a speaker, not a developer.
+- **`read` on a notification is one shared flag**, not per-recipient state, so
+  the desk and the customer clearing the same notice clear it for both.
+- **The in-memory rate limiters are per-instance.** Two servers behind a load
+  balancer allow twice the stated rate between them. That is the honest cost of
+  not having Redis here, and it still turns an unbounded number of attempts into
+  a bounded one.
+
+### Closed since this list was written
+
+Left here because the list said otherwise for a while, and anyone who read it
+then should be able to see what changed.
+
+- ~~The booking write routes are open.~~ Every read and write of a booking goes
+  through `resolveBookingAccess` — supervisor, the customer it belongs to, the
+  courier holding it, or a tracking token. See `apps/server/src/booking-access.ts`.
+- ~~`PATCH /orders/:id/status` is unauthenticated.~~ Behind the same check, with
+  per-actor rules: a courier may only move a job they hold, and a customer may
+  complete their own delivery but may not waive the code.
+- ~~`GET /api/bookings` is unauthenticated, so collection codes are public.~~
+  Scoped by the token: a customer's own orders, or the whole board for the desk.
+- ~~No rate limiting on `/api/auth/login`.~~ All three credential routes —
+  customer, courier and supervisor — are limited per account and per address.
+- ~~`POST /api/transactions` lets a signed-in customer write ledger rows.~~
+  Removed. Every row a customer can cause is written server-side by `topUp`,
+  `charge` or `redeem`, in the same transaction as the balance it explains.

@@ -45,6 +45,39 @@ export default defineConfig(({ mode }) => {
     optimizeDeps: {
       exclude: ['@freshfold/core'],
     },
+    build: {
+      rollupOptions: {
+        output: {
+          /**
+           * Vendor chunks, named explicitly.
+           *
+           * The lazy imports in `App.tsx` split our own screens out of the first
+           * load, but they are not enough on their own: a module reachable from
+           * two different dynamic imports gets hoisted to their common ancestor,
+           * which is the entry. Leaflet and the Google Maps bindings are needed
+           * by both the booking form and the client portal, so both ended up
+           * back in the chunk every marketing visitor downloads.
+           *
+           * Naming them here pins each to its own file, fetched when something
+           * that needs it is. The map libraries are the ones that matter — they
+           * are the largest single thing on the site and no visitor who does not
+           * open a map has any use for them.
+           *
+           * `react` is split for the opposite reason: everything needs it, so a
+           * chunk of its own is one that can stay in a browser cache across a
+           * deploy that only changed our code.
+           */
+          manualChunks: {
+            react: ['react', 'react-dom'],
+            motion: ['motion'],
+            maps: ['leaflet', '@vis.gl/react-google-maps'],
+          },
+        },
+      },
+      // The entry is what this was really about; a warning that fires on a
+      // deliberately-large vendor chunk is one people learn to scroll past.
+      chunkSizeWarningLimit: 700,
+    },
     server: {
       port: 3000,
       // Everything under /api belongs to the dispatch server, which the rider

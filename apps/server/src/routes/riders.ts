@@ -21,6 +21,7 @@ import {
 } from '../auth';
 import { deskActor, recordAudit } from '../audit';
 import { hashPassword, sanitizeRider, verifySecret } from '../passwords';
+import { credentialLimit } from '../rateLimit';
 import { store, type StoredRider } from '../store';
 import { guard, notFound } from '../helpers';
 
@@ -121,9 +122,22 @@ export const ridersRouter = Router();
  * The phone number is accepted as an alternative identifier because a courier
  * who has forgotten their employee ID has certainly not forgotten their own
  * number. Both resolve to the same record.
+ *
+ * The tightest limit of the three login routes, because this credential is the
+ * weakest: a PIN is four digits, which is the right shape for someone wearing
+ * gloves at a doorstep and a 10,000-key space to anybody with a script. Eight
+ * attempts a quarter-hour puts a full walk of that space beyond three hundred
+ * hours, while still leaving a courier who has fat-fingered it in the rain
+ * several more goes than they will need.
  */
 ridersRouter.post(
   '/login',
+  ...credentialLimit({
+    perIdentifier: 8,
+    perAddress: 30,
+    windowMs: 15 * 60 * 1000,
+    field: 'identifier',
+  }),
   guard(async (req, res) => {
     const { identifier, pin } = (req.body ?? {}) as { identifier?: string; pin?: string };
 

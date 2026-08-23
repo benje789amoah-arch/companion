@@ -35,6 +35,9 @@ import {
   deriveSuburb,
   encodeFinish,
   isCompletePhone,
+  isEmailShaped,
+  isoDaysFromNow,
+  isoPlusDays,
   limitPhoneInput,
   membershipBookingQuote,
   membershipPlan,
@@ -347,6 +350,14 @@ export default function BookScreen() {
           if (method === 'Wallet' && walletBalance < total) {
             return t('book.error.walletShort', { amount: formatCedis(walletBalance, locale) });
           }
+          // Paying online is the one choice an email is not optional for.
+          // Paystack sends the receipt there, and `/accounts/wallet` matches
+          // that address against the session before it credits anything — so a
+          // payment made without one is collected and then refused. Asked for
+          // here, before the checkout opens, rather than after the money moves.
+          if (method === 'Paystack' && !isEmailShaped(email)) {
+            return t('book.error.paystackEmail');
+          }
           return null;
       }
     },
@@ -356,6 +367,7 @@ export default function BookScreen() {
       pickupPin,
       name,
       phone,
+      email,
       method,
       isAuthenticated,
       walletBalance,
@@ -402,7 +414,9 @@ export default function BookScreen() {
 
     try {
       checkout = await api.initializePayment({
-        email: email || 'patron@freshfold.com',
+        // `stepValid(4)` has already refused this method without a real address,
+        // so there is nothing to fall back to and nothing to invent.
+        email: email.trim(),
         amount: total,
         // Back into this app, not to a website. Without it Paystack follows
         // the server's `APP_URL` and drops a phone on a localhost page that
@@ -495,7 +509,22 @@ export default function BookScreen() {
       const booking: Booking = {
         id,
         name: name.trim(),
-        email: (email || 'patron@freshfold.com').trim().toLowerCase(),
+        /**
+         * Blank when the customer left it blank, which the hint above says is
+         * allowed.
+         *
+         * It used to fall back to `'patron@freshfold.com'`, and that address is
+         * not inert — it is what the job is filed under. `jobs.list` scopes a
+         * customer's history with `customer_email = <their address>`, so every
+         * guest booking made from this screen without an email was filed under
+         * one shared address, and anyone who registered it would have been
+         * handed the lot by `GET /api/bookings`: names, addresses, phone
+         * numbers and the `pickupOtp` a courier is asked for at the door.
+         *
+         * An empty string cannot be registered — `/auth/register` requires an
+         * address — so it matches no account and nothing collects under it.
+         */
+        email: email.trim().toLowerCase(),
         phone: phone.trim(),
         serviceType: service.name,
         // No `planId` here on purpose. The server reads the membership off the
@@ -1332,17 +1361,18 @@ function SummaryRow({
 }
 
 
-function isoDaysFromNow(days: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() + days);
-  return date.toISOString().split('T')[0];
-}
-
+/**
+ * `days` after a pickup date, falling back when the field is not a date yet.
+ *
+ * The arithmetic moved to `@freshfold/core` — the website's booking form had
+ * its own copy of these two, and a delivery date computed one way here and
+ * another way there is exactly the drift that package exists to stop. What is
+ * left is the fallback, which is this screen's business: `isoPlusDays` returns
+ * null for a half-typed date rather than guessing, and what to show instead is
+ * a question about this form.
+ */
 function isoDaysAfter(iso: string, days: number): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return isoDaysFromNow(days + 1);
-  date.setDate(date.getDate() + days);
-  return date.toISOString().split('T')[0];
+  return isoPlusDays(iso, days) ?? isoDaysFromNow(days + 1);
 }
 
 const styles = StyleSheet.create({

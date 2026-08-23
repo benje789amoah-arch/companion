@@ -794,12 +794,25 @@ accountsRouter.delete(
 );
 
 /**
- * The payment ledger.
+ * The payment ledger. Read-only.
  *
- * Both routes were open. `GET` took the address to scope by out of the query
- * string, so it answered any customer's statement to anyone who knew their email
- * — and the whole ledger, every customer's payments, to a caller who passed
- * nothing. `POST` let that caller write rows into it.
+ * It used to be open in both directions. `GET` took the address to scope by out
+ * of the query string, so it answered any customer's statement to anyone who
+ * knew their email — and the whole ledger, every customer's payments, to a
+ * caller who passed nothing. That is fixed below: the token decides the scope.
+ *
+ * `POST` is gone entirely rather than fixed. Putting it behind a session and
+ * forcing `userEmail` off the token closed the worst of it, but the row's
+ * `amount`, `method` and `status` still came from the request — so any signed-in
+ * customer could file `₵5,000, Successful` against themselves. That moves no
+ * money, `/accounts/wallet` owning every balance change, but the desk's
+ * financials panel adds these rows up and reports the total as revenue.
+ *
+ * Nothing called it. The one client method that did (`recordTransaction`) was
+ * itself unreachable from any screen — every ledger row a customer can cause is
+ * written server-side by `topUp`, `charge` or `redeem`, in the same transaction
+ * as the balance it explains. A write endpoint with no writer is a hole with no
+ * feature behind it, so this is a deletion rather than a repair.
  */
 export const transactionsRouter = Router();
 
@@ -817,33 +830,5 @@ transactionsRouter.get(
     res.json(
       await store.transactions.list(lister.kind === 'supervisor' ? null : lister.account.email)
     );
-  })
-);
-
-transactionsRouter.post(
-  '/',
-  requireAuth,
-  guard(async (req, res) => {
-    const incoming = req.body as PaymentTransaction;
-    if (!incoming?.reference) {
-      res.status(400).json({ error: 'A transaction needs a reference.' });
-      return;
-    }
-
-    // The reference is the identity that matters — it is what Paystack echoes
-    // back on a verify, and what the upsert matches on. `id` is a primary key
-    // now rather than a field in an object, so a client that omitted one used
-    // to store a record with `id: undefined` and would now fail the insert.
-    //
-    // `userEmail` comes off the session rather than the body: a row filed
-    // against somebody else's address is a line on their statement, and this
-    // route accepted whatever it was handed.
-    const transaction = await store.transactions.upsert({
-      ...incoming,
-      id: incoming.id || incoming.reference,
-      userEmail: req.account!.email,
-    });
-
-    res.status(201).json(transaction);
   })
 );

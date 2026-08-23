@@ -18,7 +18,9 @@
     "reset": "curl -X POST http://localhost:4000/api/reset",
     "build": "npm run build --workspace @freshfold/web && npm run build --workspace @freshfold/server",
     "start": "npm run start --workspace @freshfold/server",
-    "lint": "npm run lint --workspaces --if-present"
+    "lint": "npm run lint --workspaces --if-present",
+    "check": "npm run check --workspaces --if-present",
+    "test": "npm run lint --workspaces --if-present && npm run check --workspaces --if-present"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
