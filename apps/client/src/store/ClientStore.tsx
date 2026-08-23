@@ -117,8 +117,21 @@ function mergedBook(
 ): SavedAddress[] {
   if (localBook.length === 0) return accountBook ?? [];
 
+  /**
+   * Which entry the account says is the default, so a local copy of that entry
+   * can carry the flag through the replacement below.
+   *
+   * Clearing the flag from every local entry alike was not enough. `withAddress`
+   * overwrites the whole entry it matches by id, so a device copy of the
+   * account's *own* default replaced it with a version claiming nothing — the
+   * book came out with no claimant at all and the normaliser promoted whichever
+   * address happened to be first. The customer's choice moved to another
+   * address, on a render, with nothing having been tapped.
+   */
+  const claimed = accountBook?.find((address) => address.isDefault)?.id;
+
   const local = accountBook?.length
-    ? localBook.map((address) => ({ ...address, isDefault: false }))
+    ? localBook.map((address) => ({ ...address, isDefault: address.id === claimed }))
     : localBook;
 
   // `withAddress` one at a time rather than concatenating: it is what settles
@@ -1293,6 +1306,25 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       }
 
       applyAccount({ ...account, addresses: next });
+      /**
+       * And in the device copy, if that is where this entry still lives.
+       *
+       * The copy is not cleared until the server has taken the book, and
+       * `mergedBook` folds it back over the account's on every render — so
+       * editing an address the server has not seen yet wrote the change onto the
+       * account and then had the older copy of it laid straight back on top. The
+       * sheet closed and the room number was unchanged, with nothing on screen
+       * saying why.
+       *
+       * Only entries already in the copy are touched. Putting a new one there
+       * would add an address the server is not missing to the list of addresses
+       * the server is missing, and that list is the only reason the copy exists.
+       */
+      commit((current) =>
+        current.addresses.some((saved) => saved.id === address.id)
+          ? { ...current, addresses: withAddress(current.addresses, address) }
+          : current
+      );
       enqueue({ kind: 'addresses:save', addresses: next });
     },
     [account, addresses, applyAccount, commit, enqueue]
@@ -1310,6 +1342,14 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       }
 
       applyAccount({ ...account, addresses: next });
+      // Out of the device copy as well, for the reason `saveAddress` gives just
+      // above: a copy still holding it has `mergedBook` put it straight back,
+      // and the bin then looks like it did nothing at all.
+      commit((current) =>
+        current.addresses.some((saved) => saved.id === id)
+          ? { ...current, addresses: withoutAddress(current.addresses, id) }
+          : current
+      );
       enqueue({ kind: 'addresses:save', addresses: next });
     },
     [account, addresses, applyAccount, commit, enqueue]

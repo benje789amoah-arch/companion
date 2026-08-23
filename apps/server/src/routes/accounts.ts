@@ -373,10 +373,17 @@ accountsRouter.delete(
      * the account cancels nothing, it removes the person the courier would ring
      * from the gate. The wording differs because a customer cannot block their
      * own account, and telling them to would be nonsense.
+     *
+     * Scoped by phone as well as by email, and it has to be: `jobs.list` reads
+     * `customer_email or customer_phone_key`, and `GET /bookings` already asks
+     * it for both — so an order this customer booked as a visitor, before they
+     * registered, is one they can see in the app. Asking by email alone let
+     * exactly that order through: the app showed a pickup still out and the
+     * delete succeeded anyway, which is the case this refusal exists for.
      */
-    const live = (await store.jobs.list({ email: account.email })).filter(
-      (job) => !isTerminal(job.status)
-    );
+    const live = (
+      await store.jobs.list({ email: account.email, phone: account.phone ?? null })
+    ).filter((job) => !isTerminal(job.status));
 
     if (live.length > 0) {
       const one = live.length === 1;
@@ -741,10 +748,14 @@ accountsRouter.delete(
      * underneath that does not cancel anything — it just removes the person the
      * desk would call about it. Blocking is what stops somebody mid-flight, so
      * the refusal says so.
+     *
+     * By phone too, for the reason `/me` above gives at length: the number on
+     * the job is the one that gets the courier in the gate, and a visitor's
+     * order carries that number and no email at all.
      */
-    const live = (await store.jobs.list({ email: account.email })).filter(
-      (job) => !isTerminal(job.status)
-    );
+    const live = (
+      await store.jobs.list({ email: account.email, phone: account.phone ?? null })
+    ).filter((job) => !isTerminal(job.status));
 
     if (live.length > 0) {
       res.status(409).json({
