@@ -17,9 +17,9 @@
  *   whole key at a glance.
  * - Placeholders are `{name}`, filled by the second argument to `t()`.
  * - Counted phrases get two keys and the call site picks — `orders.one` against
- *   `orders.many`. No plural machinery: Twi, Ga and Ewe do not inflect a noun
- *   for number the way English does, so a rule engine tuned to English would be
- *   deciding something the language does not ask about.
+ *   `orders.many`. No plural machinery: English, Spanish and French all split at
+ *   exactly one, so `count === 1` at the call site is the entire rule, and a
+ *   plural engine would be three hundred lines deciding that.
  * - The wording here is the wording that was already on the screen. This layer
  *   moves strings; it does not rewrite them.
  */
@@ -41,7 +41,7 @@ export const en = {
    * The primary call to action, said in two places — the home hero and the empty
    * orders list on the account tab. One key because it is one button going to
    * one place, and two copies of a button label is how they end up worded
-   * differently in Twi.
+   * differently in Spanish.
    */
   'common.schedulePickup': 'Schedule a pickup',
   /** Said on both the account tab and the settings header. */
@@ -377,7 +377,7 @@ export const en = {
    * One sentence in two keys, because the reference between them is bold.
    *
    * The split assumes the reference comes after the word for "reference", which
-   * holds for the five languages here. A language that puts it elsewhere needs a
+   * holds for all three languages here. A language that puts it elsewhere needs a
    * third arrangement, not a translation of these two.
    */
   'book.done.bodyBefore': 'Reference',
@@ -424,8 +424,7 @@ export const en = {
   'track.action.chat': 'Conversation',
   'track.action.chatCaption': 'Message dispatch',
   // Two keys and the call site picks, which is how counted phrases are done
-  // throughout this dictionary — Twi, Ga and Ewe do not inflect the noun for
-  // number, so plural machinery would exist to serve English alone.
+  // throughout this dictionary. See the note at the top of the file.
   'track.action.chatOne': '1 message',
   'track.action.chatMany': '{count} messages',
   'track.action.full': 'Full order',
@@ -623,7 +622,7 @@ export const en = {
   //
   // The five reasons are copy *and* payload: tapping one writes it into the note
   // that goes onto the job record and into the courier's thread. Translating them
-  // means the desk can be handed a report in Twi — which is already true of the
+  // means the desk can be handed a report in Spanish — which is already true of the
   // field below them, where a customer types in whatever language they think in,
   // and the desk is in Accra. A canned reason that stayed English would be the odd
   // one out.
@@ -838,12 +837,16 @@ export const en = {
   /** Sits on any language the dictionary does not yet fully cover. */
   'settings.language.partial': 'Draft',
   /**
-   * Said on the screen, not only in a commit message. The Twi, Ga and Ewe copy
-   * is a first draft awaiting a native speaker, and a customer who reads it
-   * should know that before they report the app as broken rather than as rough.
+   * Said on the screen, not only in a commit message. Both translations are
+   * complete but neither has been read by a native speaker, and a customer who
+   * finds an awkward sentence should know that before they report the app as
+   * broken rather than as rough.
    *
-   * Worded with `{language}` rather than naming the three, so it stays true as
-   * dictionaries fill in and needs no edit when one of them is finished.
+   * Worded with `{language}` rather than naming them, so it stays true as
+   * dictionaries are reviewed and needs no edit when one of them is signed off.
+   *
+   * Only shown when `coverage()` is under 1, so a finished-and-reviewed language
+   * simply stops showing it once its keys are all present.
    */
   'settings.language.draft':
     '{language} is still being worked on: parts of the app still read in English, and the rest is a first draft a native speaker has yet to go over. Tell us what reads wrong and we will fix it.',
@@ -948,7 +951,7 @@ export const en = {
   'addresses.confirmRemove': 'Remove this address?',
   // The ceiling is `MAX_SAVED_ADDRESSES` in @freshfold/core, passed in as
   // `{max}` rather than written out here: the server refuses a book longer than
-  // that, and a number typed into five dictionaries is a number that will
+  // that, and a number typed into three dictionaries is a number that will
   // disagree with it one day.
   'addresses.full': 'Saved addresses are limited to {max}. Remove one to add another.',
 

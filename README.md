@@ -613,13 +613,21 @@ is what is actually open.
   on its own.
 - **Sync is polling**, every 4-5 seconds. Fine at this scale; websockets or SSE
   would be the upgrade.
-- **Twi, Ga and Ewe are drafts.** The customer app offers five languages and
-  two of them are finished. `translate` falls back key by key rather than
-  dropping a whole language, and the settings screen badges each one and warns
-  when the language on screen is partial — so this is visible to the customer
-  rather than silent. Run `npm run i18n --workspace @freshfold/client` for the
-  coverage table, or `-- gaa` for one language's outstanding keys with the
-  English beside them. Finishing them needs a speaker, not a developer.
+- **Neither translation has been read by a native speaker.** The customer app
+  reads in English, Spanish and French, and all three dictionaries are complete —
+  but the Spanish and the French were both drafted rather than reviewed, and want
+  a speaker's pass before release. `translate` falls back key by key, so a string
+  added to English shows in English on that one label rather than dropping the
+  whole language, and the settings screen badges any language whose keys are not
+  all present. Run `npm run i18n --workspace @freshfold/client` for the coverage
+  table, or `-- es` for one language's outstanding keys with the English beside
+  them.
+
+  Twi, Ga and Ewe were offered for a while and are gone. They reached 21%, 12%
+  and 1% and were withdrawn rather than finished: a language in a picker that is
+  a fifth written is a worse promise than one not offered. The machinery that
+  carried them is unchanged, so adding a language back is a dictionary file, a
+  line in `LOCALES` and a label.
 - **`read` on a notification is one shared flag**, not per-recipient state, so
   the desk and the customer clearing the same notice clear it for both.
 - **The in-memory rate limiters are per-instance.** Two servers behind a load

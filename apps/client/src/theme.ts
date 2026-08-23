@@ -225,11 +225,11 @@ export function nowLabel(locale: Locale = 'en'): string {
 }
 
 /**
- * `2026-08-11` -> `Tue, 11 Aug` (`mar. 11 août` in French). Falls back to the raw
- * string if unparseable.
+ * `2026-08-11` -> `Tue, 11 Aug` (`mar. 11 août` in French, `mar, 11 ago` in
+ * Spanish). Falls back to the raw string if unparseable.
  *
- * Twi, Ga and Ewe fall through to English day and month names — see
- * {@link intlTag} for why, and for what a native speaker could improve.
+ * All three languages have full day and month names in `Intl`, so none of them
+ * falls through to English here — see {@link intlTag} for which tag each gets.
  */
 export function formatDate(value?: string, locale: Locale = 'en'): string {
   if (!value) return translate(locale, 'common.blank');
@@ -269,8 +269,8 @@ export function courierVehicle(
  * Coarse on purpose, and the same four buckets in every language — the exact
  * second a courier's telemetry landed is not something anybody acts on. The
  * wording comes from `time.*` keys so a language can put the number where its
- * grammar wants it: English trails the unit, French leads with `il y a`, Twi
- * closes with `a atwam`.
+ * grammar wants it: English trails the unit (`4m ago`), while French and Spanish
+ * both lead (`il y a 4 min`, `hace 4 min`).
  */
 export function relativeTime(iso?: string, locale: Locale = 'en'): string {
   if (!iso) return '';

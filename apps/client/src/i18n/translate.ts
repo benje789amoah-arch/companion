@@ -4,10 +4,8 @@
  */
 
 import { en, type TranslationKey } from './en';
-import { ee } from './ee';
+import { es } from './es';
 import { fr } from './fr';
-import { gaa } from './gaa';
-import { tw } from './tw';
 import type { Locale } from './locales';
 
 /**
@@ -23,9 +21,7 @@ export type Translate = (key: TranslationKey, values?: TranslateValues) => strin
 
 const DICTIONARIES: Record<Locale, Partial<Record<TranslationKey, string>>> = {
   en,
-  tw,
-  gaa,
-  ee,
+  es,
   fr,
 };
 
@@ -34,11 +30,14 @@ const PLACEHOLDER = /\{(\w+)\}/g;
 /**
  * The string for this key in this language, falling back key by key.
  *
- * Key by key, not file by file: the Twi, Ga and Ewe dictionaries are partial on
- * purpose — they carry what has actually been translated and no more — so a
- * missing key has to fall through to English on its own rather than dropping the
- * whole language back. A half-translated screen is the honest picture of a
- * half-translated app, and it is legible; a screen of empty labels is not.
+ * Key by key, not file by file. Both non-English dictionaries are complete
+ * today, so nothing falls through — but a string added to `en` is a string the
+ * other two do not have until somebody writes it, and that gap is measured in
+ * hours or weeks rather than never. Falling back per key means the screen that
+ * gained the string reads in English on it and in Spanish everywhere else,
+ * instead of the whole language dropping back because one label is new.
+ *
+ * `coverage` below is what makes that gap visible rather than silent.
  *
  * An empty string counts as missing for the same reason: whatever put it there,
  * a blank label is never the intended answer.

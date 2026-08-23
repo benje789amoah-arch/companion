@@ -15,7 +15,7 @@ import { STORAGE_KEYS, readJson, writeJson } from '../services/storage';
  * device-local by necessity: `UserAccount` has no preferences field, so there is
  * nowhere on the server to put them. That is the right answer for most of them
  * anyway — biometric unlock is a property of the handset, and a customer reading
- * in Twi on their phone has not said anything about the browser they use.
+ * in Spanish on their phone has not said anything about the browser they use.
  *
  * One owner for `STORAGE_KEYS.preferences`, deliberately. `biometricEnabled`
  * used to be written here by `SessionStore` with a whole-object `writeJson`,

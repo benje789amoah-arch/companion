@@ -9,10 +9,10 @@ import type { TranslationKey } from './en';
  * French.
  *
  * **Drafted here and not yet read by a native speaker.** It wants one before
- * release. Of the four non-English dictionaries this is the one to trust most —
- * it is complete, and the register is deliberately the same slightly plain,
+ * release. Complete, and the register is deliberately the same slightly plain,
  * unhurried voice the English copy uses rather than the clipped imperative most
- * French UI falls into.
+ * French UI falls into — `vous` throughout, which is the register the Spanish
+ * beside it matches with `usted`.
  *
  * Two choices worth knowing about:
  *

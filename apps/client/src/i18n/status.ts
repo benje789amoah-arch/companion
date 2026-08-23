@@ -13,7 +13,7 @@ import type { Translate } from './translate';
  * stays exactly where it is and keeps doing exactly what it does — turning
  * `navigating_to_pickup` into `Navigating to pickup` for the desk console and the
  * rider app, neither of which is being translated. It carries no dictionary, so it
- * could not answer in Twi even if it wanted to, and nothing that imports it needs
+ * could not answer in Spanish even if it wanted to, and nothing that imports it needs
  * it to.
  *
  * Each key name is built from the union type, which makes this exhaustive by

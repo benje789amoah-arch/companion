@@ -7,16 +7,21 @@
  * Which languages the app reads in, and how a handset's own setting maps onto
  * them.
  *
+ * Three: English, Spanish and French. The app shipped for a while with Twi, Ga
+ * and Ewe alongside these — they were withdrawn rather than finished, because a
+ * language offered in a picker and then only a fifth written is a worse promise
+ * than one not offered at all.
+ *
  * Kept in its own module, apart from both the dictionaries and the React hook,
  * so that `theme.ts` — which every screen in the app imports — can take the
- * `Locale` type and the number formats without dragging five dictionaries and
+ * `Locale` type and the number formats without dragging three dictionaries and
  * React through the module graph behind them.
  */
 
-export type Locale = 'en' | 'tw' | 'gaa' | 'ee' | 'fr';
+export type Locale = 'en' | 'fr' | 'es';
 
-/** In the order the picker shows them: English first, then Ghana, then French. */
-export const LOCALES: Locale[] = ['en', 'tw', 'gaa', 'ee', 'fr'];
+/** In the order the picker shows them. English first, then alphabetically. */
+export const LOCALES: Locale[] = ['en', 'es', 'fr'];
 
 /**
  * What to call each language on screen.
@@ -28,14 +33,17 @@ export const LOCALES: Locale[] = ['en', 'tw', 'gaa', 'ee', 'fr'];
  */
 export const LOCALE_LABELS: Record<Locale, { name: string; english: string }> = {
   en: { name: 'English', english: 'English' },
-  tw: { name: 'Twi', english: 'Twi · Akan' },
-  gaa: { name: 'Gã', english: 'Ga' },
-  ee: { name: 'Eʋegbe', english: 'Ewe' },
+  es: { name: 'Español', english: 'Spanish' },
   fr: { name: 'Français', english: 'French' },
 };
 
 /**
- * `ak-GH` -> `tw`. Anything we do not publish reads as English.
+ * `es-MX` -> `es`. Anything we do not publish reads as English.
+ *
+ * The region is dropped deliberately. There is one Spanish dictionary and one
+ * French one, written to be read anywhere they are spoken, so `es-AR`, `es-ES`
+ * and `es-419` all resolve to the same file — matching on the region would only
+ * create a way to miss.
  *
  * Split off from {@link deviceLocale} so the mapping can be exercised without a
  * device to set the language on.
@@ -46,16 +54,8 @@ export function localeFromTag(tag: string): Locale {
   switch (primary) {
     case 'fr':
       return 'fr';
-    // Twi is a dialect of Akan and `ak` is the code for the macrolanguage, so a
-    // handset set to Akan is asking for the one Akan dictionary we have.
-    case 'ak':
-    case 'tw':
-    case 'twi':
-      return 'tw';
-    case 'gaa':
-      return 'gaa';
-    case 'ee':
-      return 'ee';
+    case 'es':
+      return 'es';
     default:
       return 'en';
   }
@@ -66,11 +66,10 @@ export function localeFromTag(tag: string): Locale {
  *
  * Read through `Intl` rather than through `expo-localization`. The dependency
  * would give a more precise answer than this one; in this product it would not
- * give a *different* answer. A phone sold in Ghana reports `en-GH` whether or
- * not the person holding it reads Twi, so detection lands on English for very
- * nearly every customer however it is read — the picker in settings is what
- * actually moves somebody into Twi, Ga or Ewe, and that is the mechanism worth
- * getting right.
+ * give a *different* answer. A phone sold in Ghana reports `en-GH`, so detection
+ * lands on English for very nearly every customer however it is read — the
+ * picker in settings is what actually moves somebody into Spanish or French, and
+ * that is the mechanism worth getting right.
  *
  * A runtime without `Intl` therefore costs nothing: English is where detection
  * was going anyway.
@@ -97,16 +96,25 @@ export function resolveLocale(preference: Locale | 'system'): Locale {
 /**
  * The BCP 47 tag to hand `Intl` for dates and times.
  *
- * Only French gets its own. `Intl` carries no date data for Twi, Ga or Ewe — no
- * runtime we ship on does — so those three format on `en-GH`, which is what
- * Ghana writes dates in anyway. The consequence is visible and worth stating: a
- * customer reading the app in Twi still sees `Tue, 11 Aug`. Akan day names
- * (Dwoada, Benada, Wukuada…) are well established and would be a good thing for
- * a native speaker to add later; inventing month names is not.
+ * Every language here has full date data in `Intl`, so each gets its own tag and
+ * a customer reading in Spanish sees `mar, 11 ago` rather than `Tue, 11 Aug`.
+ *
+ * The region on each is a choice about *format*, not about who is reading:
+ * `es-ES` and `fr-FR` both write day-month-year, which is what Ghana writes, so
+ * a date is legible to the same reader whichever of the three they pick. English
+ * stays on `en-GH` for the same reason — `en-US` would put the month first and
+ * be the odd one out.
  *
  * The tag is fixed per language rather than taken from the handset so that two
  * customers reading the same screen in the same language see the same thing.
  */
 export function intlTag(locale: Locale): string {
-  return locale === 'fr' ? 'fr-FR' : 'en-GH';
+  switch (locale) {
+    case 'fr':
+      return 'fr-FR';
+    case 'es':
+      return 'es-ES';
+    default:
+      return 'en-GH';
+  }
 }

@@ -7,16 +7,18 @@
  * What is left to translate, per language.
  *
  * Run with `npm run i18n --workspace @freshfold/client`, or
- * `npm run i18n --workspace @freshfold/client -- tw` for one language's
+ * `npm run i18n --workspace @freshfold/client -- es` for one language's
  * outstanding keys, ready to paste into a translator's brief.
  *
- * This is a report, not a check: it never fails. Twi, Ga and Ewe are partial on
- * purpose — `translate` falls back key by key and the settings screen badges
- * each language and warns when the one on screen is a draft — so an incomplete
- * dictionary is a known state of the product rather than a broken build. What
- * was missing was any way to see *how* incomplete without counting by hand,
- * which is the difference between "Ga needs finishing" and a list somebody who
- * speaks Ga can actually work through.
+ * This is a report, not a check: it never fails. An incomplete dictionary is a
+ * known state of the product rather than a broken build — `translate` falls back
+ * key by key, and the settings screen badges each language and warns when the
+ * one on screen is a draft.
+ *
+ * All three are complete today. This exists for the state after somebody adds a
+ * string to `en`: it names exactly which keys the other two are now missing,
+ * which is the difference between "Spanish needs finishing" and a list somebody
+ * who speaks Spanish can actually work through.
  *
  * The keys come out grouped by their prefix, because that is roughly a screen:
  * a translator who takes `book.*` in one sitting produces a consistent booking
@@ -25,13 +27,11 @@
  */
 
 import { en, type TranslationKey } from './en';
-import { ee } from './ee';
+import { es } from './es';
 import { fr } from './fr';
-import { gaa } from './gaa';
-import { tw } from './tw';
 import { LOCALES, LOCALE_LABELS, type Locale } from './locales';
 
-const DICTIONARIES: Record<Locale, Partial<Record<TranslationKey, string>>> = { en, tw, gaa, ee, fr };
+const DICTIONARIES: Record<Locale, Partial<Record<TranslationKey, string>>> = { en, es, fr };
 
 /**
  * Keys deliberately left in English, and so not counted as missing.
@@ -84,7 +84,7 @@ if (!only) {
   }
 
   console.log('\nFor one language\'s outstanding keys:');
-  console.log('  npm run i18n --workspace @freshfold/client -- gaa\n');
+  console.log('  npm run i18n --workspace @freshfold/client -- es\n');
 } else {
   const missing = missingFor(only);
   const label = LOCALE_LABELS[only];

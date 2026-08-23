@@ -31,7 +31,7 @@ interface IssueReporterProps {
  *
  * Keys rather than sentences, because tapping one *writes* it into the note — the
  * chip is copy and payload at once, and what the desk reads on the job record is
- * whichever of these the customer chose. So the note can reach the desk in Twi.
+ * whichever of these the customer chose. So the note can reach the desk in Spanish.
  * That is already true of the field below, where somebody types in the language
  * they think in, and the desk is in Accra; a canned reason that stayed English
  * would be the odd one out.

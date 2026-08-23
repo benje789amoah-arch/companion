@@ -888,7 +888,7 @@ export default function BookScreen() {
                 </View>
                 <Text style={[styles.checkLabel, bookIsFull && styles.checkLabelOff]}>
                   {/* `MAX_SAVED_ADDRESSES` is the server's ceiling, passed in
-                      rather than written into five dictionaries. */}
+                      rather than written into three dictionaries. */}
                   {bookIsFull
                     ? t('addresses.full', { max: MAX_SAVED_ADDRESSES })
                     : t('book.address.save')}

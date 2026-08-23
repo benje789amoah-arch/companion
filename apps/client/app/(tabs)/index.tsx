@@ -207,8 +207,8 @@ export default function HomeScreen() {
             </View>
 
             {activeBookings.length > 1 && (
-              // Two keys and the call site picks, rather than a plural rule: Twi, Ga
-              // and Ewe do not inflect the noun for number, so plural machinery would
+              // Two keys and the call site picks, rather than a plural rule. All
+              // three languages split at exactly one, so `count === 1` is the whole
               // be English grammar imposed on dictionaries that cannot use it.
               <Text style={styles.liveMore}>
                 {activeBookings.length === 2

@@ -587,10 +587,14 @@ export default function SettingsScreen() {
           {/*
             Keyed on the language actually being rendered, not on the one tapped,
             so it covers "follow this phone" landing on a part-written language
-            too. Twi, Ga and Ewe are drafts and the app should say so on screen
-            rather than only in a commit message — a customer who knows the copy
-            is unfinished reports the wording, and a customer who does not
-            reports the app.
+            too.
+
+            Silent today: Spanish and French are both complete, so `coverage` is
+            1 for all three and this renders nothing. It stays because the state
+            it describes returns the moment somebody adds a string to `en` — and
+            a customer reading a half-translated screen should be told the copy
+            is unfinished, since one who knows reports the wording and one who
+            does not reports the app.
           */}
           {coverage(locale) < 1 && (
             <Card tone="sunken" style={styles.draftCard}>
