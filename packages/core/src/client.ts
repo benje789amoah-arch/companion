@@ -11,14 +11,26 @@ import type {
   AuditEvent,
   AuthSession,
   Booking,
+  BookingItem,
+  Claim,
+  ClaimStatus,
   Coords,
+  Garment,
+  Hub,
+  HubEvent,
+  Invoice,
+  InvoiceStatus,
   JobStatus,
   LaundryBag,
   Message,
   Notification,
   Order,
   PaymentTransaction,
+  PromoCode,
+  PromoRedemption,
+  RecurringPickup,
   RiderSession,
+  RiderShift,
   RiderState,
   RiderTelemetry,
   SavedAddress,
@@ -94,6 +106,20 @@ export const TRACKING_HEADER = 'X-FreshFold-Tracking';
 export interface BookingAuth {
   token?: string | null;
   trackingToken?: string | null;
+}
+
+/**
+ * How full one window is, on whichever leg was asked about.
+ *
+ * `remaining` and `full` are both sent rather than left for the caller to
+ * derive: two booking forms and a reschedule sheet render this, and three
+ * copies of `booked >= capacity` is three chances to write one of them as `>`.
+ */
+export interface SlotState {
+  slot: string;
+  booked: number;
+  remaining: number;
+  full: boolean;
 }
 
 /** What `POST /bookings` answers with: the booking, plus the guest's grant. */
@@ -300,12 +326,60 @@ export function createClient(options: ClientOptions) {
      * ceiling regardless, so a form working from a stale answer is refused
      * rather than overbooking.
      */
-    slotAvailability: (date: string) =>
-      request<{
+    slotAvailability: (
+      date: string,
+      options: {
+        /** Ask for the return windows on this day as well. */
+        deliveryDate?: string;
+        /**
+         * A booking whose own place should not count against the windows it
+         * holds — the reschedule screen, looking at the day its order is
+         * already booked into.
+         */
+        exclude?: string;
+      } = {}
+    ) => {
+      const query = new URLSearchParams({ date });
+      if (options.deliveryDate) query.set('deliveryDate', options.deliveryDate);
+      if (options.exclude) query.set('exclude', options.exclude);
+
+      return request<{
         date: string;
         capacity: number;
-        slots: { slot: string; booked: number; remaining: number; full: boolean }[];
-      }>(`/bookings/availability?date=${encodeURIComponent(date)}`),
+        slots: SlotState[];
+        /** Present only when `deliveryDate` was asked for. */
+        deliveryDate?: string;
+        deliveryCapacity?: number;
+        deliverySlots?: SlotState[];
+      }>(`/bookings/availability?${query.toString()}`);
+    },
+
+    /**
+     * Moves a booking to another day or window.
+     *
+     * Not a patch: `PATCH /bookings/:id` no longer writes schedule fields for
+     * anybody but the desk, because moving a booking has to ask whether it is
+     * still movable, whether the new window has room, and whether the customer
+     * has moves left. Nothing is repriced — same services, same total, same
+     * reference, same hand-off codes.
+     *
+     * `deliveryTime` is optional: leave it out to keep the return window the
+     * order already has, and the return *date* follows the new collection
+     * either way.
+     *
+     * Throws `ApiError` 409 with a `reason` from `RescheduleRefusal`, plus
+     * `'slot-full'` and `'delivery-slot-full'` for a window that has no room.
+     * The `error` on it is a sentence written for the customer.
+     */
+    rescheduleBooking: (
+      id: string,
+      change: { pickupDate: string; pickupTime: string; deliveryTime?: string },
+      auth: BookingAuth
+    ) =>
+      request<Booking>(`/bookings/${encodeURIComponent(id)}/reschedule`, {
+        ...json('POST', change),
+        headers: authHeaders(auth),
+      }),
 
     /**
      * Refunds a settled booking to the customer's wallet. Supervisor only.
@@ -397,12 +471,379 @@ export function createClient(options: ClientOptions) {
          * whichever leg the `status` names.
          */
         overrideReason?: string;
+        /**
+         * What actually happened to the load, when the desk confirms a hub
+         * stage. Recorded in `hub_events` beside the audit line: the trail
+         * answers who confirmed the wash, this answers which machine ran it.
+         */
+        hub?: { machine?: string; batch?: string; notes?: string };
       },
       auth: BookingAuth
     ) =>
       request<Order>(`/orders/${encodeURIComponent(id)}/status`, {
         ...json('PATCH', patch),
         headers: authHeaders(auth),
+      }),
+
+    // -- The laundry itself ------------------------------------------------
+
+    /**
+     * Checks a load in at the hub: what is in each bag, and what it weighs.
+     *
+     * Supervisor only. This is where `LaundryBag.itemCount` and `weight` come
+     * from — before it existed they were minted with the booking from the digits
+     * of the job id and shown to the customer as measurements.
+     *
+     * Idempotent per bag: re-checking one overwrites its count rather than
+     * adding to it, because somebody recounting is correcting themselves.
+     */
+    checkInLoad: (
+      id: string,
+      payload: {
+        bags: { id: string; itemCount?: number; weight?: string }[];
+        /** The garments worth naming. Not every sock — see `job_garments`. */
+        garments?: { bagId?: string; description: string; condition?: string }[];
+        machine?: string;
+        batch?: string;
+        notes?: string;
+      },
+      token: string
+    ) =>
+      request<Order>(`/orders/${encodeURIComponent(id)}/intake`, {
+        ...json('POST', payload),
+        headers: bearer(token),
+      }),
+
+    /** What happened to this order at the hub, and what was in it. Staff only. */
+    orderProduction: (id: string, token: string) =>
+      request<{ events: HubEvent[]; garments: Garment[] }>(
+        `/orders/${encodeURIComponent(id)}/production`,
+        { headers: bearer(token) }
+      ),
+
+    // -- Claims ------------------------------------------------------------
+
+    /**
+     * Raises a problem against an order.
+     *
+     * Open to whoever can read the booking, so a guest holding a tracking token
+     * can report one. The courier is refused — they are frequently the subject.
+     *
+     * Throws `ApiError` 409 `{ reason: 'window-closed' }` past the fortnight,
+     * and `{ reason: 'too-many' }` for an order already carrying ten.
+     */
+    raiseClaim: (
+      jobId: string,
+      claim: { kind: string; description: string; photo?: string },
+      auth: BookingAuth
+    ) =>
+      request<Claim>(`/claims/job/${encodeURIComponent(jobId)}`, {
+        ...json('POST', claim),
+        headers: authHeaders(auth),
+      }),
+
+    /** Every claim on one order. Whoever can read the order can read these. */
+    claimsForJob: (jobId: string, auth: BookingAuth) =>
+      request<Claim[]>(`/claims/job/${encodeURIComponent(jobId)}`, {
+        headers: authHeaders(auth),
+      }),
+
+    /** The customer's own claims across every order. */
+    myClaims: (token: string) => request<Claim[]>('/claims/mine', { headers: bearer(token) }),
+
+    /** The desk's queue. Open ones by default; `all` for the settled history. */
+    listClaims: (token: string, options: { all?: boolean } = {}) =>
+      request<Claim[]>(`/claims${options.all ? '?all=1' : ''}`, { headers: bearer(token) }),
+
+    /**
+     * Moves a claim on. Supervisor only.
+     *
+     * `resolved` is reachable only from `upheld` — the laundry cannot record a
+     * customer as made whole without first agreeing something was owed. A
+     * compensation on the move to `resolved` is credited to their wallet before
+     * the row is written, keyed on the claim id so clicking twice pays once.
+     */
+    updateClaim: (
+      id: string,
+      patch: {
+        status?: ClaimStatus;
+        resolution?: string;
+        compensation?: number;
+        retreatment?: boolean;
+        /** The garment this is about, flagged on the intake record. */
+        garmentId?: string;
+      },
+      token: string
+    ) =>
+      request<Claim>(`/claims/${encodeURIComponent(id)}`, {
+        ...json('PATCH', patch),
+        headers: bearer(token),
+      }),
+
+    // -- Shifts ------------------------------------------------------------
+
+    /** The rota across the fleet for a window. Defaults to the coming week. */
+    rosterShifts: (token: string, window: { from?: string; to?: string } = {}) => {
+      const query = new URLSearchParams();
+      if (window.from) query.set('from', window.from);
+      if (window.to) query.set('to', window.to);
+      const suffix = query.toString();
+
+      return request<RiderShift[]>(`/riders/shifts${suffix ? `?${suffix}` : ''}`, {
+        headers: bearer(token),
+      });
+    },
+
+    /** One courier's blocks. Staff only. */
+    riderShifts: (riderId: string, token: string) =>
+      request<RiderShift[]>(`/riders/${encodeURIComponent(riderId)}/shifts`, {
+        headers: bearer(token),
+      }),
+
+    /**
+     * The courier's own rota, keyed on their session.
+     *
+     * A courier refused a job for being off shift needs to see when they are on
+     * without asking the desk.
+     */
+    myShifts: (token: string) =>
+      request<RiderShift[]>('/riders/me/shifts', { headers: bearer(token) }),
+
+    /**
+     * Rosters a courier. Supervisor only.
+     *
+     * Throws `ApiError` 409 `{ reason: 'overlaps' }` when it collides with a
+     * block they already have, `'too-long'` past `MAX_SHIFT_HOURS`, and
+     * `'invalid-range'` for an end that is not after its start.
+     */
+    createShift: (
+      riderId: string,
+      shift: { startsAt: string; endsAt: string; note?: string },
+      token: string
+    ) =>
+      request<RiderShift>(`/riders/${encodeURIComponent(riderId)}/shifts`, {
+        ...json('POST', shift),
+        headers: bearer(token),
+      }),
+
+    deleteShift: (shiftId: string, token: string) =>
+      request<{ ok: true }>(`/riders/shifts/${encodeURIComponent(shiftId)}`, {
+        ...json('DELETE'),
+        headers: bearer(token),
+      }),
+
+    // -- Promo codes and referrals -----------------------------------------
+
+    /**
+     * What a code is worth on a bill, before committing to the order.
+     *
+     * Advisory. `POST /bookings` re-runs the same check against the row it is
+     * holding, because the last redemption of a limited code may be somebody
+     * else's and may land between this call and that one. Never throws for a
+     * refused code — it answers `{ ok: false, reason }`, because "that code has
+     * expired" is an answer rather than an error.
+     */
+    checkPromoCode: (input: { code: string; subtotal: number; email?: string }) =>
+      request<
+        | { ok: true; code: string; discount: number; label: string }
+        | { ok: false; reason: string; error: string }
+      >('/promotions/check', json('POST', input)),
+
+    /** Every code, with what it has cost. Supervisor only. */
+    listPromoCodes: (token: string) =>
+      request<PromoCode[]>('/promotions', { headers: bearer(token) }),
+
+    /** One code's redemptions — the campaign report. */
+    promoRedemptions: (code: string, token: string) =>
+      request<PromoRedemption[]>(`/promotions/${encodeURIComponent(code)}/redemptions`, {
+        headers: bearer(token),
+      }),
+
+    /** Creates or edits a code. Supervisor only. An upsert: the code is the key. */
+    savePromoCode: (
+      code: string,
+      promo: {
+        label?: string;
+        kind: 'percent' | 'amount';
+        /** A fraction for `percent` — 0.2 is 20% — and cedis for `amount`. */
+        value: number;
+        maxDiscount?: number;
+        minSpend?: number;
+        startsAt?: string;
+        expiresAt?: string;
+        maxUses?: number;
+        maxPerCustomer?: number;
+        firstOrderOnly?: boolean;
+        active?: boolean;
+      },
+      token: string
+    ) =>
+      request<PromoCode>(`/promotions/${encodeURIComponent(code)}`, {
+        ...json('PUT', promo),
+        headers: bearer(token),
+      }),
+
+    /** The customer's own referral code, minting one if they have none. */
+    myReferral: (token: string) =>
+      request<{
+        code: string;
+        reward: number;
+        welcome: number;
+        invited: number;
+        rewarded: number;
+      }>('/promotions/referral/mine', { headers: bearer(token) }),
+
+    /**
+     * Claims somebody else's referral code.
+     *
+     * Nothing is paid here — the referrer earns when this customer's first order
+     * completes, because rewarding a registration rewards making accounts.
+     *
+     * Throws `ApiError` 409 `{ reason: 'self-referral' }` and
+     * `{ reason: 'already-referred' }`.
+     */
+    claimReferral: (code: string, token: string) =>
+      request<{ ok: true; referredBy: string; welcome: number }>('/promotions/referral/claim', {
+        ...json('POST', { code }),
+        headers: bearer(token),
+      }),
+
+    // -- Standing orders ---------------------------------------------------
+
+    listRecurring: (token: string) =>
+      request<RecurringPickup[]>('/recurring', { headers: bearer(token) }),
+
+    /**
+     * Creates or edits a standing order.
+     *
+     * A `PUT` with a client-supplied id, so a replayed offline write lands on
+     * the same row rather than making a second weekly pickup nobody asked for —
+     * which would be a courier at somebody's door every week for a wash they are
+     * not expecting and will be charged for.
+     */
+    saveRecurring: (
+      id: string,
+      pickup: {
+        weekday: number;
+        pickupTime: string;
+        deliveryTime?: string;
+        items: BookingItem[];
+        scent?: string;
+        starch?: string;
+        addons?: string[];
+        address: string;
+        suburb: string;
+        city?: string;
+        pickupCoords?: Coords;
+        notes?: string;
+        active?: boolean;
+        leadDays?: number;
+        startsOn?: string;
+        endsOn?: string;
+      },
+      token: string
+    ) =>
+      request<RecurringPickup>(`/recurring/${encodeURIComponent(id)}`, {
+        ...json('PUT', pickup),
+        headers: bearer(token),
+      }),
+
+    deleteRecurring: (id: string, token: string) =>
+      request<{ ok: true }>(`/recurring/${encodeURIComponent(id)}`, {
+        ...json('DELETE'),
+        headers: bearer(token),
+      }),
+
+    // -- Invoices ----------------------------------------------------------
+
+    listInvoices: (token: string, options: { outstanding?: boolean } = {}) =>
+      request<Invoice[]>(`/invoices${options.outstanding ? '?outstanding=1' : ''}`, {
+        headers: bearer(token),
+      }),
+
+    /** The signed-in customer's own. */
+    myInvoices: (token: string) =>
+      request<Invoice[]>('/invoices/mine', { headers: bearer(token) }),
+
+    getInvoice: (id: string, token: string) =>
+      request<Invoice>(`/invoices/${encodeURIComponent(id)}`, { headers: bearer(token) }),
+
+    createInvoice: (
+      invoice: {
+        billToEmail: string;
+        billToName?: string;
+        billToOrg?: string;
+        billToAddress?: string;
+        billToTin?: string;
+        periodStart?: string;
+        periodEnd?: string;
+        dueOn?: string;
+        notes?: string;
+      },
+      token: string
+    ) => request<Invoice>('/invoices', { ...json('POST', invoice), headers: bearer(token) }),
+
+    /**
+     * Adds a line to a draft.
+     *
+     * Naming a `jobId` fills the description and price from the order and
+     * refuses one that is already on another invoice — a collection appearing on
+     * two documents is the mistake that costs a corporate relationship.
+     */
+    addInvoiceLine: (
+      id: string,
+      line: { jobId?: string; description?: string; quantity?: number; unitPrice?: number },
+      token: string
+    ) =>
+      request<Invoice>(`/invoices/${encodeURIComponent(id)}/lines`, {
+        ...json('POST', line),
+        headers: bearer(token),
+      }),
+
+    removeInvoiceLine: (id: string, lineId: string, token: string) =>
+      request<Invoice>(
+        `/invoices/${encodeURIComponent(id)}/lines/${encodeURIComponent(lineId)}`,
+        { ...json('DELETE'), headers: bearer(token) }
+      ),
+
+    /**
+     * Issues, settles or voids one.
+     *
+     * `issued` freezes the numbers — from that point the totals are never
+     * recomputed, because an invoice states what was owed on the day it was
+     * issued. Going back to `draft` is refused for the same reason.
+     */
+    updateInvoice: (
+      id: string,
+      patch: { status?: InvoiceStatus; paid?: number; dueOn?: string },
+      token: string
+    ) =>
+      request<Invoice>(`/invoices/${encodeURIComponent(id)}`, {
+        ...json('PATCH', patch),
+        headers: bearer(token),
+      }),
+
+    // -- Branches ----------------------------------------------------------
+
+    /** Every branch. Staff only. Falls back to the seeded one. */
+    listHubs: (token: string) => request<Hub[]>('/hubs', { headers: bearer(token) }),
+
+    saveHub: (
+      id: string,
+      hub: {
+        name: string;
+        address?: string;
+        lat: number;
+        lng: number;
+        /** Must be names from `SERVICE_SUBURBS` — `hubForPickup` matches exactly. */
+        suburbs?: string[];
+        active?: boolean;
+      },
+      token: string
+    ) =>
+      request<Hub>(`/hubs/${encodeURIComponent(id)}`, {
+        ...json('PUT', hub),
+        headers: bearer(token),
       }),
 
     // -- Auth --------------------------------------------------------------

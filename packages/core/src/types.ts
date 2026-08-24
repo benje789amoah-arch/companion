@@ -74,8 +74,41 @@ export type MomoNetwork = 'MTN' | 'Telecel' | 'AT';
 export interface LaundryBag {
   id: string;
   type: string;
-  weight: string;
-  itemCount: number;
+  /**
+   * What the bag actually weighs, once somebody has put it on a scale.
+   *
+   * Optional, and that is the whole point of the change that made it so. This
+   * used to be a string every bag carried from the moment the booking was made,
+   * derived in `bagsForJob` from the digits of the job id:
+   *
+   * ```
+   * weight: `${(2 + ((digits.charCodeAt(i % digits.length) % 40) / 10)).toFixed(1)}kg`
+   * ```
+   *
+   * — which is to say it was a hash of the reference number, formatted to one
+   * decimal place and shown to the customer as a measurement. Nobody weighed
+   * anything. The courier's scanner printed it, the customer's manifest printed
+   * it, and the hub console added them up.
+   *
+   * Absent now until the hub records one. A field that is missing says "not
+   * weighed yet", which is true; a field that is present says "2.7kg", which is
+   * then also true.
+   */
+  weight?: string;
+  /**
+   * How many garments are in it, counted by a person at the hub.
+   *
+   * Optional for the same reason as {@link weight}, and it mattered more: this
+   * was the number behind "12 items" on a customer's manifest, and it was
+   * `3 + ((digits.charCodeAt((i + 2) % digits.length) + i) % 8)`. A dispute
+   * about a missing garment was being argued against a number derived from the
+   * booking reference.
+   */
+  itemCount?: number;
+  /** When the count and weight were taken, ISO. Absent until they are. */
+  countedAt?: string;
+  /** Who took them — the hub operator's name, for the same reason. */
+  countedBy?: string;
   qrCode: string;
   scanned: boolean;
 }
@@ -130,8 +163,28 @@ export interface JobSchedule {
   pickupDate: string;
   pickupTime: string;
   deliveryDate: string;
+  /**
+   * The window the clean laundry comes back in, as a `DELIVERY_TIME_SLOTS`
+   * label.
+   *
+   * Optional because every order placed before it existed has no answer to give
+   * — the return was `pickupDate + 1` with no hour on it, so an old record
+   * genuinely does not know. Surfaces show the date alone when it is missing
+   * rather than inventing a window nobody promised.
+   */
+  deliveryTime?: string;
   /** Human deadline shown on the rider's job card, e.g. "Pickup by 19:30". */
   deadline?: string;
+  /**
+   * How many times the customer has moved this booking.
+   *
+   * Counted because the allowance is finite — see `MAX_RESCHEDULES`. Absent on
+   * an order nobody has moved, which is the same thing as zero and is written
+   * that way so the field only appears on records it says something about.
+   */
+  rescheduleCount?: number;
+  /** When it was last moved, ISO. */
+  rescheduledAt?: string;
 }
 
 export interface JobLocation {
@@ -214,6 +267,15 @@ export interface JobPayment {
   momoNetwork?: MomoNetwork;
   transactionRef?: string;
   paidAt?: string;
+  /**
+   * The promo code applied, and what it took off.
+   *
+   * On the payment rather than the service because it is a fact about the money:
+   * `amount` is already net of it, and without these two the desk looking at a
+   * ₵24 wash has no way to tell a discount from a mispriced order.
+   */
+  promoCode?: string;
+  promoDiscount?: number;
 }
 
 export interface Job {
@@ -234,6 +296,16 @@ export interface Job {
   location: JobLocation;
   dispatch: JobDispatch;
   payment: JobPayment;
+  /**
+   * Which branch handled it.
+   *
+   * Optional, and read through a fallback to the default hub rather than
+   * backfilled. Every job written before there was more than one went to the
+   * only hub there was, so the fallback is not a guess — and the absence is
+   * honest about the difference between a branch that was recorded and one that
+   * was inferred, which matters the first time somebody audits a mis-sorted bag.
+   */
+  hubId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +366,29 @@ export interface Booking {
   pickupDate: string;
   pickupTime: string;
   deliveryDate: string;
+  /** The return window, as a `DELIVERY_TIME_SLOTS` label. See `JobSchedule`. */
+  deliveryTime?: string;
+  /**
+   * A promo code the customer typed.
+   *
+   * Sent by the form and *validated by the server*, which is the whole of the
+   * contract: what arrives here is a string somebody typed, and what it is worth
+   * is decided by `checkPromo` against the database. A booking that named a code
+   * the server refuses is created without it rather than rejected — the customer
+   * wanted the wash more than they wanted the discount, and the response says
+   * which code did not apply.
+   */
+  promoCode?: string;
+  /** What it actually took off. The server's number, never the client's. */
+  promoDiscount?: number;
+  /** Which branch took this collection. See `Hub`. */
+  hubId?: string;
+  /**
+   * How many times this booking has been moved. Read-only on the wire — the
+   * server owns it, and `POST /bookings/:id/reschedule` is the only thing that
+   * increments it.
+   */
+  rescheduleCount?: number;
   specialInstructions?: string;
   /**
    * The garment finishes chosen on the form. Priced by `quoteBooking` on the
@@ -649,6 +744,24 @@ export interface UserAccount {
   points?: number;
   walletBalance?: number;
   /**
+   * The code this customer hands out. Minted lazily, the first time they look.
+   *
+   * Not minted at registration because every account that already exists has
+   * none, and a backfill would issue codes to accounts that will never ask for
+   * one.
+   */
+  referralCode?: string;
+  /**
+   * Who introduced them — the referrer's address, not their code, because a
+   * code could in principle be reissued and the relationship is between people.
+   *
+   * Written once and never rewritten, which is what stops a customer collecting
+   * a second welcome by claiming a second referrer.
+   */
+  referredBy?: string;
+  /** When the referrer's reward was paid, so it is paid once. */
+  referralRewardedAt?: string;
+  /**
    * The customer's saved pickup addresses.
    *
    * The one part of this record a customer writes wholesale: `PUT /api/accounts`
@@ -843,4 +956,303 @@ export interface Testimonial {
   quote: string;
   rating: number;
   avatarUrl: string;
+}
+
+// ---------------------------------------------------------------------------
+// The laundry itself — what happened to the garments, and what went wrong
+// ---------------------------------------------------------------------------
+
+/**
+ * One garment, recorded at the hub as a bag is emptied.
+ *
+ * Not every garment: see the note on `job_garments` in the migration. The
+ * per-bag count is the number always taken; a row here is for the items worth
+ * naming — the ones a customer would notice, the ones that arrive already
+ * marked, and the ones somebody says are missing.
+ */
+export interface Garment {
+  id: string;
+  jobId: string;
+  /** Which bag it came out of, when that is known. */
+  bagId?: string;
+  description: string;
+  /** How it arrived — a stain noted at intake is a stain that was already there. */
+  condition: string;
+  /** True once a claim names it: reported missing, or returned damaged. */
+  flagged: boolean;
+  recordedBy: string;
+  createdAt: string;
+}
+
+/** The steps a load passes through at the hub, as `HubEvent.stage` records them. */
+export const HUB_STAGES = ['intake', 'wash', 'finish', 'quality_check'] as const;
+
+export type HubStage = (typeof HUB_STAGES)[number];
+
+/**
+ * One thing that physically happened to a load.
+ *
+ * The audit trail records that a supervisor *confirmed* a stage; this records
+ * the work. Which machine, which batch, whose hands — the three facts that make
+ * a fault traceable sideways when four customers report the same discolouration
+ * and the only thing they have in common is Washer 3 on Tuesday.
+ */
+export interface HubEvent {
+  id: string;
+  jobId: string;
+  stage: string;
+  /** "Washer 3", "Press 1". Empty for steps that do not happen on a machine. */
+  machine: string;
+  /** Which load it went in with. Empty when it went through on its own. */
+  batch: string;
+  operator: string;
+  operatorName: string;
+  notes: string;
+  createdAt: string;
+}
+
+/**
+ * Where a claim has got to.
+ *
+ * `upheld` and `resolved` are deliberately distinct. Agreeing that a shirt was
+ * ruined and actually making the customer whole are two events that can be days
+ * apart, and one "closed" state would let the first be mistaken for the second.
+ */
+export type ClaimStatus = 'open' | 'investigating' | 'upheld' | 'rejected' | 'resolved';
+
+/**
+ * A problem the customer has raised, tracked to an outcome.
+ *
+ * `IssueReporter` used to file a message into the courier thread and stop. The
+ * conversation is still the right place to talk to somebody; this is the half a
+ * conversation cannot do — a state, an owner and an ending.
+ */
+export interface Claim {
+  id: string;
+  jobId: string;
+  customerEmail: string;
+  /** One of `CLAIM_KINDS`, or `other`. */
+  kind: string;
+  description: string;
+  photo?: string;
+  status: ClaimStatus;
+  /** What the laundry decided, written for the customer to read. */
+  resolution: string;
+  /** Cedis paid back. Zero is a real answer — a re-treatment costs them nothing. */
+  compensation: number;
+  /** The wallet movement that paid it, when one was made. */
+  transactionRef?: string;
+  /** Whether a re-treatment was authorised — the thing the care copy promises. */
+  retreatment: boolean;
+  handledBy: string;
+  handledByName: string;
+  createdAt: string;
+  updatedAt: string;
+  closedAt?: string;
+}
+
+/**
+ * A stretch of time a courier is working.
+ *
+ * Instants rather than a calendar day plus two clock times, because "18:00 to
+ * 02:00" is an ordinary evening shift and storing it as a date would make the
+ * normal case the awkward one.
+ */
+export interface RiderShift {
+  id: string;
+  riderId: string;
+  startsAt: string;
+  endsAt: string;
+  note: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Growing the business — codes, standing orders, invoices and branches
+// ---------------------------------------------------------------------------
+
+/**
+ * One line on the tax section of an invoice.
+ *
+ * Declared here rather than in `./tax` beside the arithmetic, because `Invoice`
+ * below stores a frozen array of these and `./tax` imports `roundCedis` from
+ * `./membership`, which imports this file — so putting it there would close a
+ * cycle. The rates and the composition rule stay in `./tax`; only the shape
+ * lives here.
+ */
+export interface TaxLine {
+  id: string;
+  label: string;
+  /** A fraction: `0.15` is 15%. */
+  rate: number;
+  amount: number;
+}
+
+/** Whether a code takes a share off the bill or a fixed number of cedis. */
+export type PromoKind = 'percent' | 'amount';
+
+/**
+ * A promo code, voucher or launch offer.
+ *
+ * Loyalty tiers and membership plans reward somebody for already being a
+ * customer. This is the only thing in the product aimed at somebody who is not
+ * one yet — and for a laundry whose market is a university campus, word of mouth
+ * in a hall of residence is the whole marketing channel.
+ */
+export interface PromoCode {
+  /** The code as typed, upper-cased. Its own primary key. */
+  code: string;
+  /** What the desk calls it internally. Never shown to the customer. */
+  label: string;
+  kind: PromoKind;
+  /** A fraction for `percent` (0.15 is 15%), cedis for `amount`. */
+  value: number;
+  /**
+   * The most a percentage code may take off one booking.
+   *
+   * Absent for no ceiling — which is a liability nobody has costed the first
+   * time somebody books a ₵180 office clean with "20% off everything".
+   */
+  maxDiscount?: number;
+  /** The smallest order it applies to. Zero for none. */
+  minSpend: number;
+  startsAt?: string;
+  expiresAt?: string;
+  /** Total redemptions across everybody. Absent for unlimited. */
+  maxUses?: number;
+  /** Redemptions per customer. One unless somebody says otherwise. */
+  maxPerCustomer: number;
+  firstOrderOnly: boolean;
+  active: boolean;
+  createdBy: string;
+  createdAt: string;
+  /** How many times it has been redeemed. Filled in by the desk's list. */
+  uses?: number;
+}
+
+export interface PromoRedemption {
+  id: string;
+  code: string;
+  jobId: string;
+  customerEmail: string;
+  /** What it actually took off, after the cap and the floor. */
+  discount: number;
+  createdAt: string;
+}
+
+/**
+ * A standing order: the thing every membership plan already sells.
+ *
+ * The plans screen advertises "Weekly door-side pickups — 4 a month" and
+ * `includedPickups` was only ever *consumed* — nothing scheduled one. The
+ * customer who bought weekly pickups rebooked by hand every Sunday, and the
+ * allowance they forgot to use expired at renewal.
+ *
+ * The bookings this produces are ordinary bookings. It schedules them and gets
+ * out of the way, so one can be rescheduled, cancelled or complained about like
+ * any other.
+ */
+export interface RecurringPickup {
+  id: string;
+  customerEmail: string;
+  /** `0` Sunday through `6` Saturday. A weekday, not an interval in days. */
+  weekday: number;
+  /** A `PICKUP_TIME_SLOTS` label, so generated bookings count against capacity. */
+  pickupTime: string;
+  /** A `DELIVERY_TIME_SLOTS` label. */
+  deliveryTime?: string;
+  items: BookingItem[];
+  scent?: string;
+  starch?: string;
+  addons: string[];
+  address: string;
+  suburb: string;
+  city: string;
+  pickupCoords?: Coords;
+  notes: string;
+  active: boolean;
+  /** How many days ahead the sweep books. */
+  leadDays: number;
+  /** The last date this produced a booking for, `YYYY-MM-DD`. */
+  lastBookedFor?: string;
+  startsOn: string;
+  endsOn?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type InvoiceStatus = 'draft' | 'issued' | 'paid' | 'void';
+
+export interface InvoiceLine {
+  id: string;
+  invoiceId: string;
+  /** The order this bills for, when it bills for one. */
+  jobId?: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  amount: number;
+  position: number;
+}
+
+/**
+ * A bill for a month of collections, rather than for one bag.
+ *
+ * "Corporate Contracts" has always been in the catalogue, marked `bookable:
+ * false` with the note "Custom Enterprise Quotes" — so the marketing site sold
+ * to hotels and the software could not bill one. Every payment path settled a
+ * single booking at the moment it happened.
+ *
+ * The money is stored rather than recomputed: an invoice states what was owed on
+ * the day it was issued, and a document that recomputed itself would quietly
+ * restate a bill somebody had already paid.
+ */
+export interface Invoice {
+  id: string;
+  /** The human reference — `INV-2026-0007` — that an accounts department quotes. */
+  number: string;
+  billToEmail: string;
+  billToName: string;
+  billToOrg: string;
+  billToAddress: string;
+  /** Their own tax number, which a business needs to reclaim anything. */
+  billToTin: string;
+  periodStart?: string;
+  periodEnd?: string;
+  net: number;
+  tax: number;
+  total: number;
+  /** The levy-by-levy working, frozen with the rates that produced it. */
+  taxLines: TaxLine[];
+  paid: number;
+  status: InvoiceStatus;
+  dueOn?: string;
+  issuedAt?: string;
+  paidAt?: string;
+  notes: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  lines?: InvoiceLine[];
+}
+
+/**
+ * A branch.
+ *
+ * `LAUNDRY_HUB` was one pair of coordinates that roughly twenty call sites read,
+ * so a second branch was a refactor rather than a row. This is the row. The
+ * constant seeds the first one, so nothing that reads it changes behaviour.
+ */
+export interface Hub {
+  id: string;
+  name: string;
+  address: string;
+  lat: number;
+  lng: number;
+  /** Suburbs this branch collects from. Empty means no stated area. */
+  suburbs: string[];
+  active: boolean;
+  isDefault: boolean;
+  createdAt: string;
 }

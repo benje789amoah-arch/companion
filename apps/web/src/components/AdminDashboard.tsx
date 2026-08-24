@@ -42,6 +42,9 @@ import {
   Truck,
   Users,
   Wallet,
+  FileText,
+  ShieldQuestion,
+  TicketPercent,
   WashingMachine,
   X,
 } from 'lucide-react';
@@ -52,6 +55,9 @@ import { displayAmount } from '../services/amount';
 import RosterPanel from './RosterPanel';
 import PipelinePanel, { filterBookings, useSuburbs } from './admin/PipelinePanel';
 import HubPanel from './admin/HubPanel';
+import ClaimsPanel from './admin/ClaimsPanel';
+import OffersPanel from './admin/OffersPanel';
+import BillingPanel from './admin/BillingPanel';
 import MessagesPanel, { inboundThreadCount } from './admin/MessagesPanel';
 import PatronsPanel from './admin/PatronsPanel';
 import FinancialsPanel from './admin/FinancialsPanel';
@@ -67,11 +73,24 @@ interface AdminDashboardProps {
   onUpdateBookings: (bookings: Booking[]) => void;
 }
 
-type TabId = 'pipeline' | 'hub' | 'inbox' | 'patrons' | 'financials' | 'roster' | 'settings';
+type TabId =
+  | 'pipeline'
+  | 'hub'
+  | 'claims'
+  | 'offers'
+  | 'billing'
+  | 'inbox'
+  | 'patrons'
+  | 'financials'
+  | 'roster'
+  | 'settings';
 
 const TABS: { id: TabId; label: string; icon: typeof LayoutList }[] = [
   { id: 'pipeline', label: 'Pipeline', icon: LayoutList },
   { id: 'hub', label: 'Hub', icon: WashingMachine },
+  { id: 'claims', label: 'Claims', icon: ShieldQuestion },
+  { id: 'offers', label: 'Offers', icon: TicketPercent },
+  { id: 'billing', label: 'Billing', icon: FileText },
   { id: 'inbox', label: 'Inbox', icon: MessageSquare },
   { id: 'patrons', label: 'Patrons', icon: Users },
   { id: 'financials', label: 'Settlement', icon: Receipt },
@@ -876,6 +895,33 @@ export default function AdminDashboard({
               onOpenReceipt={setReceiptModalBooking}
               onTogglePayment={handleTogglePaymentStatus}
               onRefund={handleRefundBooking}
+            />
+          )}
+
+          {activeTab === 'claims' && (
+            <ClaimsPanel
+              onHandled={(message) => {
+                triggerFlashNotification(message);
+                bumpAudit();
+              }}
+            />
+          )}
+
+          {activeTab === 'offers' && (
+            <OffersPanel
+              onSaved={(message) => {
+                triggerFlashNotification(message);
+                bumpAudit();
+              }}
+            />
+          )}
+
+          {activeTab === 'billing' && (
+            <BillingPanel
+              onSaved={(message) => {
+                triggerFlashNotification(message);
+                bumpAudit();
+              }}
             />
           )}
 

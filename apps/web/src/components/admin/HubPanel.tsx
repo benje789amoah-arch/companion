@@ -26,10 +26,19 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { CheckCircle2, PackageCheck, RefreshCw, Shirt, Sparkles, WashingMachine } from 'lucide-react';
+import {
+  CheckCircle2,
+  ClipboardList,
+  PackageCheck,
+  RefreshCw,
+  Shirt,
+  Sparkles,
+  WashingMachine,
+} from 'lucide-react';
 import type { JobStatus, Order } from '@freshfold/core';
 import * as store from '../../services/store';
-import { Badge, Button, EmptyState, Panel, TableHead } from './ui';
+import CheckInDrawer from './CheckInDrawer';
+import { Badge, Button, EmptyState, Input, Panel, TableHead } from './ui';
 
 /** The two stages this pane owns, and what confirming one means. */
 const SECTIONS: {
@@ -98,6 +107,11 @@ function bagSummary(order: Order): string {
   return items > 0 ? `${count} · ${items} item${items === 1 ? '' : 's'}` : count;
 }
 
+/** How many of this order's bags somebody has actually counted. */
+function countedBags(order: Order): number {
+  return (order.bags ?? []).filter((bag) => bag.itemCount !== undefined).length;
+}
+
 export default function HubPanel({
   onConfirmed,
 }: {
@@ -113,6 +127,24 @@ export default function HubPanel({
   const [loading, setLoading] = useState(true);
   /** The order id currently in flight, so its button can say so. */
   const [confirming, setConfirming] = useState<string | null>(null);
+  /** The order whose check-in drawer is open, if any. */
+  const [checkingIn, setCheckingIn] = useState<Order | null>(null);
+
+  /**
+   * The machine and batch this operator is working through, per stage.
+   *
+   * Set once at the top of a section rather than per row, because that is how
+   * the work goes: somebody loads Washer 3 with four customers' bags and then
+   * confirms all four. Typing the same machine four times is how the field ends
+   * up empty by the second week.
+   *
+   * Carried into every confirmation made while it is filled in, which is what
+   * makes `hub_events` able to answer "everything that went through Washer 3 on
+   * Tuesday" — the query you run when three customers report the same
+   * discolouration.
+   */
+  const [machine, setMachine] = useState<Record<string, string>>({});
+  const [batch, setBatch] = useState<Record<string, string>>({});
 
   const load = useCallback(async (): Promise<void> => {
     const token = store.readAdminToken();
@@ -158,7 +190,16 @@ export default function HubPanel({
 
     setConfirming(order.id);
     try {
-      await store.api.updateOrderStatus(order.id, { status: to }, { token });
+      await store.api.updateOrderStatus(
+        order.id,
+        {
+          status: to,
+          // Recorded in `hub_events` beside the audit line. The trail answers
+          // who confirmed the wash; this answers what washed it.
+          hub: { machine: machine[to]?.trim(), batch: batch[to]?.trim() },
+        },
+        { token },
+      );
       await load();
       // The Pipeline pane reads the booking mirror, not this board, so it needs
       // the pull to follow the row across.
@@ -200,9 +241,32 @@ export default function HubPanel({
             }
             description={section.description}
             actions={
-              <Badge mono>
-                {rows.length} load{rows.length === 1 ? '' : 's'}
-              </Badge>
+              <div className="flex flex-wrap items-center gap-2">
+                {/*
+                  Set once for the run rather than per row: an operator loads one
+                  washer with four customers' bags and confirms all four. Typing
+                  the machine four times is how the field ends up empty.
+                */}
+                <Input
+                  className="w-32"
+                  placeholder={section.to === 'processing' ? 'Washer' : 'Press'}
+                  value={machine[section.to] ?? ''}
+                  onChange={(e) =>
+                    setMachine((current) => ({ ...current, [section.to]: e.target.value }))
+                  }
+                />
+                <Input
+                  className="w-28"
+                  placeholder="Batch"
+                  value={batch[section.to] ?? ''}
+                  onChange={(e) =>
+                    setBatch((current) => ({ ...current, [section.to]: e.target.value }))
+                  }
+                />
+                <Badge mono>
+                  {rows.length} load{rows.length === 1 ? '' : 's'}
+                </Badge>
+              </div>
             }
           >
             {rows.length === 0 ? (
@@ -247,6 +311,15 @@ export default function HubPanel({
 
                       <span className="order-2 block whitespace-nowrap text-right text-[12px] text-admin-fg-2 md:order-none md:text-left">
                         {bagSummary(order)}
+                        {/*
+                          A load nobody has counted is the one to count. Said
+                          plainly rather than shown as "0 items", which is what
+                          an uncounted bag would otherwise total to and is a
+                          different claim entirely.
+                        */}
+                        {(order.bags?.length ?? 0) > 0 && countedBags(order) === 0 && (
+                          <span className="block text-[10px] text-admin-warn">not counted</span>
+                        )}
                       </span>
 
                       <div className="order-5 min-w-0 md:order-none">
@@ -265,7 +338,23 @@ export default function HubPanel({
                         </span>
                       </div>
 
-                      <div className="order-6 justify-self-end md:order-none">
+                      <div className="order-6 flex justify-self-end gap-1.5 md:order-none">
+                        {/*
+                          Offered on the wash queue only. Counting happens once,
+                          as the bags come out of the courier's hands and onto
+                          the bench — by the press table the load is already
+                          counted, and a second count there would be a different
+                          and more useful feature than this one.
+                        */}
+                        {section.from === 'dropped_off' && (
+                          <Button
+                            size="sm"
+                            icon={ClipboardList}
+                            onClick={() => setCheckingIn(order)}
+                          >
+                            {countedBags(order) > 0 ? 'Counts' : 'Check in'}
+                          </Button>
+                        )}
                         <Button
                           size="sm"
                           variant="primary"
@@ -309,6 +398,17 @@ export default function HubPanel({
           </Panel>
         );
       })}
+
+      {checkingIn && (
+        <CheckInDrawer
+          order={checkingIn}
+          onClose={() => setCheckingIn(null)}
+          onCheckedIn={(message) => {
+            onConfirmed(message);
+            void load();
+          }}
+        />
+      )}
     </div>
   );
 }

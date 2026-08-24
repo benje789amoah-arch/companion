@@ -13,6 +13,7 @@ import {
   PHONE_LENGTH_MESSAGE,
   SERVICE_SUBURBS,
   bookingProgressPercent,
+  canReschedule,
   decodeFinish,
   isCompletePhone,
   limitPhoneInput,
@@ -24,6 +25,7 @@ import {
   tierProgress,
   withAddress,
   withoutAddress,
+  type Job,
   type JobStatus,
   type LoyaltyTierId,
   type Message,
@@ -33,10 +35,12 @@ import {
   X, Shield, Lock, Smartphone, Mail, Sparkles, User, LogOut,
   MapPin, Calendar, Clock, ChevronRight, CheckCircle2, History,
   Award, Play, Plus, RefreshCw, Send, AlertTriangle, AlertCircle,
-  CreditCard, Wallet, Banknote, QrCode, Receipt, DollarSign, CheckCircle, Trash2
+  CreditCard, Wallet, Banknote, QrCode, Receipt, DollarSign, CheckCircle, Trash2,
+  CalendarClock
 } from 'lucide-react';
 import LiveDispatchMap from './LiveDispatchMap';
 import HandoffCode from './HandoffCode';
+import RescheduleDrawer from './RescheduleDrawer';
 import AddressAutocomplete from './AddressAutocomplete';
 import { usePaystackReturn } from './PaystackReturn';
 
@@ -180,6 +184,8 @@ export default function ClientPortal({
   // Active User Data states
   const [userBookings, setUserBookings] = useState<Booking[]>([]);
   const [activeTrackingId, setActiveTrackingId] = useState<string | null>(null);
+  /** The booking whose reschedule drawer is open, if any. */
+  const [reschedulingId, setReschedulingId] = useState<string | null>(null);
 
   // Portal Payment Modal states
   const [payModalBooking, setPayModalBooking] = useState<Booking | null>(null);
@@ -1665,8 +1671,47 @@ export default function ClientPortal({
                                       <MapPin className="w-3.5 h-3.5 text-brand-sage shrink-0" />
                                       <span>{booking.address}, {booking.suburb}</span>
                                     </p>
+                                    <p className="font-sans text-[11px] font-light text-[#8E9299] flex items-center gap-1.5">
+                                      <Clock className="w-3.5 h-3.5 text-brand-sage shrink-0" />
+                                      {/* The return window when there is one. Orders
+                                          placed before customers could choose one
+                                          genuinely have no hour to show, so those
+                                          keep the date alone. */}
+                                      <span>
+                                        Back {booking.deliveryDate}
+                                        {booking.deliveryTime ? `, ${booking.deliveryTime}` : ''}
+                                      </span>
+                                    </p>
                                   </div>
 
+                                  {/* Offered only while the rules would accept it —
+                                      a button whose every option the server refuses
+                                      is worse than no button. The verdict is core's
+                                      `canReschedule`, the same one the route runs. */}
+                                  {canReschedule({
+                                    status:
+                                      booking.status === 'Cancelled'
+                                        ? 'cancelled'
+                                        : (booking.rider?.jobStatus ?? 'unassigned'),
+                                    schedule: {
+                                      pickupDate: booking.pickupDate,
+                                      pickupTime: booking.pickupTime,
+                                      deliveryDate: booking.deliveryDate,
+                                      deliveryTime: booking.deliveryTime,
+                                      rescheduleCount: booking.rescheduleCount,
+                                    },
+                                  } as Job).ok && (
+                                    <div className="md:col-span-4 flex md:justify-end">
+                                      <button
+                                        type="button"
+                                        onClick={() => setReschedulingId(booking.id)}
+                                        className="inline-flex items-center gap-1.5 px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/10 text-stone-300 hover:text-white rounded-xl text-[10px] font-bold font-sans uppercase tracking-widest transition-all cursor-pointer"
+                                      >
+                                        <CalendarClock className="w-3.5 h-3.5" />
+                                        Move pickup
+                                      </button>
+                                    </div>
+                                  )}
                                 </div>
 
                                 {/* Progress bar line */}
@@ -2282,6 +2327,25 @@ export default function ClientPortal({
             </motion.div>
           )}
 
+        </AnimatePresence>
+
+        {/* The reschedule drawer. Mounted beside the payment one rather than in
+            the tracking card, so it overlays the portal instead of scrolling
+            inside a panel. */}
+        <AnimatePresence>
+          {reschedulingId &&
+            (() => {
+              const booking = userBookings.find((candidate) => candidate.id === reschedulingId);
+              if (!booking) return null;
+
+              return (
+                <RescheduleDrawer
+                  key={booking.id}
+                  booking={booking}
+                  onClose={() => setReschedulingId(null)}
+                />
+              );
+            })()}
         </AnimatePresence>
 
         {/* Modal 1: Pay Online Now Drawer for a specific booking */}

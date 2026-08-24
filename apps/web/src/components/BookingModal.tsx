@@ -4,11 +4,13 @@ import { X, Calendar, MapPin, Sparkles, Clock, ShieldCheck, CheckCircle, Smartph
 import {
   DEFAULT_SCENT,
   DEFAULT_STARCH,
+  DELIVERY_TIME_SLOTS,
   PHONE_DIGITS,
   PHONE_LENGTH_MESSAGE,
   PICKUP_TIME_SLOTS,
   SCENTS,
   STARCH_LEVELS,
+  deliverySlotsFor,
   encodeFinish,
   isCompletePhone,
   isGarmentService,
@@ -144,26 +146,75 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
    */
   const [slotState, setSlotState] = useState<Record<string, { remaining: number; full: boolean }>>({});
 
+  /**
+   * The return leg, and the window the customer wants it in.
+   *
+   * Until this existed the return was `pickupDate + 1` with no time on it and
+   * nothing the customer could say about it — they chose the hour their clothes
+   * left and had no say at all in the hour they came back.
+   *
+   * The date is still derived rather than chosen: a standard 24-hour turnaround
+   * is what the whole product is written around, and the express service is the
+   * exception the desk arranges. What is new is the hour.
+   */
+  const deliveryDate = useMemo(
+    () => isoPlusDays(pickupDate, 1) ?? isoDaysFromNow(2),
+    [pickupDate]
+  );
+
+  const returnOptions = useMemo(
+    () => deliverySlotsFor(pickupDate, pickupTimeSlot, deliveryDate),
+    [pickupDate, pickupTimeSlot, deliveryDate]
+  );
+
+  const [deliveryTimeSlot, setDeliveryTimeSlot] = useState<string>(DELIVERY_TIME_SLOTS[0]);
+  const [deliveryState, setDeliveryState] = useState<
+    Record<string, { remaining: number; full: boolean }>
+  >({});
+
   useEffect(() => {
     if (!isOpen || !pickupDate) return;
 
     let cancelled = false;
     store.api
-      .slotAvailability(pickupDate)
+      .slotAvailability(pickupDate, { deliveryDate })
       .then((answer) => {
         if (cancelled) return;
         const next: Record<string, { remaining: number; full: boolean }> = {};
         for (const row of answer.slots) next[row.slot] = { remaining: row.remaining, full: row.full };
         setSlotState(next);
+
+        const back: Record<string, { remaining: number; full: boolean }> = {};
+        for (const row of answer.deliverySlots ?? []) {
+          back[row.slot] = { remaining: row.remaining, full: row.full };
+        }
+        setDeliveryState(back);
       })
       .catch(() => {
-        if (!cancelled) setSlotState({});
+        if (cancelled) return;
+        setSlotState({});
+        setDeliveryState({});
       });
 
     return () => {
       cancelled = true;
     };
-  }, [isOpen, pickupDate]);
+  }, [isOpen, pickupDate, deliveryDate]);
+
+  /**
+   * Keep the return on a window the collection can actually reach.
+   *
+   * Two ways it stops being reachable — it fills up, or the customer moves the
+   * collection later and a same-day return now falls before the laundry is back.
+   * `returnOptions` already accounts for the second, so both are one check.
+   */
+  useEffect(() => {
+    const reachable = returnOptions.some((slot) => slot.label === deliveryTimeSlot);
+    if (reachable && !deliveryState[deliveryTimeSlot]?.full) return;
+
+    const open = returnOptions.find((slot) => !deliveryState[slot.label]?.full);
+    if (open) setDeliveryTimeSlot(open.label);
+  }, [returnOptions, deliveryState, deliveryTimeSlot]);
 
   /**
    * Move off a window that filled up while the form was open.
@@ -446,6 +497,22 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
    * server reads them too. Signed out, neither is passed and the answer is the
    * list price, which is what a guest pays.
    */
+  /**
+   * A promo code the customer has typed, and what the server said it is worth.
+   *
+   * The *server's* answer, never this form's arithmetic. `checkPromoCode` runs
+   * the same `checkPromo` the booking route runs, against the same row and the
+   * same redemption counts — a form that worked out its own discount would
+   * promise 20% where the server gives 20% capped at ₵15, and be wrong for
+   * exactly the length of one checkout.
+   */
+  const [promoInput, setPromoInput] = useState('');
+  const [promo, setPromo] = useState<{ code: string; discount: number; label: string } | null>(
+    null
+  );
+  const [promoError, setPromoError] = useState('');
+  const [promoChecking, setPromoChecking] = useState(false);
+
   const estimate = useMemo(
     () =>
       quoteBooking({
@@ -457,10 +524,62 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
         },
         plan: loggedInUser?.plan ?? null,
         points: loggedInUser ? (loggedInUser.points ?? 0) : undefined,
+        promo,
       }),
-    [service, specialScent, starchLevel, items, loggedInUser]
+    [service, specialScent, starchLevel, items, loggedInUser, promo]
   );
   const estimatedPrice = estimate.total;
+
+  /**
+   * Re-checks a held code whenever the order changes.
+   *
+   * A code with a minimum spend, or a percentage one, is worth a different
+   * amount on a different basket — and a customer who applied a code and then
+   * removed a service would otherwise carry a discount the server is about to
+   * refuse. Dropped rather than recomputed locally, for the reason above.
+   */
+  const applyPromo = useCallback(
+    async (code: string) => {
+      const typed = code.trim();
+      if (!typed) {
+        setPromo(null);
+        setPromoError('');
+        return;
+      }
+
+      setPromoChecking(true);
+      setPromoError('');
+
+      try {
+        // Checked against the bill *before* any code, which is what the server
+        // checks it against too.
+        const bill = quoteBooking({
+          selections: { serviceType: service, scent: specialScent, starch: starchLevel, items },
+          plan: loggedInUser?.plan ?? null,
+          points: loggedInUser ? (loggedInUser.points ?? 0) : undefined,
+        }).total;
+
+        const answer = await store.api.checkPromoCode({
+          code: typed,
+          subtotal: bill,
+          email: email.trim() || undefined,
+        });
+
+        if (answer.ok) {
+          setPromo({ code: answer.code, discount: answer.discount, label: answer.label });
+        } else {
+          setPromo(null);
+          setPromoError(answer.error);
+        }
+      } catch {
+        setPromo(null);
+        setPromoError('Could not check that code. You can still book without it.');
+      } finally {
+        setPromoChecking(false);
+      }
+    },
+    [service, specialScent, starchLevel, items, loggedInUser, email]
+  );
 
   /**
    * Opens on tomorrow.
@@ -514,18 +633,6 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
       return;
     }
 
-    /**
-     * Standard 24h layout delivery schedule.
-     *
-     * `isoPlusDays` is calendar arithmetic with no timezone in it. What was here
-     * happened to agree with it everywhere — adding one local day to a UTC
-     * midnight lands on the next UTC midnight whatever the offset — but it was
-     * right by cancellation rather than by construction, and it sat one edit
-     * away from not being. The fallback covers a pickup date that is blank or
-     * half-typed, which `handleSubmit` has already refused above.
-     */
-    const deliveryDateStr = isoPlusDays(pickupDate, 1) ?? isoDaysFromNow(2);
-
     const newBooking: Booking = {
       id: bookingId,
       name,
@@ -538,7 +645,30 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
       quantity: estimate.items[0].quantity,
       pickupDate,
       pickupTime: pickupTimeSlot,
-      deliveryDate: deliveryDateStr,
+      /**
+       * Standard 24h turnaround, as calendar arithmetic with no timezone in it.
+       *
+       * `isoPlusDays` replaced three lines that added one *local* day to a UTC
+       * midnight. That happened to agree everywhere, but it was right by
+       * cancellation rather than by construction and sat one edit from not
+       * being. The fallback covers a blank or half-typed date, which
+       * `handleSubmit` has already refused above.
+       */
+      deliveryDate,
+      // Left off when the collection leaves no room for one — an evening
+      // collection has no same-day return to offer — rather than sent and
+      // refused, which would lose the whole booking over the return window.
+      deliveryTime: returnOptions.some((slot) => slot.label === deliveryTimeSlot)
+        ? deliveryTimeSlot
+        : undefined,
+      /**
+       * The code as typed, not the discount.
+       *
+       * What it is worth is the server's to decide — a client that sent an
+       * amount would be stating its own price, which is the mistake `amount`
+       * and `paymentStatus` are already stripped for.
+       */
+      promoCode: promo?.code,
       specialInstructions: encodeFinish({
         serviceType: service,
         scent: specialScent,
@@ -1024,6 +1154,41 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                       })}
                     </select>
                   </div>
+                  <div className="md:col-span-2">
+                    <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
+                      Return Window
+                      {pickupDate && (
+                        <span className="ml-2 normal-case font-normal tracking-normal text-stone-500">
+                          back to you on {deliveryDate}
+                        </span>
+                      )}
+                    </label>
+                    <select
+                      value={deliveryTimeSlot}
+                      onChange={(e) => setDeliveryTimeSlot(e.target.value)}
+                      className="w-full bg-[#161616] text-white rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors text-left"
+                    >
+                      {DELIVERY_TIME_SLOTS.map((slot) => {
+                        const state = deliveryState[slot];
+                        // Unreachable and full are different refusals, and
+                        // saying which is more use than one word for both.
+                        const reachable = returnOptions.some((option) => option.label === slot);
+
+                        return (
+                          <option key={slot} value={slot} disabled={!reachable || state?.full}>
+                            {slot}
+                            {!reachable
+                              ? ' — too early'
+                              : state?.full
+                                ? ' — full'
+                                : state && state.remaining <= 3
+                                  ? ` — ${state.remaining} left`
+                                  : ''}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1264,6 +1429,30 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                       {describeItems({ items: estimate.items, serviceType: service })}
                     </span>
                   )}
+
+                  {/*
+                    The tax already inside that figure.
+                    
+                    Disclosed rather than added: prices in this product have
+                    always been quoted to customers as the number they pay, so
+                    the default mode is inclusive and this is the extraction.
+                    Before it existed, no price anywhere in the product carried a
+                    tax line at all.
+                  */}
+                  {estimate.tax.tax > 0 && (
+                    <span className="block font-mono text-[9px] text-stone-500 mt-1">
+                      includes ₵{estimate.tax.tax.toFixed(2)} tax
+                      {' ('}
+                      {estimate.tax.lines.map((line) => line.label).join(' + ')}
+                      {')'}
+                    </span>
+                  )}
+
+                  {estimate.promoDiscount > 0 && (
+                    <span className="block font-mono text-[9px] text-brand-sage mt-1">
+                      {estimate.promoCode} — ₵{estimate.promoDiscount.toFixed(2)} off
+                    </span>
+                  )}
                 </div>
                 <div className="text-right">
                   <span className={`font-sans text-[9px] px-2.5 py-1 rounded-lg uppercase border font-bold ${
@@ -1274,6 +1463,56 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                     {isPaid || paymentMethod === 'Wallet' ? '✓ Instant Online Paid' : `Payment: ${paymentMethod}`}
                   </span>
                 </div>
+              </div>
+
+              {/* ------------------------------------------------ promo code */}
+              <div className="pt-4 border-t border-white/10 space-y-2">
+                <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider">
+                  Promo or referral code
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={promoInput}
+                    onChange={(e) => setPromoInput(e.target.value.toUpperCase())}
+                    placeholder="FRESHERS24"
+                    className="flex-1 bg-[#161616] text-white placeholder-[#8E9299]/40 rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs font-mono uppercase transition-colors"
+                  />
+                  {promo ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPromo(null);
+                        setPromoInput('');
+                        setPromoError('');
+                      }}
+                      className="px-4 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-stone-300 text-[10px] font-bold uppercase tracking-widest transition-all cursor-pointer"
+                    >
+                      Remove
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={promoChecking || !promoInput.trim()}
+                      onClick={() => void applyPromo(promoInput)}
+                      className={`px-4 rounded-xl border text-[10px] font-bold uppercase tracking-widest transition-all ${
+                        promoChecking || !promoInput.trim()
+                          ? 'border-white/10 bg-white/5 text-stone-500 cursor-not-allowed'
+                          : 'border-brand-sage bg-brand-sage text-white hover:bg-brand-sage-light cursor-pointer'
+                      }`}
+                    >
+                      {promoChecking ? 'Checking…' : 'Apply'}
+                    </button>
+                  )}
+                </div>
+
+                {promo && (
+                  <p className="text-[11px] text-brand-sage">
+                    {promo.code} applied — {promo.label}, ₵{estimate.promoDiscount.toFixed(2)} off
+                    this order.
+                  </p>
+                )}
+                {!!promoError && <p className="text-[11px] text-red-400">{promoError}</p>}
               </div>
 
               {/* Form submission CTAs */}

@@ -185,8 +185,20 @@ export function bagsForJob(
     return {
       id: `BAG-${digits}-${suffix}`,
       type: labels[i] || serviceType || items[0]?.serviceType || 'Premium Textiles',
-      weight: `${(2 + ((digits.charCodeAt(i % digits.length) % 40) / 10)).toFixed(1)}kg`,
-      itemCount: 3 + ((digits.charCodeAt((i + 2) % digits.length) + i) % 8),
+      /**
+       * No weight and no count. Both used to be here, and both were fiction.
+       *
+       * `weight` was `2 + (charCodeAt(i) % 40) / 10` and `itemCount` was
+       * `3 + ((charCodeAt(i + 2) + i) % 8)` — two hashes of the job id, dressed
+       * as measurements and shown to the customer on their bag manifest. A
+       * customer disputing a missing garment was arguing against a number
+       * derived from their own reference number.
+       *
+       * A bag is a label until somebody at the hub weighs and counts it; see
+       * `POST /orders/:id/intake`. Leaving these undefined is what lets every
+       * surface say "not counted yet" rather than print a number nobody stands
+       * behind.
+       */
       qrCode: `FF-BAG-${digits}-${suffix}`,
       scanned: false,
     };
@@ -268,12 +280,28 @@ export function pickupPinFor(
  * rather than asked of the customer, which is what lets a booking show up on
  * the rider's board without anybody re-keying it.
  */
-export function bookingToJob(booking: Booking, now = new Date().toISOString()): Job {
+export function bookingToJob(
+  booking: Booking,
+  now = new Date().toISOString(),
+  /**
+   * The branch this collection goes to.
+   *
+   * Defaults to `LAUNDRY_HUB`, which is what every job in the ledger was
+   * measured against and what a single-branch laundry still measures against —
+   * so a caller that does not pass one gets exactly the behaviour that existed
+   * before hubs were a table. The server passes the hub `hubForPickup` chose.
+   *
+   * It matters because `distanceKm` here feeds `priorityForBooking` and the
+   * courier's job card: measuring a Bomso collection against an Ayeduase hub
+   * once there are two branches would misprice the ride and mis-sort the board.
+   */
+  hub: Coords = LAUNDRY_HUB
+): Job {
   const id = booking.id || newJobId();
   const amount = booking.amount ?? 0;
   const priority = priorityForBooking(amount, booking.planId);
   const pickupCoords = pickupPinFor(booking);
-  const distance = distanceKm(LAUNDRY_HUB, pickupCoords);
+  const distance = distanceKm(hub, pickupCoords);
 
   return {
     id,
@@ -302,7 +330,19 @@ export function bookingToJob(booking: Booking, now = new Date().toISOString()): 
       pickupDate: booking.pickupDate,
       pickupTime: booking.pickupTime,
       deliveryDate: booking.deliveryDate,
+      deliveryTime: booking.deliveryTime,
       deadline: booking.pickupTime ? `Pickup ${booking.pickupTime}` : undefined,
+      /**
+       * Carried, but never from a request.
+       *
+       * `POST /bookings` strips this off the incoming body and re-reads it from
+       * the row it is replacing, because both clients replay queued creates: a
+       * booking that was rescheduled and then had its original create re-sent
+       * would otherwise come back with its allowance refilled. And a body that
+       * simply *named* a number would set one — `rescheduleCount: -99` is
+       * unlimited moves.
+       */
+      rescheduleCount: booking.rescheduleCount,
     },
     location: {
       address: booking.address,
@@ -323,9 +363,12 @@ export function bookingToJob(booking: Booking, now = new Date().toISOString()): 
       deliveryOtp: newHandoffCode(),
       proof: {},
     },
+    hubId: booking.hubId,
     payment: {
       amount,
       status: booking.paymentStatus ?? 'Pending',
+      promoCode: booking.promoCode,
+      promoDiscount: booking.promoDiscount,
       method: booking.paymentMethod,
       momoNumber: booking.momoNumber,
       momoNetwork: booking.momoNetwork,
@@ -352,6 +395,11 @@ export function jobToBooking(job: Job, rider?: RiderState): Booking {
     pickupDate: job.schedule.pickupDate,
     pickupTime: job.schedule.pickupTime,
     deliveryDate: job.schedule.deliveryDate,
+    deliveryTime: job.schedule.deliveryTime,
+    rescheduleCount: job.schedule.rescheduleCount,
+    promoCode: job.payment.promoCode,
+    promoDiscount: job.payment.promoDiscount,
+    hubId: job.hubId,
     specialInstructions: job.service.specialInstructions,
     specialtyAddons: job.service.specialtyAddons,
     riderNote: job.service.riderNote,
@@ -439,7 +487,18 @@ export function jobToOrder(job: Job): Order {
     riderId: job.dispatch.riderId,
     distance: job.dispatch.distanceKm,
     price: job.payment.amount,
-    deadline: job.schedule.deadline ?? `Pickup ${job.schedule.pickupTime}`,
+    /**
+     * The window the courier is working to, on whichever leg they are on.
+     *
+     * The collection window until the bags are collected, and the return window
+     * afterwards. Before the return had an hour on it there was nothing to
+     * switch to, so this said "Pickup 08:00 AM …" to a courier driving clean
+     * laundry back — the one window that had already passed.
+     *
+     * `schedule.deadline` still wins when it is set, because the desk writes it
+     * by hand for the jobs that need something neither window describes.
+     */
+    deadline: deadlineFor(job),
     specialInstructions: [job.service.specialInstructions, job.service.riderNote]
       .filter(Boolean)
       .join(' • ') || undefined,
@@ -618,6 +677,46 @@ export function applyStatus(job: Job, patch: JobStatusPatch, now = new Date().to
   return next;
 }
 
+/**
+ * The window the courier is working to, on whichever leg they are on.
+ *
+ * `schedule.deadline` is written as `Pickup <window>` when the booking is made,
+ * so a courier driving clean laundry back was shown the collection window — the
+ * one window on the job that had already passed. Once the bags are collected the
+ * return window is the deadline that means anything, so it wins from that point
+ * on.
+ *
+ * The stored deadline still stands on the pickup leg, and on a delivery leg for
+ * an order with no return window: records written before customers could choose
+ * one have no hour to show, and the collection window is at least a true thing
+ * about the job.
+ */
+function deadlineFor(job: Job): string {
+  if (isDeliveryLeg(job.status) && job.schedule.deliveryTime) {
+    return `Return ${job.schedule.deliveryTime}`;
+  }
+
+  return job.schedule.deadline ?? `Pickup ${job.schedule.pickupTime}`;
+}
+
+/**
+ * The states in which the courier is working towards the customer's door.
+ *
+ * Listed rather than derived as "not the pickup leg", because the middle of the
+ * round trip is neither: between `picked_up` and `processing` the courier is
+ * driving to the hub, and the deadline that means anything to them there is the
+ * collection they are completing rather than a return that has not been washed
+ * yet.
+ */
+function isDeliveryLeg(status: JobStatus): boolean {
+  return (
+    status === 'ready_for_delivery' ||
+    status === 'navigating_to_delivery' ||
+    status === 'arrived_at_delivery' ||
+    status === 'delivered'
+  );
+}
+
 function isPickupLeg(status: JobStatus): boolean {
   return (
     status === 'arrived_at_pickup' ||
@@ -635,7 +734,9 @@ function isPickupLeg(status: JobStatus): boolean {
 export function applyBookingPatch(
   job: Job,
   patch: Partial<Booking>,
-  now = new Date().toISOString()
+  now = new Date().toISOString(),
+  /** The branch to re-measure against when the pin moves. See `bookingToJob`. */
+  hub: Coords = LAUNDRY_HUB
 ): Job {
   const next: Job = {
     ...job,
@@ -677,6 +778,15 @@ export function applyBookingPatch(
     next.schedule.deadline = `Pickup ${patch.pickupTime}`;
   }
   if (patch.deliveryDate !== undefined) next.schedule.deliveryDate = patch.deliveryDate;
+  if (patch.deliveryTime !== undefined) next.schedule.deliveryTime = patch.deliveryTime;
+  /**
+   * `rescheduleCount` is deliberately absent, for the reason `quantity` is.
+   *
+   * It is the allowance that limits how often a booking may be moved, so a
+   * patch that could write it is a patch that could refill it — and the website
+   * echoes whole records into patches, so a stale tab would put an old count
+   * back. `POST /bookings/:id/reschedule` is the only thing that moves it.
+   */
 
   // Re-pin the job if the customer moved it. A patch that carries a pin is the
   // customer having dragged it somewhere better, which outranks a re-derive
@@ -704,7 +814,7 @@ export function applyBookingPatch(
     next.location.deliveryCoords = { ...next.location.pickupCoords };
 
     next.dispatch.distanceKm = Number(
-      distanceKm(LAUNDRY_HUB, next.location.pickupCoords).toFixed(2)
+      distanceKm(hub, next.location.pickupCoords).toFixed(2)
     );
   }
   if (patch.city !== undefined) next.location.city = patch.city;

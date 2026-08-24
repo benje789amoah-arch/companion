@@ -27,7 +27,7 @@
  * DNS.
  */
 
-import { describeItems } from '@freshfold/core';
+import { describeItems, type BookingItem } from '@freshfold/core';
 
 const BREVO_ENDPOINT = 'https://api.brevo.com/v3/smtp/email';
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
@@ -291,9 +291,44 @@ export interface BookingMailDetails {
   id: string;
   name: string;
   serviceType: string;
+  /**
+   * Every service on the order, so `describeItems` below can name them all.
+   *
+   * The comment beside that call already claimed it did. It could not: this
+   * interface carried `serviceType` alone, so a booking for a wash *and* an
+   * ironing was confirmed as just the first of the two.
+   */
+  items?: BookingItem[];
+  quantity?: number;
   pickupDate: string;
   pickupTime: string;
+  /** The return window, when the customer chose one. See `JobSchedule`. */
+  deliveryDate?: string;
+  deliveryTime?: string;
   address: string;
+}
+
+/**
+ * The two schedule lines, written the same way wherever they appear.
+ *
+ * Shared between the confirmation and the reschedule notice so the customer
+ * comparing the two mails is comparing the same sentence. The return line is
+ * omitted rather than left blank when there is no date, which is true of
+ * records written before the return window existed.
+ */
+function scheduleLines(booking: BookingMailDetails): [string, string][] {
+  const lines: [string, string][] = [['Pickup', `${booking.pickupDate}, ${booking.pickupTime}`]];
+
+  if (booking.deliveryDate) {
+    lines.push([
+      'Return',
+      booking.deliveryTime
+        ? `${booking.deliveryDate}, ${booking.deliveryTime}`
+        : booking.deliveryDate,
+    ]);
+  }
+
+  return lines;
 }
 
 /**
@@ -325,7 +360,7 @@ export function bookingSetupMail(
     // Every service on the order. `describeItems` falls back to the single
     // service name, so a one-service booking reads exactly as it always did.
     ['Service', describeItems(booking) || booking.serviceType],
-    ['Pickup', `${booking.pickupDate}, ${booking.pickupTime}`],
+    ...scheduleLines(booking),
     ['Address', booking.address],
   ];
 
@@ -394,6 +429,80 @@ export function bookingSetupMail(
           Anyone holding this link can set that password, so please keep it to yourself.
         </p>`
         }
+      </div>
+    `.trim(),
+  };
+}
+
+/**
+ * Confirms that a booking has moved, and says where from.
+ *
+ * The old window is on it deliberately. A mail that says only "your pickup is
+ * on Thursday" is indistinguishable from the original confirmation arriving
+ * twice, which is exactly the case a customer needs to be able to tell apart —
+ * if they did not make this change, this mail is the only thing that will tell
+ * them. Same reason the remaining allowance is stated: a customer with one move
+ * left should learn it here rather than when the form refuses them.
+ */
+export function bookingRescheduledMail(
+  to: string,
+  booking: BookingMailDetails,
+  previous: { pickupDate: string; pickupTime: string },
+  movesLeft: number
+): Mail {
+  const greeting = booking.name.trim() ? `Hello ${booking.name.trim()},` : 'Hello,';
+  const was = `${previous.pickupDate}, ${previous.pickupTime}`;
+
+  const lines: [string, string][] = [
+    ['Booking', booking.id],
+    ['Was', was],
+    ...scheduleLines(booking),
+    ['Address', booking.address],
+  ];
+
+  const allowance =
+    movesLeft > 0
+      ? `You can move this booking ${movesLeft} more ${movesLeft === 1 ? 'time' : 'times'}.`
+      : 'This booking has now been moved as many times as it can be — if the date has to change again, cancel it and place a new one.';
+
+  return {
+    to,
+    subject: `Pickup ${booking.id} moved to ${booking.pickupDate} — FreshFold`,
+    text: [
+      greeting,
+      '',
+      'Your collection has been moved. Here is what we now have:',
+      '',
+      ...lines.map(([label, value]) => `${label}: ${value}`),
+      '',
+      allowance,
+      '',
+      'If this was not you, reply to this mail and we will put it back.',
+      '',
+      'FreshFold Luxury Co.',
+    ].join('\n'),
+    html: `
+      <div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:520px;margin:0 auto;padding:32px 24px;color:#2f3437">
+        <p style="font-size:10px;letter-spacing:1.6px;text-transform:uppercase;color:#7d8b7f;margin:0 0 6px">
+          White-glove service
+        </p>
+        <h1 style="font-size:22px;font-weight:800;margin:0 0 18px">Your collection has moved</h1>
+        <p style="font-size:14px;line-height:22px;margin:0 0 20px">${escapeHtml(greeting)}</p>
+        <table style="width:100%;border-collapse:collapse;font-size:13px;line-height:20px;margin:0 0 24px">
+          ${lines
+            .map(
+              ([label, value]) => `
+          <tr>
+            <td style="padding:7px 0;color:#6b7280;border-bottom:1px solid #eeeae4">${escapeHtml(label)}</td>
+            <td style="padding:7px 0;text-align:right;font-weight:700;border-bottom:1px solid #eeeae4">${escapeHtml(value)}</td>
+          </tr>`
+            )
+            .join('')}
+        </table>
+        <p style="font-size:13px;line-height:21px;color:#6b7280;margin:0 0 8px">${escapeHtml(allowance)}</p>
+        <p style="font-size:13px;line-height:21px;color:#6b7280;margin:0">
+          If this was not you, reply to this mail and we will put it back.
+        </p>
       </div>
     `.trim(),
   };

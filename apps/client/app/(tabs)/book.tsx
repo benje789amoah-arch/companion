@@ -74,14 +74,17 @@ import {
   BOOKABLE_SERVICES,
   DEFAULT_SCENT,
   DEFAULT_STARCH,
+  DELIVERY_TIME_SLOTS,
   PAYMENT_METHODS,
   PICKUP_TIME_SLOTS,
   SCENTS,
   SPECIALTY_ADDONS,
   STARCH_LEVELS,
+  deliverySlotsFor,
   isGarmentService,
   isPlanCoverable,
   priceBreakdown,
+  taxOn,
   tierForPoints,
   type PaymentChoice,
 } from '../../src/data/catalogue';
@@ -89,7 +92,7 @@ import { intlTag, servicePriceLabel, unitLabel, useT, type TranslationKey } from
 import { api } from '../../src/services/api';
 import { useClient } from '../../src/store/ClientStore';
 import { useSession } from '../../src/store/SessionStore';
-import { colors, formatCedis, radius, shadow, tints } from '../../src/theme';
+import { colors, formatCedis, formatDate, radius, shadow, tints } from '../../src/theme';
 
 /**
  * The booking flow.
@@ -191,12 +194,35 @@ export default function BookScreen() {
     Record<string, { remaining: number; full: boolean }>
   >({});
 
+  /**
+   * When the clean laundry comes back.
+   *
+   * The customer used to choose the hour their clothes left and have no say at
+   * all in the hour they came back — the return was `pickupDate + 1` with no
+   * time on it, so "when will it be back?" had no answer beyond a date.
+   *
+   * Defaults to the first window that the collection leaves time for rather
+   * than to `DELIVERY_TIME_SLOTS[0]`, because the two are not the same on a
+   * same-day return.
+   */
+  const deliveryDate = useMemo(() => isoDaysAfter(pickupDate, 1), [pickupDate]);
+
+  const returnOptions = useMemo(
+    () => deliverySlotsFor(pickupDate, timeSlot, deliveryDate),
+    [pickupDate, timeSlot, deliveryDate]
+  );
+
+  const [deliverySlot, setDeliverySlot] = useState<string>(DELIVERY_TIME_SLOTS[0]);
+  const [deliveryState, setDeliveryState] = useState<
+    Record<string, { remaining: number; full: boolean }>
+  >({});
+
   useEffect(() => {
     if (!pickupDate) return;
 
     let cancelled = false;
     api
-      .slotAvailability(pickupDate)
+      .slotAvailability(pickupDate, { deliveryDate })
       .then((answer) => {
         if (cancelled) return;
         const next: Record<string, { remaining: number; full: boolean }> = {};
@@ -204,15 +230,23 @@ export default function BookScreen() {
           next[row.slot] = { remaining: row.remaining, full: row.full };
         }
         setSlotState(next);
+
+        const back: Record<string, { remaining: number; full: boolean }> = {};
+        for (const row of answer.deliverySlots ?? []) {
+          back[row.slot] = { remaining: row.remaining, full: row.full };
+        }
+        setDeliveryState(back);
       })
       .catch(() => {
-        if (!cancelled) setSlotState({});
+        if (cancelled) return;
+        setSlotState({});
+        setDeliveryState({});
       });
 
     return () => {
       cancelled = true;
     };
-  }, [pickupDate]);
+  }, [pickupDate, deliveryDate]);
 
   // Move off a window that filled while the screen was open, unless every one
   // has — in which case the refusal on submit is the honest answer.
@@ -221,6 +255,22 @@ export default function BookScreen() {
     const open = PICKUP_TIME_SLOTS.find((slot) => !slotState[slot]?.full);
     if (open) setTimeSlot(open);
   }, [slotState, timeSlot]);
+
+  /**
+   * Keep the return window on something the collection can actually reach.
+   *
+   * Two ways it stops being reachable: it fills up, or the customer moves the
+   * collection later in the day and a same-day return that was fine is now
+   * before the laundry is back. `returnOptions` already accounts for the second,
+   * so both are one check.
+   */
+  useEffect(() => {
+    const reachable = returnOptions.some((slot) => slot.label === deliverySlot);
+    if (reachable && !deliveryState[deliverySlot]?.full) return;
+
+    const open = returnOptions.find((slot) => !deliveryState[slot.label]?.full);
+    if (open) setDeliverySlot(open.label);
+  }, [returnOptions, deliveryState, deliverySlot]);
   const [address, setAddress] = useState('');
   const [city, setCity] = useState('Kumasi');
   /**
@@ -406,7 +456,64 @@ export default function BookScreen() {
     () => (isAuthenticated ? Number((afterPlan * tier.discountRate).toFixed(2)) : 0),
     [afterPlan, tier.discountRate, isAuthenticated]
   );
-  const total = Math.max(0, Number((afterPlan - discount).toFixed(2)));
+  const afterTier = Math.max(0, Number((afterPlan - discount).toFixed(2)));
+
+  /**
+   * A promo code, and what the *server* said it is worth.
+   *
+   * Never this screen's arithmetic. `checkPromoCode` runs the same `checkPromo`
+   * the booking route runs, against the same row and the same redemption counts
+   * — a form working out its own discount would promise 20% where the server
+   * gives 20% capped at ₵15, and be wrong for exactly the length of one
+   * checkout.
+   */
+  const [promoInput, setPromoInput] = useState('');
+  const [promo, setPromo] = useState<{ code: string; discount: number; label: string } | null>(
+    null
+  );
+  const [promoError, setPromoError] = useState('');
+  const [promoChecking, setPromoChecking] = useState(false);
+
+  // Never more than is left on the bill, whatever the server said a moment ago:
+  // the order can change after a code is applied.
+  const promoDiscount = promo ? Math.min(promo.discount, afterTier) : 0;
+  const total = Math.max(0, Number((afterTier - promoDiscount).toFixed(2)));
+
+  /** The tax already inside that total. Disclosed rather than added — see `./tax`. */
+  const taxLine = useMemo(() => taxOn(total), [total]);
+
+  const applyPromo = useCallback(async () => {
+    const typed = promoInput.trim();
+    if (!typed) {
+      setPromo(null);
+      setPromoError('');
+      return;
+    }
+
+    setPromoChecking(true);
+    setPromoError('');
+
+    try {
+      const answer = await api.checkPromoCode({
+        code: typed,
+        // The bill before any code, which is what the server checks against.
+        subtotal: afterTier,
+        email: email.trim() || undefined,
+      });
+
+      if (answer.ok) {
+        setPromo({ code: answer.code, discount: answer.discount, label: answer.label });
+      } else {
+        setPromo(null);
+        setPromoError(answer.error);
+      }
+    } catch {
+      setPromo(null);
+      setPromoError(t('book.promo.unreachable'));
+    } finally {
+      setPromoChecking(false);
+    }
+  }, [promoInput, afterTier, email, t]);
 
 
   // Prefill from the account and the default saved address once they load.
@@ -674,7 +781,16 @@ export default function BookScreen() {
         // who set the field.
         pickupDate,
         pickupTime: timeSlot,
-        deliveryDate: isoDaysAfter(pickupDate, 1),
+        deliveryDate,
+        // The window the customer chose for the return, not just the day. Left
+        // off entirely when the collection leaves no room for one — a same-day
+        // return booked after the evening collection has nowhere to go, and
+        // sending a window the server would refuse loses the whole booking.
+        deliveryTime: returnOptions.some((slot) => slot.label === deliverySlot)
+          ? deliverySlot
+          : undefined,
+        // The code as typed. What it is worth is the server's to decide.
+        promoCode: promo?.code,
         // `encodeFinish` is the one writer of this format, shared with the
         // website, so the rider's job card and the admin dashboard read
         // identically whichever surface booked it. It drops the finish prefix on
@@ -1131,6 +1247,50 @@ export default function BookScreen() {
                   );
                 })}
               </View>
+
+              {/* ------------------------------------------------- the return */}
+              <View style={{ gap: 9 }}>
+                <SectionLabel>{t('book.return.title')}</SectionLabel>
+                <Text style={styles.returnDay}>
+                  {t('book.return.day', { date: formatDate(deliveryDate, locale) })}
+                </Text>
+
+                {DELIVERY_TIME_SLOTS.map((slot) => {
+                  const state = deliveryState[slot];
+                  const window = slot.match(/\((.*)\)/)?.[1];
+                  // Unreachable is not the same as full: a same-day return
+                  // cannot leave before the laundry is back, and saying so is
+                  // more use than a generic "unavailable".
+                  const reachable = returnOptions.some((option) => option.label === slot);
+                  const blocked = !reachable || !!state?.full;
+
+                  return (
+                    <OptionRow
+                      key={slot}
+                      title={slot.split(' (')[0]}
+                      subtitle={
+                        !reachable
+                          ? t('book.return.tooEarly')
+                          : state?.full
+                            ? t('book.window.full')
+                            : state && state.remaining <= 3
+                              ? t('book.window.remaining', { count: state.remaining })
+                              : window
+                      }
+                      disabled={blocked}
+                      selected={deliverySlot === slot}
+                      onPress={() => {
+                        if (!blocked) setDeliverySlot(slot);
+                      }}
+                      trailing={
+                        deliverySlot === slot ? (
+                          <Check size={16} color={colors.brandSage} />
+                        ) : undefined
+                      }
+                    />
+                  );
+                })}
+              </View>
             </View>
           )}
 
@@ -1414,12 +1574,74 @@ export default function BookScreen() {
                     tone="success"
                   />
                 )}
+                {promoDiscount > 0 && promo && (
+                  <SummaryRow
+                    label={t('book.summary.promo', { code: promo.code })}
+                    value={t('book.summary.less', {
+                      amount: formatCedis(promoDiscount, locale),
+                    })}
+                    tone="success"
+                  />
+                )}
                 <SummaryRow
                   label={t('book.summary.total')}
                   value={formatCedis(total, locale)}
                   emphasis
                 />
+                {/* The tax already inside that number. No price anywhere in the
+                    product carried a tax line before this. */}
+                {taxLine.tax > 0 && (
+                  <SummaryRow
+                    label={t('book.summary.taxIncluded')}
+                    value={formatCedis(taxLine.tax, locale)}
+                  />
+                )}
               </Card>
+
+              <View style={{ gap: 8 }}>
+                <SectionLabel>{t('book.promo.title')}</SectionLabel>
+                <View style={styles.promoRow}>
+                  <View style={{ flex: 1 }}>
+                    <Field
+                      label=""
+                      value={promoInput}
+                      onChangeText={(value) => setPromoInput(value.toUpperCase())}
+                      placeholder={t('book.promo.placeholder')}
+                      autoCapitalize="characters"
+                    />
+                  </View>
+                  <Button
+                    label={
+                      promo
+                        ? t('common.remove')
+                        : promoChecking
+                          ? t('book.promo.checking')
+                          : t('book.promo.apply')
+                    }
+                    variant={promo ? 'ghost' : 'outline'}
+                    size="sm"
+                    disabled={promoChecking || (!promo && !promoInput.trim())}
+                    onPress={() => {
+                      if (promo) {
+                        setPromo(null);
+                        setPromoInput('');
+                        setPromoError('');
+                      } else {
+                        void applyPromo();
+                      }
+                    }}
+                  />
+                </View>
+                {!!promo && (
+                  <Text style={styles.promoOk}>
+                    {t('book.promo.applied', {
+                      code: promo.code,
+                      amount: formatCedis(promoDiscount, locale),
+                    })}
+                  </Text>
+                )}
+                {!!promoError && <Text style={styles.promoError}>{promoError}</Text>}
+              </View>
 
               <View style={{ gap: 9 }}>
                 <SectionLabel>{t('book.pay.title')}</SectionLabel>
@@ -1698,6 +1920,12 @@ function isoDaysAfter(iso: string, days: number): string {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bgIvory },
+
+  returnDay: { fontSize: 12, color: colors.textMuted, marginTop: -3 },
+
+  promoRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 },
+  promoOk: { fontSize: 11.5, color: colors.statusSuccess },
+  promoError: { fontSize: 11.5, color: colors.statusError },
 
   header: {
     flexDirection: 'row',

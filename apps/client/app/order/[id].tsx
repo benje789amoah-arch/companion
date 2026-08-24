@@ -8,6 +8,7 @@ import * as Linking from 'expo-linking';
 import {
   ArrowLeft,
   Ban,
+  CalendarClock,
   Camera,
   Check,
   ChevronRight,
@@ -23,7 +24,7 @@ import {
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { bagsForJob, serviceUnit, type JobStatus } from '@freshfold/core';
+import { bagsForJob, canReschedule, serviceUnit, type Job, type JobStatus } from '@freshfold/core';
 
 /**
  * Dispatch states in which the bags are still with the customer. `unassigned`
@@ -41,6 +42,7 @@ import BagScanner from '../../src/components/BagScanner';
 import DeliveryConfirm from '../../src/components/DeliveryConfirm';
 import HandoffCard from '../../src/components/HandoffCard';
 import IssueReporter from '../../src/components/IssueReporter';
+import RescheduleSheet from '../../src/components/RescheduleSheet';
 import { StageTimeline } from '../../src/components/StageTimeline';
 import TrackingMap from '../../src/components/TrackingMap';
 import { paymentTone } from '../../src/components/OrderCard';
@@ -54,6 +56,7 @@ import {
   Sheet,
 } from '../../src/components/ui';
 import { useClient } from '../../src/store/ClientStore';
+import type { TranslationKey } from '../../src/i18n';
 import {
   jobStatusLabel,
   paymentStatusLabel,
@@ -97,10 +100,15 @@ export default function OrderDetailScreen() {
     reportIssue,
     cancelBooking,
     rateBooking,
+    rescheduleBooking,
+    claims,
+    loadClaims,
     messagesFor,
   } = useClient();
 
-  const [sheet, setSheet] = useState<'scan' | 'issue' | 'sign' | 'receipt' | null>(null);
+  const [sheet, setSheet] = useState<
+    'scan' | 'issue' | 'sign' | 'receipt' | 'reschedule' | null
+  >(null);
 
   const booking = bookingById(params.id);
 
@@ -109,6 +117,12 @@ export default function OrderDetailScreen() {
   useEffect(() => {
     if (params.id) void loadBookingProof(params.id);
   }, [params.id, loadBookingProof]);
+
+  // And the problems they have reported, which are not on the booking either —
+  // a claim outlives the order it is about.
+  useEffect(() => {
+    void loadClaims();
+  }, [loadClaims]);
 
   // A deep link opens its sheet once the record is in the mirror.
   useEffect(() => {
@@ -198,6 +212,40 @@ export default function OrderDetailScreen() {
     !closed &&
     !!booking &&
     COLLECTION_PENDING.has(booking.rider?.jobStatus ?? 'unassigned');
+
+  /**
+   * Whether this order can still be moved, and why not when it cannot.
+   *
+   * The same `canReschedule` the server runs, so the button appears exactly
+   * when the route would accept the request. It reads dispatch state, which
+   * `Booking` does not carry — the projection is deliberately free of it — so
+   * the live status off the rider telemetry is folded onto a stand-in job.
+   * `unassigned` when there is no telemetry, which is what a booking nobody has
+   * accepted is.
+   */
+  const movable = useMemo(() => {
+    if (!booking) return null;
+
+    return canReschedule({
+      status:
+        booking.status === 'Cancelled'
+          ? 'cancelled'
+          : (booking.rider?.jobStatus ?? 'unassigned'),
+      schedule: {
+        pickupDate: booking.pickupDate,
+        pickupTime: booking.pickupTime,
+        deliveryDate: booking.deliveryDate,
+        deliveryTime: booking.deliveryTime,
+        rescheduleCount: booking.rescheduleCount,
+      },
+    } as Job);
+  }, [booking]);
+
+  /** The problems reported against this order. */
+  const mine = useMemo(
+    () => claims.filter((claim) => claim.jobId === params.id),
+    [claims, params.id]
+  );
 
   const onCancel = useCallback(() => {
     if (!booking) return;
@@ -385,13 +433,26 @@ export default function OrderDetailScreen() {
                     {bag.type}
                   </Text>
                   {/* The bag's type and code are dispatch data, printed on the
-                      bag itself. Only the frame around them is copy. */}
+                      bag itself. Only the frame around them is copy.
+
+                      The count and the weight are only here once somebody at
+                      the hub has taken them. Both used to be printed on every
+                      bag from the moment of booking, derived from the digits of
+                      the reference number — so this row showed a customer a
+                      measurement of their laundry before anyone had touched it. */}
                   <Text style={styles.bagMeta}>
-                    {t('order.bag.meta', {
-                      code: bag.qrCode,
-                      items: bag.itemCount,
-                      weight: bag.weight,
-                    })}
+                    {bag.itemCount === undefined
+                      ? t('order.bag.uncounted', { code: bag.qrCode })
+                      : bag.weight
+                        ? t('order.bag.meta', {
+                            code: bag.qrCode,
+                            items: bag.itemCount,
+                            weight: bag.weight,
+                          })
+                        : t('order.bag.metaNoWeight', {
+                            code: bag.qrCode,
+                            items: bag.itemCount,
+                          })}
                   </Text>
                 </View>
                 {isVerified && <Check size={14} color={colors.statusSuccess} strokeWidth={3} />}
@@ -415,7 +476,20 @@ export default function OrderDetailScreen() {
               time: booking.pickupTime,
             })}
           />
-          <Row label={t('book.done.return')} value={formatDate(booking.deliveryDate, locale)} />
+          <Row
+            label={t('book.done.return')}
+            value={
+              // The window when there is one. Records written before customers
+              // could choose a return window genuinely have no hour to show, so
+              // those keep the date alone rather than gaining an invented one.
+              booking.deliveryTime
+                ? t('track.row.collectionValue', {
+                    date: formatDate(booking.deliveryDate, locale),
+                    time: booking.deliveryTime,
+                  })
+                : formatDate(booking.deliveryDate, locale)
+            }
+          />
           <Row
             label={t('book.summary.address')}
             value={[booking.address, booking.suburb, booking.city].filter(Boolean).join(', ')}
@@ -522,6 +596,52 @@ export default function OrderDetailScreen() {
           </View>
         )}
 
+        {/* ---------------------------------------------------------- claims */}
+        {/*
+          What became of a problem they reported.
+          
+          Before this, `IssueReporter` filed the report into the courier thread
+          and stopped — so a customer who photographed a ruined shirt had no way
+          of knowing whether anybody had looked at it, and the care copy's
+          promise to re-treat "at our cost" had nothing behind it. The row says
+          where the claim has got to and, once it is settled, what was done.
+        */}
+        {mine.length > 0 && (
+          <Card style={{ gap: 10 }}>
+            <SectionLabel>{t('order.claims.title')}</SectionLabel>
+            {mine.map((claim) => (
+              <View key={claim.id} style={styles.claimRow}>
+                <Badge
+                  label={t(`order.claims.status.${claim.status}` as TranslationKey)}
+                  tone={
+                    claim.status === 'resolved'
+                      ? 'success'
+                      : claim.status === 'rejected'
+                        ? 'error'
+                        : claim.status === 'upheld'
+                          ? 'sage'
+                          : 'warning'
+                  }
+                />
+                <Text style={styles.claimText}>{claim.description}</Text>
+                {!!claim.resolution && (
+                  <Text style={styles.claimAnswer}>{claim.resolution}</Text>
+                )}
+                {claim.compensation > 0 && (
+                  <Text style={styles.claimAnswer}>
+                    {t('order.claims.credited', {
+                      amount: formatCedis(claim.compensation, locale),
+                    })}
+                  </Text>
+                )}
+                {claim.retreatment && (
+                  <Text style={styles.claimAnswer}>{t('order.claims.retreatment')}</Text>
+                )}
+              </View>
+            ))}
+          </Card>
+        )}
+
         {/* --------------------------------------------------------- closing */}
         <View style={{ gap: 9 }}>
           <Button
@@ -539,12 +659,25 @@ export default function OrderDetailScreen() {
               icon={<RefreshCcw size={15} color="#FFFFFF" />}
             />
           ) : (
-            <Button
-              label={t('order.cancel.action')}
-              variant="danger"
-              onPress={onCancel}
-              icon={<Ban size={15} color={colors.statusError} />}
-            />
+            <>
+              {/* Offered only while the rules would accept it. A button that
+                  opens a sheet whose every option the server refuses is worse
+                  than no button — see `canReschedule`. */}
+              {movable?.ok && (
+                <Button
+                  label={t('order.reschedule.action')}
+                  variant="ghost"
+                  onPress={() => setSheet('reschedule')}
+                  icon={<CalendarClock size={15} color={colors.textCharcoal} />}
+                />
+              )}
+              <Button
+                label={t('order.cancel.action')}
+                variant="danger"
+                onPress={onCancel}
+                icon={<Ban size={15} color={colors.statusError} />}
+              />
+            </>
           )}
         </View>
       </ScrollView>
@@ -565,8 +698,8 @@ export default function OrderDetailScreen() {
       <Sheet visible={sheet === 'issue'} onClose={() => setSheet(null)}>
         <IssueReporter
           onCancel={() => setSheet(null)}
-          onSubmit={(note, photoUri) => {
-            reportIssue(booking.id, note, photoUri);
+          onSubmit={(note, photoUri, kind) => {
+            reportIssue(booking.id, note, photoUri, kind);
             setSheet(null);
           }}
         />
@@ -582,6 +715,20 @@ export default function OrderDetailScreen() {
             const ok = await confirmDelivery(booking.id, signature, code);
             if (ok) setSheet(null);
             return ok;
+          }}
+        />
+      </Sheet>
+
+      <Sheet visible={sheet === 'reschedule'} onClose={() => setSheet(null)}>
+        <RescheduleSheet
+          booking={booking}
+          onCancel={() => setSheet(null)}
+          onConfirm={async (change) => {
+            // Rethrows on failure so the sheet stays open holding the server's
+            // sentence — a window that filled while they were choosing is
+            // something the customer has to see and act on.
+            await rescheduleBooking(booking.id, change);
+            setSheet(null);
           }}
         />
       </Sheet>
@@ -703,6 +850,10 @@ function Row({ label, value, emphasis }: { label: string; value: string; emphasi
 }
 
 const styles = StyleSheet.create({
+  claimRow: { gap: 5, alignItems: 'flex-start' },
+  claimText: { fontSize: 12.5, lineHeight: 18, color: colors.textCharcoal },
+  claimAnswer: { fontSize: 11.5, lineHeight: 17, color: colors.textSlate },
+
   container: { flex: 1, backgroundColor: colors.bgIvory },
 
   header: {

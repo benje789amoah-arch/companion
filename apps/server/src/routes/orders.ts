@@ -5,12 +5,18 @@
 
 import { Router } from 'express';
 import {
+  DEFAULT_RIDER_JOB_LIMIT,
+  REFERRAL_REWARD,
   applyStatus,
   isTerminal,
+  onShift,
   orderToJob,
+  roundCedis,
   toBookingStatus,
+  withinJobLimit,
   type Job,
   type JobStatus,
+  type HubStage,
   type JobStatusPatch,
   type LaundryBag,
   type Order,
@@ -37,6 +43,33 @@ import { guard, nowLabel, notFound, orderView, writtenOrderView } from '../helpe
  * delivered, and the customer would be told so.
  */
 export const ordersRouter = Router();
+
+/**
+ * The most jobs one courier may hold at once.
+ *
+ * `RIDER_JOB_LIMIT` in the environment wins, so a laundry with cargo bikes can
+ * raise it without a deploy — the same arrangement `PICKUP_SLOT_CAPACITY` has,
+ * and for the same reason: the desk knows its own fleet better than a constant
+ * does. Anything unparseable or below one falls back to core's number rather
+ * than to zero, because a misconfigured variable that let nobody accept
+ * anything would take dispatch offline entirely.
+ */
+/**
+ * The most garments one bag can be recorded as holding.
+ *
+ * Not a physical limit — it is a typo limit. This number is typed at a bench by
+ * somebody with a bag open in front of them, and `1000` is one slip from `100`.
+ * A ceiling makes the slip visible where it is made rather than on the
+ * customer's receipt.
+ */
+const MAX_BAG_ITEMS = 200;
+
+function jobLimit(): number {
+  const configured = Number(process.env.RIDER_JOB_LIMIT);
+  return Number.isFinite(configured) && configured >= 1
+    ? Math.floor(configured)
+    : DEFAULT_RIDER_JOB_LIMIT;
+}
 
 /** What dispatch narrates to the customer at each step of the workflow. */
 const STATUS_SCRIPT: Partial<Record<JobStatus, string>> = {
@@ -158,6 +191,48 @@ ordersRouter.post(
       }
 
       /**
+       * How much this courier is already carrying, and whether they are on.
+       *
+       * Both checked inside the transaction, on the locked row, because both are
+       * races otherwise: a courier tapping accept on six cards at once used to
+       * take all six, since nothing counted what they held between the read and
+       * the write. Re-accepting a job they already hold is exempt — the count
+       * includes it, so charging them for it would refuse an idempotent replay.
+       */
+      if (existing.dispatch.riderId !== riderId) {
+        const open = await t.jobs.countOpenForRider(riderId);
+        const room = withinJobLimit(open, jobLimit());
+        if (!room.ok) return { kind: 'refused', check: room } as const;
+
+        /**
+         * And whether they are rostered to be working at all.
+         *
+         * `active` says a courier is on the payroll and `isOnline` says their
+         * phone is unlocked; neither says they are on shift. Somebody who
+         * finished at six and left the app open in a drawer was both, and could
+         * take a collection nobody was going to make.
+         *
+         * A courier with no shifts on the roster at all is let through. The rota
+         * is new, and a laundry that has not filled one in yet must not find its
+         * whole fleet locked out of the board by a table nobody has populated —
+         * that is a migration turning into an outage.
+         */
+        const shifts = await t.shifts.forRider(riderId);
+        if (shifts.length > 0 && !onShift(shifts)) {
+          return {
+            kind: 'refused',
+            check: {
+              ok: false,
+              reason: 'off-shift' as const,
+              message:
+                'You are not on shift right now, so this job is not yours to take. ' +
+                'Check the rota with the desk.',
+            },
+          } as const;
+        }
+      }
+
+      /**
        * A job already down the board is claimed where it stands.
        *
        * Most accepts are of something `unassigned`, and `assigned` is the right
@@ -183,6 +258,12 @@ ordersRouter.post(
         return;
       case 'closed':
         res.status(409).json({ error: 'That job is already closed.' });
+        return;
+      case 'refused':
+        // The sentence is core's, written for the courier reading it on a
+        // scooter — "you are already carrying six" is a different problem from
+        // "you are not on shift", and the console shows whichever it is.
+        res.status(409).json({ error: outcome.check.message, reason: outcome.check.reason });
         return;
       default:
         res.json(writtenOrderView(outcome.job));
@@ -306,6 +387,234 @@ const HANDOFF_GATES: Partial<
 };
 
 /**
+ * Checks a load in at the hub: what is in each bag, and what it weighs.
+ *
+ * This is where the two numbers on a customer's manifest stop being fiction.
+ * `weight` and `itemCount` used to be minted with the booking, in `bagsForJob`,
+ * from the digits of the job id — a hash formatted to one decimal place with
+ * `kg` after it, and a second hash between three and ten. They were printed on
+ * the courier's scanner, on the customer's bag manifest and added up on the hub
+ * console, and nobody had weighed or counted anything. Both fields are now
+ * absent until this route fills them in.
+ *
+ * Supervisor only, and deliberately not the courier: the count that matters is
+ * the one taken at the hub with the bag open on a bench, not one guessed at a
+ * doorstep with the engine running. The courier's job is to get the bags here
+ * with the codes matching, which they already do.
+ *
+ * Idempotent on the bag. Re-checking a bag overwrites its count rather than
+ * adding to it — somebody recounting is correcting themselves, and a route that
+ * doubled the total on a second pass would make the correction worse than the
+ * mistake.
+ */
+ordersRouter.post(
+  '/:id/intake',
+  requireSupervisor,
+  guard(async (req, res) => {
+    const body = (req.body ?? {}) as {
+      bags?: { id: string; itemCount?: number; weight?: string }[];
+      garments?: { bagId?: string; description?: string; condition?: string }[];
+      machine?: string;
+      batch?: string;
+      notes?: string;
+    };
+
+    const supervisor = req.supervisor!;
+    const counts = Array.isArray(body.bags) ? body.bags : [];
+
+    if (counts.length === 0) {
+      res.status(400).json({ error: 'Check in at least one bag.' });
+      return;
+    }
+
+    /**
+     * A count is a whole number of garments, and there is a ceiling on it.
+     *
+     * Not because a bag cannot hold a hundred shirts, but because this number
+     * is typed by a person at a bench and `1000` is a slip of the thumb away
+     * from `100`. The ceiling makes the slip visible at the moment it is made
+     * rather than on the customer's receipt.
+     */
+    for (const bag of counts) {
+      if (!bag?.id) {
+        res.status(400).json({ error: 'Every line needs the bag it belongs to.' });
+        return;
+      }
+
+      if (bag.itemCount !== undefined) {
+        if (!Number.isInteger(bag.itemCount) || bag.itemCount < 0 || bag.itemCount > MAX_BAG_ITEMS) {
+          res.status(400).json({
+            error: `A bag holds between 0 and ${MAX_BAG_ITEMS} garments. Check that count.`,
+            reason: 'implausible-count',
+            bag: bag.id,
+          });
+          return;
+        }
+      }
+    }
+
+    const named = (body.garments ?? []).filter((garment) => garment?.description?.trim());
+
+    const outcome = await store.tx(async (t) => {
+      const job = await t.jobs.find(req.params.id, { lock: true });
+      if (!job) return { kind: 'missing' } as const;
+
+      const at = new Date().toISOString();
+      const wanted = new Map(counts.map((bag) => [bag.id, bag]));
+
+      /**
+       * The counts go onto the bag records the job already carries.
+       *
+       * Onto the existing manifest rather than into a table of their own,
+       * because a bag has no table — bags are minted with the job and live in
+       * `jobs.dispatch` as JSON. A count is a property of the bag, and putting
+       * it anywhere else would mean every surface that shows a bag doing a join
+       * to find out what is in it.
+       *
+       * Bags not named in the request are left exactly as they were, so a desk
+       * checking in three of four bags now and the fourth when it turns up does
+       * not blank the three.
+       */
+      const bags = job.dispatch.bags.map((bag) => {
+        const update = wanted.get(bag.id);
+        if (!update) return bag;
+
+        return {
+          ...bag,
+          itemCount: update.itemCount ?? bag.itemCount,
+          weight: update.weight?.trim() || bag.weight,
+          countedAt: at,
+          countedBy: supervisor.name,
+        };
+      });
+
+      const unknown = counts.filter(
+        (bag) => !job.dispatch.bags.some((existing) => existing.id === bag.id)
+      );
+
+      if (unknown.length > 0) {
+        return { kind: 'unknown-bag', bag: unknown[0].id } as const;
+      }
+
+      const saved = await t.jobs.upsert({
+        ...job,
+        updatedAt: at,
+        dispatch: { ...job.dispatch, bags },
+      });
+
+      if (named.length > 0) {
+        await t.garments.record(
+          saved.id,
+          named.map((garment, index) => ({
+            // Deterministic on the order and the position, so a desk that
+            // submits the same list twice corrects its own rows rather than
+            // filing a second copy of every garment.
+            id: `garment-${saved.id}-${index}`,
+            bagId: garment.bagId,
+            description: garment.description!.trim().slice(0, 200),
+            condition: (garment.condition ?? '').trim().slice(0, 300),
+            recordedBy: supervisor.name,
+          }))
+        );
+      }
+
+      const counted = counts.reduce((sum, bag) => sum + (bag.itemCount ?? 0), 0);
+
+      await t.hubEvents.record({
+        id: `hub-${saved.id}-intake-${Date.now()}`,
+        jobId: saved.id,
+        stage: 'intake',
+        machine: body.machine?.trim() ?? '',
+        batch: body.batch?.trim() ?? '',
+        operator: supervisor.email,
+        operatorName: supervisor.name,
+        notes: body.notes?.trim() ?? '',
+      });
+
+      /**
+       * The count goes on the trail as well as onto the bag.
+       *
+       * Because it is the number every later dispute is argued against: if a
+       * customer says fourteen went in and twelve came back, the answer has to
+       * be attributable to whoever wrote it down, and `job_garments` records
+       * only the garments somebody bothered to name.
+       */
+      await recordAudit(t, {
+        actor: supervisor.email,
+        actorName: supervisor.name,
+        action: 'Load checked in',
+        details:
+          `Counted ${counted} garment${counted === 1 ? '' : 's'} across ` +
+          `${counts.length} bag${counts.length === 1 ? '' : 's'} on ${saved.reference}` +
+          (named.length > 0 ? `, naming ${named.length} of them` : ''),
+        type: 'stage',
+        orderId: saved.id,
+        subject: saved.customer.email,
+      });
+
+      return { kind: 'ok', job: saved } as const;
+    });
+
+    if (outcome.kind === 'missing') {
+      notFound(res, 'Order');
+      return;
+    }
+
+    if (outcome.kind === 'unknown-bag') {
+      res.status(400).json({
+        error: `${outcome.bag} is not a bag on this order.`,
+        reason: 'unknown-bag',
+      });
+      return;
+    }
+
+    res.json(writtenOrderView(outcome.job));
+  })
+);
+
+/**
+ * What happened to this order at the hub, and what was in it.
+ *
+ * Staff only. This is the pane a supervisor opens when a customer says
+ * something came back wrong — the production events in order, and the garments
+ * anybody named on the way through.
+ */
+ordersRouter.get(
+  '/:id/production',
+  requireStaff,
+  guard(async (req, res) => {
+    const job = await store.jobs.find(req.params.id);
+    if (!job) {
+      notFound(res, 'Order');
+      return;
+    }
+
+    const [events, garments] = await Promise.all([
+      store.hubEvents.forJob(job.id),
+      store.garments.forJob(job.id),
+    ]);
+
+    res.json({ events, garments });
+  })
+);
+
+/**
+ * Which hub step a transition *into* each status represents.
+ *
+ * Keyed on the destination rather than the origin because that is what the
+ * request carries, and because the destination is the thing that just finished:
+ * a job arriving at `processing` is a job whose wash is done.
+ *
+ * `dropped_off` is the courier's hand-off at the counter rather than the desk's
+ * work, so it is not here — the bags being checked in is recorded by the
+ * intake route, which is where somebody counts them.
+ */
+const HUB_STAGE_FOR: Partial<Record<JobStatus, HubStage>> = {
+  processing: 'wash',
+  ready_for_delivery: 'finish',
+};
+
+/**
  * Advances a job.
  *
  * Mostly a courier's route, but not only: the customer's own app completes the
@@ -332,6 +641,12 @@ ordersRouter.patch(
       dropoffCode?: string;
       /** Why the hand-off completed without one. */
       overrideReason?: string;
+      /**
+       * What actually happened to the load, when the desk is confirming a hub
+       * stage. See `hub_events`: the audit trail already records *that* a
+       * supervisor confirmed a wash, which is a decision; this is the work.
+       */
+      hub?: { machine?: string; batch?: string; notes?: string };
     };
 
     if (!patch?.status) {
@@ -483,6 +798,38 @@ ordersRouter.patch(
        * confirming a wash, the stage stepper putting a stuck order where it
        * belongs — because that is the move nothing else attributes to anybody.
        */
+      /**
+       * The production record, for the two stages that are physical work.
+       *
+       * Separate from the audit line below because they answer different
+       * questions. The trail answers "who said this load was washed"; this
+       * answers "which machine washed it, in which batch" — and that second
+       * question is the one you need when three customers report the same
+       * discolouration and the only thing their orders have in common is Washer
+       * 3 on Tuesday afternoon.
+       *
+       * Written whenever the desk advances one of these stages, with or without
+       * a machine named: a row saying a named operator confirmed the wash and
+       * did not say on what is still more than the nothing that was here before,
+       * and it keeps the timeline of an order complete.
+       */
+      if (access.kind === 'supervisor' && existing.status !== job.status) {
+        const stage = HUB_STAGE_FOR[job.status];
+
+        if (stage) {
+          await t.hubEvents.record({
+            id: `hub-${job.id}-${stage}-${Date.now()}`,
+            jobId: job.id,
+            stage,
+            machine: patch.hub?.machine?.trim() ?? '',
+            batch: patch.hub?.batch?.trim() ?? '',
+            operator: access.supervisor.email,
+            operatorName: access.supervisor.name,
+            notes: patch.hub?.notes?.trim() ?? '',
+          });
+        }
+      }
+
       if (access.kind === 'supervisor' && existing.status !== job.status) {
         const reason = patch.overrideReason?.trim();
 
@@ -642,7 +989,72 @@ export async function transition(
         todayEarnings: Number((rider.todayEarnings + updated.payment.amount).toFixed(2)),
       });
     }
+
+    await settleReferral(t, updated.customer.email);
   }
 
   return updated;
+}
+
+/**
+ * Pays the referrer, once, when the person they introduced completes an order.
+ *
+ * On the *first completed delivery* rather than on registration, which is the
+ * whole design: rewarding a registration rewards making accounts, and a
+ * referrer needs only an email address and a few minutes to make several.
+ * Tying it to a delivered order ties it to money the laundry has actually
+ * taken.
+ *
+ * `referral_rewarded_at` is what makes it once. It is stamped in the same
+ * transaction as the credit, so a customer's second order finds it already set
+ * and does nothing — and a failure between the two rolls both back rather than
+ * paying without recording it.
+ *
+ * Silent on every path that does not pay. A referral that cannot be settled —
+ * no referrer, already paid, a referrer whose account has since been deleted —
+ * must not fail the delivery it is hanging off. The courier has done their job.
+ */
+async function settleReferral(t: Repositories, customerEmail: string): Promise<void> {
+  if (!customerEmail) return;
+
+  try {
+    const customer = await t.accounts.find(customerEmail);
+    if (!customer?.referredBy || customer.referralRewardedAt) return;
+
+    const referrer = await t.accounts.find(customer.referredBy);
+    if (!referrer) return;
+
+    const balance = roundCedis((referrer.walletBalance ?? 0) + REFERRAL_REWARD);
+    await t.accounts.updateProfile(referrer.email, { walletBalance: balance });
+
+    await t.transactions.upsert({
+      id: `txn-referral-${customer.email.replace(/[^a-z0-9]+/gi, '-')}`,
+      userEmail: referrer.email,
+      amount: REFERRAL_REWARD,
+      method: 'Referral',
+      status: 'Successful',
+      // Deterministic on the *referred* customer, not on the referrer: one
+      // person introduced is one reward, however many people introduced them.
+      reference: `TXN-REFERRAL-${customer.email.toLowerCase()}`,
+      timestamp: new Date().toISOString(),
+      description: `Referral reward — ${customer.name || customer.email} completed their first order`,
+    });
+
+    await t.accounts.updateProfile(customer.email, {
+      referralRewardedAt: new Date().toISOString(),
+    });
+
+    await t.notifications.insert({
+      id: `notif-referral-${customer.email.replace(/[^a-z0-9]+/gi, '-')}`,
+      title: 'Referral reward paid',
+      body: `${referrer.name || referrer.email} earned GHS ${REFERRAL_REWARD.toFixed(2)} for introducing ${customer.name || customer.email}.`,
+      timestamp: nowLabel(),
+      type: 'order',
+      read: false,
+    });
+  } catch (error) {
+    // Logged, never thrown: a delivery must not fail because a bonus could not
+    // be paid.
+    console.error(`[referrals] could not settle a reward for ${customerEmail}:`, error);
+  }
 }

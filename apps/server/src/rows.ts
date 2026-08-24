@@ -8,7 +8,16 @@ import type {
   ActivePlan,
   AuditEvent,
   AuditEventType,
+  BookingItem,
+  Claim,
+  ClaimStatus,
   Coords,
+  Garment,
+  Hub,
+  HubEvent,
+  Invoice,
+  InvoiceLine,
+  InvoiceStatus,
   Job,
   JobCustomer,
   JobDispatch,
@@ -21,8 +30,13 @@ import type {
   MessageSender,
   Notification,
   PaymentTransaction,
+  PromoCode,
+  PromoKind,
+  RecurringPickup,
+  RiderShift,
   RiderState,
   SavedAddress,
+  TaxLine,
   UserAccount,
 } from '@freshfold/core';
 
@@ -248,6 +262,9 @@ export interface AccountRow {
   plan_cancel_at_end: boolean | null;
   blocked_at: string | null;
   blocked_reason: string | null;
+  referral_code: string | null;
+  referred_by: string | null;
+  referral_rewarded_at: string | null;
 }
 
 export interface SupervisorRow {
@@ -407,6 +424,9 @@ export function toAccount(row: AccountRow): StoredAccount {
     plan: toActivePlan(row),
     blockedAt: opt(row.blocked_at),
     blockedReason: opt(row.blocked_reason),
+    referralCode: opt(row.referral_code),
+    referredBy: opt(row.referred_by),
+    referralRewardedAt: opt(row.referral_rewarded_at),
   };
 }
 
@@ -523,5 +543,325 @@ export function toTrackingToken(row: TrackingTokenRow): StoredTrackingToken {
     bookingId: row.booking_id,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The laundry itself
+// ---------------------------------------------------------------------------
+
+export interface GarmentRow {
+  id: string;
+  job_id: string;
+  bag_id: string | null;
+  description: string;
+  condition: string;
+  flagged: boolean;
+  recorded_by: string;
+  created_at: string;
+}
+
+export function toGarment(row: GarmentRow): Garment {
+  return {
+    id: row.id,
+    jobId: row.job_id,
+    bagId: opt(row.bag_id),
+    description: row.description,
+    condition: row.condition,
+    flagged: row.flagged,
+    recordedBy: row.recorded_by,
+    createdAt: row.created_at,
+  };
+}
+
+export interface HubEventRow {
+  id: string;
+  job_id: string;
+  stage: string;
+  machine: string;
+  batch: string;
+  operator: string;
+  operator_name: string;
+  notes: string;
+  created_at: string;
+}
+
+export function toHubEvent(row: HubEventRow): HubEvent {
+  return {
+    id: row.id,
+    jobId: row.job_id,
+    stage: row.stage,
+    machine: row.machine,
+    batch: row.batch,
+    operator: row.operator,
+    operatorName: row.operator_name,
+    notes: row.notes,
+    createdAt: row.created_at,
+  };
+}
+
+export interface ClaimRow {
+  id: string;
+  job_id: string;
+  customer_email: string;
+  kind: string;
+  description: string;
+  photo: string | null;
+  status: ClaimStatus;
+  resolution: string;
+  /**
+   * `numeric` comes back as a string from node-postgres, because a `numeric`
+   * can hold more precision than a JavaScript number and the driver refuses to
+   * lose it silently. Every money column in this file is read the same way.
+   */
+  compensation: string | number;
+  transaction_ref: string | null;
+  retreatment: boolean;
+  handled_by: string;
+  handled_by_name: string;
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+}
+
+export function toClaim(row: ClaimRow): Claim {
+  return {
+    id: row.id,
+    jobId: row.job_id,
+    customerEmail: row.customer_email,
+    kind: row.kind,
+    description: row.description,
+    photo: opt(row.photo),
+    status: row.status,
+    resolution: row.resolution,
+    compensation: Number(row.compensation) || 0,
+    transactionRef: opt(row.transaction_ref),
+    retreatment: row.retreatment,
+    handledBy: row.handled_by,
+    handledByName: row.handled_by_name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    closedAt: opt(row.closed_at),
+  };
+}
+
+export interface RiderShiftRow {
+  id: string;
+  rider_id: string;
+  starts_at: string;
+  ends_at: string;
+  note: string;
+  created_by: string;
+  created_at: string;
+}
+
+export function toRiderShift(row: RiderShiftRow): RiderShift {
+  return {
+    id: row.id,
+    riderId: row.rider_id,
+    startsAt: row.starts_at,
+    endsAt: row.ends_at,
+    note: row.note,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Growing the business
+// ---------------------------------------------------------------------------
+
+export interface PromoCodeRow {
+  code: string;
+  label: string;
+  kind: PromoKind;
+  /** `numeric` arrives as a string. See `ClaimRow.compensation`. */
+  value: string | number;
+  max_discount: string | number | null;
+  min_spend: string | number;
+  starts_at: string | null;
+  expires_at: string | null;
+  max_uses: number | null;
+  max_per_customer: number;
+  first_order_only: boolean;
+  active: boolean;
+  created_by: string;
+  created_at: string;
+  /** Present only on the desk's list, which counts redemptions alongside. */
+  uses?: number;
+}
+
+export function toPromoCode(row: PromoCodeRow): PromoCode {
+  return {
+    code: row.code,
+    label: row.label,
+    kind: row.kind,
+    value: Number(row.value) || 0,
+    maxDiscount: row.max_discount === null ? undefined : Number(row.max_discount),
+    minSpend: Number(row.min_spend) || 0,
+    startsAt: opt(row.starts_at),
+    expiresAt: opt(row.expires_at),
+    maxUses: row.max_uses === null ? undefined : row.max_uses,
+    maxPerCustomer: row.max_per_customer,
+    firstOrderOnly: row.first_order_only,
+    active: row.active,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    uses: row.uses,
+  };
+}
+
+export interface RecurringPickupRow {
+  id: string;
+  customer_email: string;
+  weekday: number;
+  pickup_time: string;
+  delivery_time: string | null;
+  items: BookingItem[];
+  scent: string | null;
+  starch: string | null;
+  addons: string[];
+  address: string;
+  suburb: string;
+  city: string;
+  pickup_coords: Coords | null;
+  notes: string;
+  active: boolean;
+  lead_days: number;
+  last_booked_for: string | null;
+  starts_on: string;
+  ends_on: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export function toRecurringPickup(row: RecurringPickupRow): RecurringPickup {
+  return {
+    id: row.id,
+    customerEmail: row.customer_email,
+    weekday: row.weekday,
+    pickupTime: row.pickup_time,
+    deliveryTime: opt(row.delivery_time),
+    items: row.items ?? [],
+    scent: opt(row.scent),
+    starch: opt(row.starch),
+    addons: row.addons ?? [],
+    address: row.address,
+    suburb: row.suburb,
+    city: row.city,
+    pickupCoords: opt(row.pickup_coords),
+    notes: row.notes,
+    active: row.active,
+    leadDays: row.lead_days,
+    // `date` comes back as a `Date` from the driver for some configurations and
+    // as a string for others; sliced either way so the domain record is always
+    // the `YYYY-MM-DD` the calendar arithmetic expects.
+    lastBookedFor: row.last_booked_for ? String(row.last_booked_for).slice(0, 10) : undefined,
+    startsOn: String(row.starts_on).slice(0, 10),
+    endsOn: row.ends_on ? String(row.ends_on).slice(0, 10) : undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export interface InvoiceRow {
+  id: string;
+  number: string;
+  bill_to_email: string;
+  bill_to_name: string;
+  bill_to_org: string;
+  bill_to_address: string;
+  bill_to_tin: string;
+  period_start: string | null;
+  period_end: string | null;
+  net: string | number;
+  tax: string | number;
+  total: string | number;
+  tax_lines: TaxLine[];
+  paid: string | number;
+  status: InvoiceStatus;
+  due_on: string | null;
+  issued_at: string | null;
+  paid_at: string | null;
+  notes: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export function toInvoice(row: InvoiceRow): Invoice {
+  return {
+    id: row.id,
+    number: row.number,
+    billToEmail: row.bill_to_email,
+    billToName: row.bill_to_name,
+    billToOrg: row.bill_to_org,
+    billToAddress: row.bill_to_address,
+    billToTin: row.bill_to_tin,
+    periodStart: row.period_start ? String(row.period_start).slice(0, 10) : undefined,
+    periodEnd: row.period_end ? String(row.period_end).slice(0, 10) : undefined,
+    net: Number(row.net) || 0,
+    tax: Number(row.tax) || 0,
+    total: Number(row.total) || 0,
+    taxLines: row.tax_lines ?? [],
+    paid: Number(row.paid) || 0,
+    status: row.status,
+    dueOn: row.due_on ? String(row.due_on).slice(0, 10) : undefined,
+    issuedAt: opt(row.issued_at),
+    paidAt: opt(row.paid_at),
+    notes: row.notes,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export interface InvoiceLineRow {
+  id: string;
+  invoice_id: string;
+  job_id: string | null;
+  description: string;
+  quantity: string | number;
+  unit_price: string | number;
+  amount: string | number;
+  position: number;
+}
+
+export function toInvoiceLine(row: InvoiceLineRow): InvoiceLine {
+  return {
+    id: row.id,
+    invoiceId: row.invoice_id,
+    jobId: opt(row.job_id),
+    description: row.description,
+    quantity: Number(row.quantity) || 0,
+    unitPrice: Number(row.unit_price) || 0,
+    amount: Number(row.amount) || 0,
+    position: row.position,
+  };
+}
+
+export interface HubRow {
+  id: string;
+  name: string;
+  address: string;
+  lat: number;
+  lng: number;
+  suburbs: string[];
+  active: boolean;
+  is_default: boolean;
+  created_at: string;
+}
+
+export function toHub(row: HubRow): Hub {
+  return {
+    id: row.id,
+    name: row.name,
+    address: row.address,
+    lat: row.lat,
+    lng: row.lng,
+    suburbs: row.suburbs ?? [],
+    active: row.active,
+    isDefault: row.is_default,
+    createdAt: row.created_at,
   };
 }

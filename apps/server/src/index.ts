@@ -13,11 +13,17 @@ import { emailProvider } from './email';
 import { store } from './store';
 import { developmentCredentials, ensureSeeded, SeedError } from './seed';
 import { startHubCycle } from './hub';
+import { startRecurringCycle } from './recurring-cycle';
 import { guard } from './helpers';
 import { requireSupervisor } from './auth';
 import { adminRouter } from './routes/admin';
 import { authRouter } from './routes/auth';
 import { bookingsRouter } from './routes/bookings';
+import { claimsRouter } from './routes/claims';
+import { promotionsRouter } from './routes/promotions';
+import { hubsRouter } from './routes/hubs';
+import { invoicesRouter } from './routes/invoices';
+import { recurringRouter } from './routes/recurring';
 import { directionsRouter } from './routes/directions';
 import { ordersRouter } from './routes/orders';
 import { placesRouter } from './routes/places';
@@ -131,6 +137,11 @@ app.get(
 app.use('/api/admin', adminRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/bookings', bookingsRouter);
+app.use('/api/claims', claimsRouter);
+app.use('/api/promotions', promotionsRouter);
+app.use('/api/recurring', recurringRouter);
+app.use('/api/invoices', invoicesRouter);
+app.use('/api/hubs', hubsRouter);
 app.use('/api/directions', directionsRouter);
 app.use('/api/orders', ordersRouter);
 app.use('/api/places', placesRouter);
@@ -307,9 +318,17 @@ async function start(): Promise<void> {
   // closed. See `./hub`.
   const stopHubCycle = startHubCycle();
 
+  // And the standing orders every membership plan sells. Unlike the hub cycle
+  // this runs in production by default: a timer booking a pickup the customer
+  // explicitly and repeatedly asked for is the feature working, where a timer
+  // advancing a stage nobody confirmed is a claim nobody made. See
+  // `./recurring-cycle`.
+  const stopRecurringCycle = startRecurringCycle();
+
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => {
       stopHubCycle();
+      stopRecurringCycle();
       server.close(() => {
         void closeDatabase().finally(() => process.exit(0));
       });

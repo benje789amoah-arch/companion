@@ -26,3 +26,8 @@ export * from './membership';
 export * from './loyalty';
 export * from './services';
 export * from './pricing';
+export * from './reschedule';
+export * from './operations';
+export * from './tax';
+export * from './promotions';
+export * from './recurring';

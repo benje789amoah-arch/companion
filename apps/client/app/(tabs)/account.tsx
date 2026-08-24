@@ -10,6 +10,7 @@ import {
   Bell,
   Bot,
   ChevronRight,
+  Repeat,
   LogOut,
   Mail,
   MapPin,
@@ -333,6 +334,14 @@ export default function AccountScreen() {
         */}
         <View style={styles.section}>
           <Card style={{ gap: 2 }}>
+            {/* The weekly pickups a membership plan has always sold and nothing
+                ever scheduled, plus the referral code. */}
+            <SupportRow
+              icon={<Repeat size={15} color={colors.brandSage} />}
+              label={t('standing.title')}
+              caption={t('standing.subtitle')}
+              onPress={() => router.push('/standing')}
+            />
             <SupportRow
               icon={<Settings size={15} color={colors.brandSage} />}
               label={t('settings.title')}

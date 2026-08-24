@@ -7,6 +7,7 @@ import { Router } from 'express';
 import {
   LAUNDRY_HUB,
   PHONE_LENGTH_MESSAGE,
+  checkShift,
   isCompletePhone,
   phoneDigits,
   type RiderTelemetry,
@@ -501,5 +502,146 @@ ridersRouter.patch(
       return;
     }
     res.json(sanitizeRider(rider));
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Shifts
+// ---------------------------------------------------------------------------
+
+/**
+ * The rota, across the fleet, for a window.
+ *
+ * Staff only — it is the roster with names on it. Defaults to the coming week,
+ * which is what the roster console opens on, and takes an explicit window for
+ * the dispatcher looking at tonight.
+ *
+ * Registered before `/:id/shifts` deliberately: Express matches in order, and
+ * `/shifts` would otherwise be read as a rider whose id is `shifts`.
+ */
+ridersRouter.get(
+  '/shifts',
+  requireStaff,
+  guard(async (req, res) => {
+    const from = typeof req.query.from === 'string' ? req.query.from : new Date().toISOString();
+    const to =
+      typeof req.query.to === 'string'
+        ? req.query.to
+        : new Date(Date.now() + 7 * 86_400_000).toISOString();
+
+    if (Number.isNaN(Date.parse(from)) || Number.isNaN(Date.parse(to))) {
+      res.status(400).json({ error: 'A window needs two timestamps.' });
+      return;
+    }
+
+    res.json(await store.shifts.between(from, to));
+  })
+);
+
+/**
+ * The courier's own rota.
+ *
+ * Their own and nobody else's, which is why it is keyed on the session rather
+ * than on an id in the path. A courier refused a job for being off shift needs
+ * to be able to see when they are on without asking the desk.
+ */
+ridersRouter.get(
+  '/me/shifts',
+  requireRider,
+  guard(async (req, res) => {
+    res.json(await store.shifts.forRider(req.rider!.id));
+  })
+);
+
+/** One courier's blocks. Staff only, for the roster console. */
+ridersRouter.get(
+  '/:id/shifts',
+  requireStaff,
+  guard(async (req, res) => {
+    res.json(await store.shifts.forRider(req.params.id));
+  })
+);
+
+/**
+ * Rosters a courier for a stretch of time. Supervisor only.
+ *
+ * The overlap check runs inside the transaction against the courier's existing
+ * blocks, because two supervisors filling in the same rota at once is exactly
+ * how a courier ends up rostered twice for Tuesday evening — the read and the
+ * write have to be one act.
+ */
+ridersRouter.post(
+  '/:id/shifts',
+  requireSupervisor,
+  guard(async (req, res) => {
+    const { startsAt, endsAt, note } = (req.body ?? {}) as {
+      startsAt?: string;
+      endsAt?: string;
+      note?: string;
+    };
+
+    const rider = await store.riders.find(req.params.id);
+    if (!rider) {
+      notFound(res, 'Rider');
+      return;
+    }
+
+    const proposal = { startsAt: startsAt ?? '', endsAt: endsAt ?? '' };
+
+    const outcome = await store.tx(async (t) => {
+      const existing = await t.shifts.forRider(rider.id);
+      const verdict = checkShift(proposal, existing);
+      if (!verdict.ok) return { kind: 'refused', verdict } as const;
+
+      const shift = await t.shifts.create({
+        id: `shift-${rider.id}-${Date.now()}`,
+        riderId: rider.id,
+        startsAt: new Date(proposal.startsAt).toISOString(),
+        endsAt: new Date(proposal.endsAt).toISOString(),
+        note: (note ?? '').trim().slice(0, 200),
+        createdBy: req.supervisor!.email,
+      });
+
+      await recordAudit(t, {
+        ...deskActor(req),
+        action: 'Shift rostered',
+        details:
+          `Put ${rider.name} on from ${shift.startsAt} to ${shift.endsAt}` +
+          (shift.note ? ` (${shift.note})` : ''),
+        type: 'roster',
+        subject: rider.id,
+      });
+
+      return { kind: 'ok', shift } as const;
+    });
+
+    if (outcome.kind === 'refused') {
+      res.status(409).json({ error: outcome.verdict.message, reason: outcome.verdict.reason });
+      return;
+    }
+
+    res.status(201).json(outcome.shift);
+  })
+);
+
+/**
+ * Takes a block off the rota. Supervisor only.
+ *
+ * No check that the shift is in the future. A rota entry recorded by mistake
+ * yesterday is exactly the one somebody needs to remove, and this table is for
+ * planning rather than for payroll — see the note on the migration.
+ */
+ridersRouter.delete(
+  '/shifts/:shiftId',
+  requireSupervisor,
+  guard(async (req, res) => {
+    const removed = await store.shifts.remove(req.params.shiftId);
+
+    if (!removed) {
+      notFound(res, 'Shift');
+      return;
+    }
+
+    res.json({ ok: true });
   })
 );

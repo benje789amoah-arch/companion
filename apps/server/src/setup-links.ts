@@ -5,7 +5,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { EMAIL_SHAPE, type Booking } from '@freshfold/core';
-import { bookingSetupMail, sendMail } from './email';
+import { bookingRescheduledMail, bookingSetupMail, sendMail } from './email';
 import { store, type StoredSetupToken } from './store';
 
 /**
@@ -120,14 +120,7 @@ export async function mailBookingConfirmation(booking: Booking): Promise<boolean
     const sent = await sendMail(
       bookingSetupMail(
         email,
-        {
-          id: booking.id,
-          name: booking.name,
-          serviceType: booking.serviceType,
-          pickupDate: booking.pickupDate,
-          pickupTime: booking.pickupTime,
-          address: [booking.address, booking.suburb].filter(Boolean).join(', '),
-        },
+        mailDetails(booking),
         link,
         hasPassword
       )
@@ -137,6 +130,53 @@ export async function mailBookingConfirmation(booking: Booking): Promise<boolean
     return sent;
   } catch (error) {
     console.error(`[bookings] confirmation mail failed for ${booking.id}:`, error);
+    return false;
+  }
+}
+
+/** The booking, as the mail templates want it. */
+function mailDetails(booking: Booking) {
+  return {
+    id: booking.id,
+    name: booking.name,
+    serviceType: booking.serviceType,
+    items: booking.items,
+    quantity: booking.quantity,
+    pickupDate: booking.pickupDate,
+    pickupTime: booking.pickupTime,
+    deliveryDate: booking.deliveryDate,
+    deliveryTime: booking.deliveryTime,
+    address: [booking.address, booking.suburb].filter(Boolean).join(', '),
+  };
+}
+
+/**
+ * Tells the customer their collection moved, and what it moved from.
+ *
+ * No setup token on this one, unlike the confirmation. Rescheduling is behind
+ * `resolveBookingAccess`, so whoever asked for it was already holding either a
+ * session or the tracking token — they have a way in, and minting a second
+ * password-setting link every time somebody changes a date would put a live
+ * credential in the mail for no reason.
+ *
+ * Best effort, like everything else in this file: the booking has already moved
+ * by the time this runs, and a mail provider having a bad morning must not make
+ * the customer think it did not.
+ */
+export async function mailReschedule(
+  booking: Booking,
+  previous: { pickupDate: string; pickupTime: string },
+  movesLeft: number
+): Promise<boolean> {
+  const email = booking.email?.trim();
+  if (!email || !EMAIL_SHAPE.test(email)) return false;
+
+  try {
+    const sent = await sendMail(bookingRescheduledMail(email, mailDetails(booking), previous, movesLeft));
+    if (!sent) console.error(`[bookings] reschedule mail failed for ${booking.id}`);
+    return sent;
+  } catch (error) {
+    console.error(`[bookings] reschedule mail failed for ${booking.id}:`, error);
     return false;
   }
 }

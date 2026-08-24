@@ -351,13 +351,17 @@ export const TESTIMONIALS: Testimonial[] = [
 export {
   DEFAULT_SCENT,
   DEFAULT_STARCH,
+  DELIVERY_TIME_SLOTS,
   PICKUP_TIME_SLOTS,
   SCENTS,
   SPECIALTY_ADDONS,
   STARCH_LEVELS,
+  deliverySlotsFor,
   isGarmentService,
+  taxOn,
   isPlanCoverable,
   priceBreakdown,
+  rescheduledDelivery,
 } from '@freshfold/core';
 
 export type {

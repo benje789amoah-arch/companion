@@ -220,6 +220,43 @@ export const es: Partial<Record<TranslationKey, string>> = {
   // without reordering them.
   'book.date.placeholder': 'AAAA-MM-DD',
   'book.date.hint': 'La entrega se programa para el día siguiente.',
+  'book.return.title': 'Franja de entrega',
+  'book.return.day': 'De vuelta el {date}',
+  'book.return.tooEarly': 'Demasiado pronto — su ropa aún no habría vuelto',
+
+  'standing.title': 'Pedidos fijos',
+  'standing.subtitle': 'Las recogidas semanales que su plan ya paga.',
+  'standing.yours': 'Sus pedidos fijos',
+  'standing.none': 'Ninguno todavía. Cree uno abajo y lo reservaremos cada semana.',
+  'standing.add': 'Añadir una recogida semanal',
+  'standing.create': 'Crear pedido fijo',
+  'standing.collectFrom': 'Se recoge en {address}.',
+  'standing.needAddress': 'Guarde una dirección primero — un pedido fijo necesita un lugar de recogida.',
+  'standing.failed': 'No se pudo guardar. Inténtelo de nuevo.',
+  'standing.paused': 'En pausa',
+  'standing.lastBooked': 'última reserva para el {date}',
+  'standing.notYetBooked': 'aún sin reservar',
+  'standing.remove.title': '¿Detener este pedido fijo?',
+  'standing.remove.body': 'Las reservas ya hechas no se ven afectadas. No se reservará nada más.',
+  'standing.signedOut.title': 'Inicie sesión para los pedidos fijos',
+  'standing.signedOut.body': 'Las recogidas semanales van ligadas a su cuenta, para saber dónde ir y qué devolver.',
+  'standing.referral.title': 'Invite a un amigo',
+  'standing.referral.blurb': 'Recibe {welcome} de descuento en su primer pedido. Usted recibe {reward} cuando se entregue.',
+  'standing.referral.count': '{invited} invitados · {rewarded} recompensados',
+  'standing.referral.pending': 'Su código aparecerá aquí en un momento.',
+  'standing.referral.claimLabel': '¿Tiene el código de un amigo?',
+  'standing.referral.claim': 'Usar este código',
+  'standing.referral.failed': 'No se pudo usar ese código.',
+
+  'book.promo.title': 'Código promocional o de invitación',
+  'book.promo.placeholder': 'FRESHERS24',
+  'book.promo.apply': 'Aplicar',
+  'book.promo.checking': 'Comprobando…',
+  'book.promo.applied': '{code} aplicado — {amount} de descuento.',
+  'book.promo.unreachable': 'No se pudo comprobar el código. Puede reservar igualmente.',
+  'book.summary.promo': 'Código {code}',
+  'book.summary.taxIncluded': 'Impuestos incluidos',
+
   'book.window.title': 'Franja de recogida',
   'book.window.full': 'Completa — elija otra franja',
   'book.window.remaining': 'Sólo quedan {count} en esta franja',
@@ -406,6 +443,24 @@ export const es: Partial<Record<TranslationKey, string>> = {
   'order.missing.body':
     'Esta referencia no está en su historial. Si lo reservó en la web, inicie sesión con el mismo correo para verlo aquí.',
 
+  'order.claims.title': 'Problemas que ha reportado',
+  'order.claims.status.open': 'Reportado',
+  'order.claims.status.investigating': 'En revisión',
+  'order.claims.status.upheld': 'Aceptado — le debemos',
+  'order.claims.status.rejected': 'No aceptado',
+  'order.claims.status.resolved': 'Resuelto',
+  'order.claims.credited': '{amount} abonados a su monedero.',
+  'order.claims.retreatment': 'Volveremos a tratarlo por nuestra cuenta.',
+
+  'order.reschedule.action': 'Cambiar esta recogida',
+  'order.reschedule.title': 'Cambiar esta recogida',
+  'order.reschedule.date': 'Nueva fecha de recogida',
+  'order.reschedule.confirm': 'Cambiar recogida',
+  'order.reschedule.movesLeft': 'Puede cambiar esta reserva {count} veces más.',
+  'order.reschedule.lastMove':
+    'Es la última vez que puede cambiar esta reserva. Después, cancele y reserve de nuevo.',
+  'order.reschedule.failed': 'No se pudo cambiar ahora mismo. Inténtelo de nuevo.',
+
   'order.cancel.action': 'Cancelar este pedido',
   'order.cancel.title': '¿Cancelar este pedido?',
   'order.cancel.body':
@@ -436,6 +491,8 @@ export const es: Partial<Record<TranslationKey, string>> = {
 
   'order.manifest.verified': '{count}/{total} verificadas por usted',
   'order.bag.meta': '{code} · {items} prendas · {weight}',
+  'order.bag.metaNoWeight': '{code} · {items} prendas',
+  'order.bag.uncounted': '{code} · se cuenta al llegar al taller',
 
   'order.row.booked': 'Reservado',
   'order.row.plan': 'Plan',

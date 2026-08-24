@@ -181,10 +181,15 @@ export default function BagScanner({ bags: initial, reference, onConfirm, onCanc
                 <Text style={styles.bagType} numberOfLines={1}>
                   {bag.type}
                 </Text>
-                <Text style={styles.bagWeight}>{bag.weight}</Text>
+                {/* Only once it has been weighed. At the door it never has
+                    been — counting and weighing happen at the hub — so this is
+                    blank on the leg this screen is actually used for. */}
+                {!!bag.weight && <Text style={styles.bagWeight}>{bag.weight}</Text>}
               </View>
               <Text style={styles.bagCode} numberOfLines={1}>
-                {t('scanner.bag.meta', { code: bag.qrCode, items: bag.itemCount })}
+                {bag.itemCount === undefined
+                  ? bag.qrCode
+                  : t('scanner.bag.meta', { code: bag.qrCode, items: bag.itemCount })}
               </Text>
             </View>
 

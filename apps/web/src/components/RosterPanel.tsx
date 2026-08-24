@@ -7,9 +7,11 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   AlertCircle,
   Bike,
+  CalendarClock,
   Copy,
   KeyRound,
   Loader2,
+  Trash2,
   UserMinus,
   UserPlus,
 } from 'lucide-react';
@@ -19,6 +21,8 @@ import {
   PHONE_LENGTH_MESSAGE,
   isCompletePhone,
   limitPhoneInput,
+  onShift,
+  type RiderShift,
   type RiderState,
 } from '@freshfold/core';
 import * as store from '../services/store';
@@ -42,6 +46,24 @@ import { Badge, Button, EmptyState, Field, Input, Panel } from './admin/ui';
  * supervisor chose is one they can guess later, and under time pressure the
  * choice is always `1234`.
  */
+/** "Mon 24 Aug, 17:00 — 21:00", collapsing the day when a block stays inside one. */
+function shiftLabel(shift: RiderShift): string {
+  const from = new Date(shift.startsAt);
+  const to = new Date(shift.endsAt);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return 'Unreadable shift';
+
+  const day = from.toLocaleDateString([], { weekday: 'short', day: '2-digit', month: 'short' });
+  const start = from.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const end = to.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  // An overnight block names both days, because "17:00 — 02:00" on one line
+  // reads as a shift that ran backwards.
+  const sameDay = from.toDateString() === to.toDateString();
+  const endDay = to.toLocaleDateString([], { weekday: 'short', day: '2-digit', month: 'short' });
+
+  return sameDay ? `${day}, ${start} — ${end}` : `${day}, ${start} — ${endDay}, ${end}`;
+}
+
 export default function RosterPanel() {
   const [riders, setRiders] = useState<RiderState[]>([]);
   const [loading, setLoading] = useState(true);
@@ -52,6 +74,27 @@ export default function RosterPanel() {
   const [vehicle, setVehicle] = useState('');
   const [vehiclePlate, setVehiclePlate] = useState('');
   const [creating, setCreating] = useState(false);
+
+  /**
+   * The rota, keyed by courier.
+   *
+   * Loaded for the whole fleet in one call rather than per row: `GET
+   * /riders/shifts` answers a window across everybody, and one request beats a
+   * request per courier on a roster of twenty.
+   *
+   * It matters here rather than only on a planning screen because the accept
+   * route now reads it: a courier with shifts on the roster who is not on one
+   * cannot take a job. `active` says they are on the payroll and `isOnline` says
+   * their phone is unlocked — somebody who finished at six and left the app open
+   * in a drawer was both, and could take a collection nobody was going to make.
+   */
+  const [shifts, setShifts] = useState<Record<string, RiderShift[]>>({});
+  /** The courier whose rota is open, and the block being drafted for them. */
+  const [rostering, setRostering] = useState<string | null>(null);
+  const [shiftStart, setShiftStart] = useState('');
+  const [shiftEnd, setShiftEnd] = useState('');
+  const [shiftNote, setShiftNote] = useState('');
+  const [savingShift, setSavingShift] = useState(false);
 
   /** The courier whose vehicle is being reassigned, and to what. */
   const [reassigning, setReassigning] = useState<RiderState | null>(null);
@@ -70,6 +113,31 @@ export default function RosterPanel() {
     try {
       const list = await store.api.listRiders(token);
       setRiders(list);
+
+      /**
+       * The rota alongside the roster, from a week back to a fortnight ahead.
+       *
+       * Backwards as well as forwards because the pane is where somebody
+       * corrects a block they entered wrong yesterday, and a list that started
+       * at "now" would hide exactly the entry they came to delete.
+       *
+       * Best effort: a rota that will not load must not take the roster down
+       * with it — hiring a courier is the more urgent of the two jobs this pane
+       * does, and it does not need the rota to work.
+       */
+      const rota = await store.api
+        .rosterShifts(token, {
+          from: new Date(Date.now() - 7 * 86_400_000).toISOString(),
+          to: new Date(Date.now() + 14 * 86_400_000).toISOString(),
+        })
+        .catch(() => [] as RiderShift[]);
+
+      const byRider: Record<string, RiderShift[]> = {};
+      for (const shift of rota) {
+        (byRider[shift.riderId] ??= []).push(shift);
+      }
+      setShifts(byRider);
+
       setError('');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not load the roster.');
@@ -77,6 +145,57 @@ export default function RosterPanel() {
       setLoading(false);
     }
   }, []);
+
+  /**
+   * Rosters a block.
+   *
+   * The two fields are `datetime-local`, which yields a string with no zone on
+   * it — `new Date()` reads that in the browser's own zone, which is the right
+   * reading: a supervisor typing 18:00 means six in the evening where they are
+   * standing, and the server stores the instant that resolves to.
+   */
+  const addShift = async (riderId: string, event: React.FormEvent) => {
+    event.preventDefault();
+
+    const token = store.readAdminToken();
+    if (!token) return;
+
+    setSavingShift(true);
+    try {
+      await store.api.createShift(
+        riderId,
+        {
+          startsAt: new Date(shiftStart).toISOString(),
+          endsAt: new Date(shiftEnd).toISOString(),
+          note: shiftNote.trim() || undefined,
+        },
+        token,
+      );
+
+      setShiftStart('');
+      setShiftEnd('');
+      setShiftNote('');
+      await load();
+    } catch (err) {
+      // The server's sentence: "that overlaps a shift this courier is already
+      // rostered for" is more use than anything this pane could invent.
+      setError(err instanceof ApiError ? err.message : 'That shift could not be rostered.');
+    } finally {
+      setSavingShift(false);
+    }
+  };
+
+  const removeShift = async (shiftId: string) => {
+    const token = store.readAdminToken();
+    if (!token) return;
+
+    try {
+      await store.api.deleteShift(shiftId, token);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'That shift could not be removed.');
+    }
+  };
 
   useEffect(() => {
     void load();
@@ -345,6 +464,17 @@ export default function RosterPanel() {
                         </Badge>
                       )}
                       {rider.mustChangePin && <Badge tone="warn">PIN not changed</Badge>}
+                      {/*
+                        Whether they are actually working, which `Online` does
+                        not say — that is only whether the app is open. A courier
+                        with blocks on the rota who is not inside one cannot
+                        accept a job.
+                      */}
+                      {(shifts[rider.id]?.length ?? 0) > 0 && (
+                        <Badge tone={onShift(shifts[rider.id] ?? []) ? 'ok' : 'neutral'}>
+                          {onShift(shifts[rider.id] ?? []) ? 'On shift' : 'Off shift'}
+                        </Badge>
+                      )}
                     </div>
                     <p className="mt-0.5 text-[11px] text-admin-fg-3">
                       <span className="font-mono">{rider.phone}</span> ·{' '}
@@ -361,6 +491,16 @@ export default function RosterPanel() {
                   </div>
 
                   <div className="flex items-center gap-1">
+                    <Button
+                      size="sm"
+                      icon={CalendarClock}
+                      onClick={() =>
+                        setRostering((current) => (current === rider.id ? null : rider.id))
+                      }
+                      title={`Rota for ${rider.employeeId}`}
+                    >
+                      Rota ({shifts[rider.id]?.length ?? 0})
+                    </Button>
                     <Button
                       size="sm"
                       icon={Bike}
@@ -412,6 +552,72 @@ export default function RosterPanel() {
                       </span>
                     </div>
                   </form>
+                )}
+
+                {rostering === rider.id && (
+                  <div className="mt-3 space-y-2 rounded-xl border border-admin-line bg-admin-raised p-3">
+                    {(shifts[rider.id] ?? []).length === 0 ? (
+                      <p className="text-[11px] text-admin-fg-3">
+                        Nothing rostered. A courier with no shifts at all can still accept work —
+                        the rota only starts holding them to it once there is one.
+                      </p>
+                    ) : (
+                      <ul className="space-y-1">
+                        {(shifts[rider.id] ?? []).map((shift) => (
+                          <li
+                            key={shift.id}
+                            className="flex items-center justify-between gap-3 rounded-lg bg-admin-panel px-3 py-1.5"
+                          >
+                            <span className="min-w-0 text-[11px] text-admin-fg-2">
+                              <span className="font-mono">{shiftLabel(shift)}</span>
+                              {shift.note && (
+                                <span className="text-admin-fg-3"> · {shift.note}</span>
+                              )}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => void removeShift(shift.id)}
+                              className="rounded-full p-1 text-admin-fg-3 transition-colors hover:text-admin-danger"
+                              aria-label="Remove shift"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+
+                    <form
+                      onSubmit={(event) => void addShift(rider.id, event)}
+                      className="space-y-2 border-t border-admin-line pt-2"
+                    >
+                      <div className="grid gap-2 sm:grid-cols-3">
+                        <Input
+                          type="datetime-local"
+                          value={shiftStart}
+                          onChange={(event) => setShiftStart(event.target.value)}
+                        />
+                        <Input
+                          type="datetime-local"
+                          value={shiftEnd}
+                          onChange={(event) => setShiftEnd(event.target.value)}
+                        />
+                        <Input
+                          value={shiftNote}
+                          onChange={(event) => setShiftNote(event.target.value)}
+                          placeholder="Evening round"
+                        />
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        type="submit"
+                        disabled={savingShift || !shiftStart || !shiftEnd}
+                      >
+                        {savingShift ? 'Rostering…' : 'Add shift'}
+                      </Button>
+                    </form>
+                  </div>
                 )}
               </div>
             ))}

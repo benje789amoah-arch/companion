@@ -7,19 +7,41 @@ import {
   phoneKey,
   type ActivePlan,
   type AuditEvent,
+  type Claim,
+  type ClaimStatus,
+  type BookingItem,
+  type Coords,
+  type Garment,
+  type Hub,
+  type HubEvent,
+  type Invoice,
+  type InvoiceStatus,
   type Job,
   type Message,
   type Notification,
   type PaymentTransaction,
+  type PromoCode,
+  type PromoRedemption,
+  type RecurringPickup,
+  type RiderShift,
 } from '@freshfold/core';
 import { sql, type Executor } from './db';
 import {
   toAccount,
   toAuditEvent,
+  toClaim,
+  toGarment,
+  toHub,
+  toHubEvent,
+  toInvoice,
+  toInvoiceLine,
   toJob,
+  toPromoCode,
+  toRecurringPickup,
   toMessage,
   toNotification,
   toRider,
+  toRiderShift,
   toSession,
   toSetupToken,
   toSupervisor,
@@ -27,10 +49,19 @@ import {
   toTransaction,
   type AccountRow,
   type AuditEventRow,
+  type ClaimRow,
+  type GarmentRow,
+  type HubEventRow,
+  type HubRow,
+  type InvoiceLineRow,
+  type InvoiceRow,
   type JobRow,
+  type PromoCodeRow,
+  type RecurringPickupRow,
   type MessageRow,
   type NotificationRow,
   type RiderRow,
+  type RiderShiftRow,
   type SessionKind,
   type SessionRow,
   type SetupTokenRow,
@@ -316,6 +347,60 @@ function repositories(exec: Executor) {
         }
         return counts;
       },
+
+      /**
+       * The same question for the return leg.
+       *
+       * Its own query rather than a parameter on the one above because it
+       * groups a different pair of columns, and because the two are asked
+       * independently — the booking form wants collection windows for the day
+       * the customer picked and return windows for the day after.
+       *
+       * Rows with no `deliveryTime` are the ones written before customers could
+       * choose a return window at all. They are counted under the empty string
+       * and dropped by the `if` below, which is deliberate: an old order does
+       * occupy a courier's afternoon, but nothing recorded which one, and
+       * guessing would refuse bookings on the strength of an invented number.
+       */
+      /**
+       * How much work this courier is already carrying.
+       *
+       * Open means accepted and not finished with: everything from `assigned`
+       * through to the moment it is `delivered` or `cancelled`. A courier who
+       * has delivered four today is carrying nothing, which is why this counts
+       * live jobs rather than jobs accepted — a cap on the latter would be a
+       * daily quota, which is a different and worse thing.
+       *
+       * There was no count at all before, because there was no limit: the accept
+       * route checked that a job was not already taken and not already closed,
+       * so one courier could take the entire board and every other courier saw an
+       * empty pool.
+       */
+      async countOpenForRider(riderId: string): Promise<number> {
+        const rows = await exec<{ count: number }[]>`
+          select count(*)::int as count
+          from jobs
+          where dispatch ->> 'riderId' = ${riderId}
+            and status not in ('delivered', 'cancelled')
+        `;
+        return rows[0]?.count ?? 0;
+      },
+
+      async countByDeliverySlot(deliveryDate: string): Promise<Record<string, number>> {
+        const rows = await exec<{ slot: string; count: number }[]>`
+          select schedule ->> 'deliveryTime' as slot, count(*)::int as count
+          from jobs
+          where schedule ->> 'deliveryDate' = ${deliveryDate}
+            and status <> 'cancelled'
+          group by 1
+        `;
+
+        const counts: Record<string, number> = {};
+        for (const row of rows) {
+          if (row.slot) counts[row.slot] = row.count;
+        }
+        return counts;
+      },
     },
 
     // -----------------------------------------------------------------------
@@ -591,10 +676,41 @@ function repositories(exec: Executor) {
        * not reachable from here at all — `/api/accounts` is a profile route,
        * and a password is only ever set through `/api/auth/register`.
        */
+      /**
+       * Everybody this customer has introduced.
+       *
+       * Only the two columns the referral screen needs, rather than whole
+       * accounts: it is a count and a paid/unpaid flag, and handing back full
+       * records would send one customer somebody else's address and phone
+       * number to render a number.
+       */
+      async referredBy(email: string): Promise<{ email: string; referralRewardedAt?: string }[]> {
+        const rows = await exec<{ email: string; referral_rewarded_at: string | null }[]>`
+          select email, referral_rewarded_at from accounts
+          where referred_by = ${email.trim().toLowerCase()}
+          order by created_at
+        `;
+        return rows.map((row) => ({
+          email: row.email,
+          referralRewardedAt: row.referral_rewarded_at ?? undefined,
+        }));
+      },
+
       async updateProfile(
         email: string,
         patch: Partial<
-          Pick<StoredAccount, 'email' | 'phone' | 'name' | 'points' | 'walletBalance' | 'addresses'>
+          Pick<
+            StoredAccount,
+            | 'email'
+            | 'phone'
+            | 'name'
+            | 'points'
+            | 'walletBalance'
+            | 'addresses'
+            | 'referralCode'
+            | 'referredBy'
+            | 'referralRewardedAt'
+          >
         >
       ): Promise<StoredAccount | null> {
         const columns: Record<string, string> = {
@@ -604,6 +720,9 @@ function repositories(exec: Executor) {
           points: 'points',
           walletBalance: 'wallet_balance',
           addresses: 'addresses',
+          referralCode: 'referral_code',
+          referredBy: 'referred_by',
+          referralRewardedAt: 'referral_rewarded_at',
         };
 
         const assignments: Record<string, unknown> = {};
@@ -1225,6 +1344,781 @@ function repositories(exec: Executor) {
       /** Clears dead tokens. Called when a new one is issued. */
       async pruneExpired(): Promise<void> {
         await exec`delete from booking_tracking_tokens where expires_at <= now()`;
+      },
+    },
+    // -----------------------------------------------------------------------
+    // Garments — what was actually in the bag
+    // -----------------------------------------------------------------------
+    garments: {
+      /**
+       * Records the garments a hub operator has named while emptying a bag.
+       *
+       * Written as a batch because that is how the work happens: somebody empties
+       * one bag and lists what is in it, and half a list landing is worse than
+       * none of it. Returns nothing — the caller re-reads the order.
+       */
+      async record(
+        jobId: string,
+        garments: {
+          id: string;
+          bagId?: string;
+          description: string;
+          condition: string;
+          recordedBy: string;
+        }[]
+      ): Promise<void> {
+        for (const garment of garments) {
+          await exec`
+            insert into job_garments (id, job_id, bag_id, description, condition, recorded_by)
+            values (
+              ${garment.id}, ${jobId}, ${garment.bagId ?? null},
+              ${garment.description}, ${garment.condition}, ${garment.recordedBy}
+            )
+            on conflict (id) do update set
+              bag_id      = excluded.bag_id,
+              description = excluded.description,
+              condition   = excluded.condition
+          `;
+        }
+      },
+
+      /** Everything recorded against one order, oldest first. */
+      async forJob(jobId: string): Promise<Garment[]> {
+        const rows = await exec<GarmentRow[]>`
+          select * from job_garments where job_id = ${jobId} order by created_at
+        `;
+        return rows.map(toGarment);
+      },
+
+      /**
+       * Marks a garment as the subject of a dispute.
+       *
+       * Scoped to the job as well as the id, so a claim on one order cannot flag
+       * a garment belonging to another — the id arrives in a request body, and
+       * the job is the thing the caller has already been authorised against.
+       */
+      async flag(jobId: string, garmentId: string): Promise<boolean> {
+        const result = await exec`
+          update job_garments set flagged = true
+          where id = ${garmentId} and job_id = ${jobId}
+        `;
+        return result.count > 0;
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Hub events — who ran the load, and through what
+    // -----------------------------------------------------------------------
+    hubEvents: {
+      async record(event: {
+        id: string;
+        jobId: string;
+        stage: string;
+        machine?: string;
+        batch?: string;
+        operator: string;
+        operatorName: string;
+        notes?: string;
+      }): Promise<HubEvent> {
+        const rows = await exec<HubEventRow[]>`
+          insert into hub_events (
+            id, job_id, stage, machine, batch, operator, operator_name, notes
+          ) values (
+            ${event.id}, ${event.jobId}, ${event.stage}, ${event.machine ?? ''},
+            ${event.batch ?? ''}, ${event.operator}, ${event.operatorName},
+            ${event.notes ?? ''}
+          )
+          returning *
+        `;
+        return toHubEvent(rows[0]);
+      },
+
+      /** What happened to this order, in order. */
+      async forJob(jobId: string): Promise<HubEvent[]> {
+        const rows = await exec<HubEventRow[]>`
+          select * from hub_events where job_id = ${jobId} order by created_at
+        `;
+        return rows.map(toHubEvent);
+      },
+
+      /**
+       * Everything that went through one machine since an instant.
+       *
+       * The query that finds a fault before the fourth customer reports it: one
+       * machine, one afternoon, and the list of orders that shared it.
+       */
+      async forMachine(machine: string, since: string): Promise<HubEvent[]> {
+        const rows = await exec<HubEventRow[]>`
+          select * from hub_events
+          where machine = ${machine} and created_at >= ${since}
+          order by created_at desc
+        `;
+        return rows.map(toHubEvent);
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Claims
+    // -----------------------------------------------------------------------
+    claims: {
+      async create(claim: {
+        id: string;
+        jobId: string;
+        customerEmail: string;
+        kind: string;
+        description: string;
+        photo?: string;
+      }): Promise<Claim> {
+        const rows = await exec<ClaimRow[]>`
+          insert into claims (id, job_id, customer_email, kind, description, photo)
+          values (
+            ${claim.id}, ${claim.jobId}, ${claim.customerEmail.toLowerCase()},
+            ${claim.kind}, ${claim.description}, ${claim.photo ?? null}
+          )
+          returning *
+        `;
+        return toClaim(rows[0]);
+      },
+
+      async find(id: string, options: { lock?: boolean } = {}): Promise<Claim | null> {
+        const rows = options.lock
+          ? await exec<ClaimRow[]>`select * from claims where id = ${id} for update`
+          : await exec<ClaimRow[]>`select * from claims where id = ${id}`;
+        return rows[0] ? toClaim(rows[0]) : null;
+      },
+
+      /** Every claim on one order — the customer's own view, and the desk's. */
+      async forJob(jobId: string): Promise<Claim[]> {
+        const rows = await exec<ClaimRow[]>`
+          select * from claims where job_id = ${jobId} order by created_at desc
+        `;
+        return rows.map(toClaim);
+      },
+
+      /**
+       * The desk's queue.
+       *
+       * `openOnly` is the default view and the reason for the partial index:
+       * settled claims are history, and the pane exists to work through the ones
+       * that are not.
+       */
+      async list(options: { openOnly?: boolean; email?: string } = {}): Promise<Claim[]> {
+        const rows = options.email
+          ? await exec<ClaimRow[]>`
+              select * from claims
+              where customer_email = ${options.email.toLowerCase()}
+              order by created_at desc
+            `
+          : options.openOnly
+            ? await exec<ClaimRow[]>`
+                select * from claims
+                where status in ('open', 'investigating', 'upheld')
+                order by created_at
+              `
+            : await exec<ClaimRow[]>`select * from claims order by created_at desc`;
+
+        return rows.map(toClaim);
+      },
+
+      /**
+       * Moves a claim on.
+       *
+       * `closed_at` is stamped here rather than by the caller so it cannot
+       * disagree with the status: it is set exactly when the claim reaches a
+       * terminal state, and cleared otherwise, in the same statement that writes
+       * the state.
+       */
+      async update(
+        id: string,
+        patch: {
+          status: ClaimStatus;
+          resolution: string;
+          compensation: number;
+          retreatment: boolean;
+          transactionRef?: string;
+          handledBy: string;
+          handledByName: string;
+          closed: boolean;
+        }
+      ): Promise<Claim | null> {
+        const rows = await exec<ClaimRow[]>`
+          update claims set
+            status          = ${patch.status},
+            resolution      = ${patch.resolution},
+            compensation    = ${patch.compensation},
+            retreatment     = ${patch.retreatment},
+            transaction_ref = ${patch.transactionRef ?? null},
+            handled_by      = ${patch.handledBy},
+            handled_by_name = ${patch.handledByName},
+            updated_at      = now(),
+            closed_at       = ${patch.closed ? 'now()' : null}
+          where id = ${id}
+          returning *
+        `;
+        return rows[0] ? toClaim(rows[0]) : null;
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Shifts
+    // -----------------------------------------------------------------------
+    shifts: {
+      async create(shift: {
+        id: string;
+        riderId: string;
+        startsAt: string;
+        endsAt: string;
+        note: string;
+        createdBy: string;
+      }): Promise<RiderShift> {
+        const rows = await exec<RiderShiftRow[]>`
+          insert into rider_shifts (id, rider_id, starts_at, ends_at, note, created_by)
+          values (
+            ${shift.id}, ${shift.riderId}, ${shift.startsAt}, ${shift.endsAt},
+            ${shift.note}, ${shift.createdBy}
+          )
+          returning *
+        `;
+        return toRiderShift(rows[0]);
+      },
+
+      /**
+       * One courier's blocks, optionally from an instant onwards.
+       *
+       * `from` defaults to nothing rather than to now, because the two callers
+       * want different things: the accept route wants the block covering this
+       * moment, and the rota pane wants the week including what has already been
+       * worked.
+       */
+      async forRider(riderId: string, from?: string): Promise<RiderShift[]> {
+        const rows = from
+          ? await exec<RiderShiftRow[]>`
+              select * from rider_shifts
+              where rider_id = ${riderId} and ends_at >= ${from}
+              order by starts_at
+            `
+          : await exec<RiderShiftRow[]>`
+              select * from rider_shifts where rider_id = ${riderId} order by starts_at
+            `;
+        return rows.map(toRiderShift);
+      },
+
+      /**
+       * Everyone rostered across a window — the dispatcher's "who is on".
+       *
+       * Overlap rather than containment: a shift that started before the window
+       * and runs into it is very much on, and a query that missed it would show
+       * an empty rota to a laundry with three couriers out.
+       */
+      async between(from: string, to: string): Promise<RiderShift[]> {
+        const rows = await exec<RiderShiftRow[]>`
+          select * from rider_shifts
+          where starts_at < ${to} and ends_at > ${from}
+          order by starts_at
+        `;
+        return rows.map(toRiderShift);
+      },
+
+      async remove(id: string): Promise<boolean> {
+        const result = await exec`delete from rider_shifts where id = ${id}`;
+        return result.count > 0;
+      },
+    },
+    // -----------------------------------------------------------------------
+    // Promo codes and referrals
+    // -----------------------------------------------------------------------
+    promos: {
+      /**
+       * One code, by the string somebody typed.
+       *
+       * Upper-cased here as well as in the route, because this is the boundary
+       * the database sees and a lookup that missed on case would report a live
+       * code as unknown.
+       */
+      async find(code: string): Promise<PromoCode | null> {
+        const rows = await exec<PromoCodeRow[]>`
+          select * from promo_codes where code = ${code.trim().toUpperCase()}
+        `;
+        return rows[0] ? toPromoCode(rows[0]) : null;
+      },
+
+      /** The desk's list, with the redemption count each one has earned. */
+      async list(): Promise<PromoCode[]> {
+        const rows = await exec<PromoCodeRow[]>`
+          select c.*, count(r.id)::int as uses
+          from promo_codes c
+          left join promo_redemptions r on r.code = c.code
+          group by c.code
+          order by c.active desc, c.created_at desc
+        `;
+        return rows.map(toPromoCode);
+      },
+
+      async upsert(promo: {
+        code: string;
+        label: string;
+        kind: string;
+        value: number;
+        maxDiscount?: number;
+        minSpend: number;
+        startsAt?: string;
+        expiresAt?: string;
+        maxUses?: number;
+        maxPerCustomer: number;
+        firstOrderOnly: boolean;
+        active: boolean;
+        createdBy: string;
+      }): Promise<PromoCode> {
+        const rows = await exec<PromoCodeRow[]>`
+          insert into promo_codes (
+            code, label, kind, value, max_discount, min_spend, starts_at, expires_at,
+            max_uses, max_per_customer, first_order_only, active, created_by
+          ) values (
+            ${promo.code.trim().toUpperCase()}, ${promo.label}, ${promo.kind}, ${promo.value},
+            ${promo.maxDiscount ?? null}, ${promo.minSpend}, ${promo.startsAt ?? null},
+            ${promo.expiresAt ?? null}, ${promo.maxUses ?? null}, ${promo.maxPerCustomer},
+            ${promo.firstOrderOnly}, ${promo.active}, ${promo.createdBy}
+          )
+          on conflict (code) do update set
+            label            = excluded.label,
+            kind             = excluded.kind,
+            value            = excluded.value,
+            max_discount     = excluded.max_discount,
+            min_spend        = excluded.min_spend,
+            starts_at        = excluded.starts_at,
+            expires_at       = excluded.expires_at,
+            max_uses         = excluded.max_uses,
+            max_per_customer = excluded.max_per_customer,
+            first_order_only = excluded.first_order_only,
+            active           = excluded.active
+          returning *
+        `;
+        return toPromoCode(rows[0]);
+      },
+
+      /**
+       * How much of this code is left, for this customer and overall.
+       *
+       * One query for both counts rather than two, because they are checked
+       * together and two round trips is two chances for them to disagree about
+       * a redemption landing in between.
+       */
+      async usage(code: string, email: string): Promise<{ total: number; byCustomer: number }> {
+        const rows = await exec<{ total: number; by_customer: number }[]>`
+          select
+            count(*)::int as total,
+            count(*) filter (where customer_email = ${email.toLowerCase()})::int as by_customer
+          from promo_redemptions
+          where code = ${code.trim().toUpperCase()}
+        `;
+        return { total: rows[0]?.total ?? 0, byCustomer: rows[0]?.by_customer ?? 0 };
+      },
+
+      /**
+       * Records a redemption.
+       *
+       * `on conflict do nothing` against the `(code, job_id)` unique key, so a
+       * replayed offline booking files one redemption rather than burning a
+       * second of a customer's one.
+       */
+      async redeem(redemption: {
+        id: string;
+        code: string;
+        jobId: string;
+        customerEmail: string;
+        discount: number;
+      }): Promise<void> {
+        await exec`
+          insert into promo_redemptions (id, code, job_id, customer_email, discount)
+          values (
+            ${redemption.id}, ${redemption.code.trim().toUpperCase()}, ${redemption.jobId},
+            ${redemption.customerEmail.toLowerCase()}, ${redemption.discount}
+          )
+          on conflict (code, job_id) do nothing
+        `;
+      },
+
+      /** Every use of one code — the campaign report. */
+      async redemptions(code: string): Promise<PromoRedemption[]> {
+        const rows = await exec<
+          {
+            id: string;
+            code: string;
+            job_id: string;
+            customer_email: string;
+            discount: string | number;
+            created_at: string;
+          }[]
+        >`
+          select * from promo_redemptions
+          where code = ${code.trim().toUpperCase()}
+          order by created_at desc
+        `;
+
+        return rows.map((row) => ({
+          id: row.id,
+          code: row.code,
+          jobId: row.job_id,
+          customerEmail: row.customer_email,
+          discount: Number(row.discount) || 0,
+          createdAt: row.created_at,
+        }));
+      },
+
+      /** The account behind a referral code, or null. */
+      async findReferrer(code: string): Promise<string | null> {
+        const rows = await exec<{ email: string }[]>`
+          select email from accounts where referral_code = ${code.trim().toUpperCase()}
+        `;
+        return rows[0]?.email ?? null;
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Standing orders
+    // -----------------------------------------------------------------------
+    recurring: {
+      async find(id: string, options: { lock?: boolean } = {}): Promise<RecurringPickup | null> {
+        const rows = options.lock
+          ? await exec<RecurringPickupRow[]>`
+              select * from recurring_pickups where id = ${id} for update
+            `
+          : await exec<RecurringPickupRow[]>`select * from recurring_pickups where id = ${id}`;
+        return rows[0] ? toRecurringPickup(rows[0]) : null;
+      },
+
+      async forCustomer(email: string): Promise<RecurringPickup[]> {
+        const rows = await exec<RecurringPickupRow[]>`
+          select * from recurring_pickups
+          where customer_email = ${email.toLowerCase()}
+          order by weekday, created_at
+        `;
+        return rows.map(toRecurringPickup);
+      },
+
+      /**
+       * Everything the sweep might have to book.
+       *
+       * Filtered to the live ones here and decided per row by `nextDue` in core,
+       * rather than expressing the whole rule in SQL. The rule involves the
+       * weekday of a date, a lead window and a last-booked marker, and a query
+       * that encoded all three would be a second implementation of it that the
+       * check suite could not exercise.
+       */
+      async due(): Promise<RecurringPickup[]> {
+        const rows = await exec<RecurringPickupRow[]>`
+          select * from recurring_pickups
+          where active
+            and starts_on <= current_date
+            and (ends_on is null or ends_on >= current_date)
+          order by last_booked_for nulls first
+        `;
+        return rows.map(toRecurringPickup);
+      },
+
+      async upsert(pickup: {
+        id: string;
+        customerEmail: string;
+        weekday: number;
+        pickupTime: string;
+        deliveryTime?: string;
+        items: BookingItem[];
+        scent?: string;
+        starch?: string;
+        addons: string[];
+        address: string;
+        suburb: string;
+        city: string;
+        pickupCoords?: Coords;
+        notes: string;
+        active: boolean;
+        leadDays: number;
+        startsOn: string;
+        endsOn?: string;
+      }): Promise<RecurringPickup> {
+        const rows = await exec<RecurringPickupRow[]>`
+          insert into recurring_pickups (
+            id, customer_email, weekday, pickup_time, delivery_time, items, scent, starch,
+            addons, address, suburb, city, pickup_coords, notes, active, lead_days,
+            starts_on, ends_on
+          ) values (
+            ${pickup.id}, ${pickup.customerEmail.toLowerCase()}, ${pickup.weekday},
+            ${pickup.pickupTime}, ${pickup.deliveryTime ?? null},
+            ${exec.json(pickup.items as never)}, ${pickup.scent ?? null},
+            ${pickup.starch ?? null}, ${exec.json(pickup.addons as never)}, ${pickup.address},
+            ${pickup.suburb}, ${pickup.city},
+            ${pickup.pickupCoords ? exec.json(pickup.pickupCoords as never) : null},
+            ${pickup.notes}, ${pickup.active}, ${pickup.leadDays}, ${pickup.startsOn},
+            ${pickup.endsOn ?? null}
+          )
+          on conflict (id) do update set
+            weekday       = excluded.weekday,
+            pickup_time   = excluded.pickup_time,
+            delivery_time = excluded.delivery_time,
+            items         = excluded.items,
+            scent         = excluded.scent,
+            starch        = excluded.starch,
+            addons        = excluded.addons,
+            address       = excluded.address,
+            suburb        = excluded.suburb,
+            city          = excluded.city,
+            pickup_coords = excluded.pickup_coords,
+            notes         = excluded.notes,
+            active        = excluded.active,
+            lead_days     = excluded.lead_days,
+            starts_on     = excluded.starts_on,
+            ends_on       = excluded.ends_on,
+            updated_at    = now()
+          returning *
+        `;
+        return toRecurringPickup(rows[0]);
+      },
+
+      /**
+       * Marks a standing order as having produced a booking for a date.
+       *
+       * Guarded on the marker not having moved, so two server instances running
+       * the same sweep produce one booking: the second update matches no rows
+       * and its caller skips. The same mechanism the hub cycle uses.
+       */
+      async markBooked(id: string, date: string, previous?: string): Promise<boolean> {
+        const result = previous
+          ? await exec`
+              update recurring_pickups
+              set last_booked_for = ${date}, updated_at = now()
+              where id = ${id} and last_booked_for = ${previous}
+            `
+          : await exec`
+              update recurring_pickups
+              set last_booked_for = ${date}, updated_at = now()
+              where id = ${id} and last_booked_for is null
+            `;
+        return result.count > 0;
+      },
+
+      async remove(id: string, email: string): Promise<boolean> {
+        const result = await exec`
+          delete from recurring_pickups
+          where id = ${id} and customer_email = ${email.toLowerCase()}
+        `;
+        return result.count > 0;
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Invoices
+    // -----------------------------------------------------------------------
+    invoices: {
+      async find(id: string, options: { lock?: boolean } = {}): Promise<Invoice | null> {
+        const rows = options.lock
+          ? await exec<InvoiceRow[]>`select * from invoices where id = ${id} for update`
+          : await exec<InvoiceRow[]>`select * from invoices where id = ${id}`;
+        if (!rows[0]) return null;
+
+        const lines = await exec<InvoiceLineRow[]>`
+          select * from invoice_lines where invoice_id = ${id} order by position, created_at
+        `;
+        return { ...toInvoice(rows[0]), lines: lines.map(toInvoiceLine) };
+      },
+
+      async list(options: { email?: string; outstanding?: boolean } = {}): Promise<Invoice[]> {
+        const rows = options.email
+          ? await exec<InvoiceRow[]>`
+              select * from invoices
+              where bill_to_email = ${options.email.toLowerCase()}
+              order by created_at desc
+            `
+          : options.outstanding
+            ? await exec<InvoiceRow[]>`
+                select * from invoices where status = 'issued' order by due_on nulls last
+              `
+            : await exec<InvoiceRow[]>`select * from invoices order by created_at desc`;
+
+        return rows.map(toInvoice);
+      },
+
+      /**
+       * The next number in the year's sequence.
+       *
+       * Derived from the highest already issued rather than from a counter,
+       * because a counter is a second source of truth that drifts the first time
+       * a row is deleted or a database is restored. Gaps are acceptable; a
+       * duplicate number on two documents is not, and the unique constraint on
+       * `number` is what actually guarantees that.
+       */
+      async nextNumber(year: number): Promise<string> {
+        const prefix = `INV-${year}-`;
+        const rows = await exec<{ number: string }[]>`
+          select number from invoices
+          where number like ${`${prefix}%`}
+          order by number desc
+          limit 1
+        `;
+
+        const last = rows[0]?.number.slice(prefix.length) ?? '0';
+        const next = (Number(last) || 0) + 1;
+        return `${prefix}${String(next).padStart(4, '0')}`;
+      },
+
+      async create(invoice: {
+        id: string;
+        number: string;
+        billToEmail: string;
+        billToName: string;
+        billToOrg: string;
+        billToAddress: string;
+        billToTin: string;
+        periodStart?: string;
+        periodEnd?: string;
+        dueOn?: string;
+        notes: string;
+        createdBy: string;
+      }): Promise<Invoice> {
+        const rows = await exec<InvoiceRow[]>`
+          insert into invoices (
+            id, number, bill_to_email, bill_to_name, bill_to_org, bill_to_address,
+            bill_to_tin, period_start, period_end, due_on, notes, created_by
+          ) values (
+            ${invoice.id}, ${invoice.number}, ${invoice.billToEmail.toLowerCase()},
+            ${invoice.billToName}, ${invoice.billToOrg}, ${invoice.billToAddress},
+            ${invoice.billToTin}, ${invoice.periodStart ?? null}, ${invoice.periodEnd ?? null},
+            ${invoice.dueOn ?? null}, ${invoice.notes}, ${invoice.createdBy}
+          )
+          returning *
+        `;
+        return { ...toInvoice(rows[0]), lines: [] };
+      },
+
+      async addLine(line: {
+        id: string;
+        invoiceId: string;
+        jobId?: string;
+        description: string;
+        quantity: number;
+        unitPrice: number;
+        amount: number;
+        position: number;
+      }): Promise<void> {
+        await exec`
+          insert into invoice_lines (
+            id, invoice_id, job_id, description, quantity, unit_price, amount, position
+          ) values (
+            ${line.id}, ${line.invoiceId}, ${line.jobId ?? null}, ${line.description},
+            ${line.quantity}, ${line.unitPrice}, ${line.amount}, ${line.position}
+          )
+          on conflict (id) do update set
+            description = excluded.description,
+            quantity    = excluded.quantity,
+            unit_price  = excluded.unit_price,
+            amount      = excluded.amount,
+            position    = excluded.position
+        `;
+      },
+
+      async removeLine(invoiceId: string, lineId: string): Promise<boolean> {
+        const result = await exec`
+          delete from invoice_lines where id = ${lineId} and invoice_id = ${invoiceId}
+        `;
+        return result.count > 0;
+      },
+
+      /** Which of these orders are already on an invoice. */
+      async billedJobs(jobIds: string[]): Promise<Set<string>> {
+        if (jobIds.length === 0) return new Set();
+
+        const rows = await exec<{ job_id: string }[]>`
+          select distinct job_id from invoice_lines where job_id in ${exec(jobIds)}
+        `;
+        return new Set(rows.map((row) => row.job_id));
+      },
+
+      /**
+       * Rewrites the money on an invoice from its own lines.
+       *
+       * The totals are stored rather than computed on read — an invoice states
+       * what was owed on the day it was issued, and a document that recomputed
+       * itself would restate a bill somebody has already paid when a rate moves.
+       * This is the one place they are allowed to change, and the route only
+       * calls it while the invoice is still a draft.
+       */
+      async retotal(
+        id: string,
+        totals: { net: number; tax: number; total: number; taxLines: unknown }
+      ): Promise<Invoice | null> {
+        const rows = await exec<InvoiceRow[]>`
+          update invoices set
+            net        = ${totals.net},
+            tax        = ${totals.tax},
+            total      = ${totals.total},
+            tax_lines  = ${exec.json(totals.taxLines as never)},
+            updated_at = now()
+          where id = ${id}
+          returning *
+        `;
+        return rows[0] ? toInvoice(rows[0]) : null;
+      },
+
+      async setStatus(
+        id: string,
+        patch: { status: InvoiceStatus; paid?: number; dueOn?: string }
+      ): Promise<Invoice | null> {
+        const rows = await exec<InvoiceRow[]>`
+          update invoices set
+            status     = ${patch.status},
+            paid       = coalesce(${patch.paid ?? null}, paid),
+            due_on     = coalesce(${patch.dueOn ?? null}, due_on),
+            issued_at  = case when ${patch.status} = 'issued' and issued_at is null
+                              then now() else issued_at end,
+            paid_at    = case when ${patch.status} = 'paid' then now() else paid_at end,
+            updated_at = now()
+          where id = ${id}
+          returning *
+        `;
+        return rows[0] ? toInvoice(rows[0]) : null;
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Hubs
+    // -----------------------------------------------------------------------
+    hubs: {
+      async list(): Promise<Hub[]> {
+        const rows = await exec<HubRow[]>`
+          select * from hubs order by is_default desc, name
+        `;
+        return rows.map(toHub);
+      },
+
+      async find(id: string): Promise<Hub | null> {
+        const rows = await exec<HubRow[]>`select * from hubs where id = ${id}`;
+        return rows[0] ? toHub(rows[0]) : null;
+      },
+
+      async upsert(hub: {
+        id: string;
+        name: string;
+        address: string;
+        lat: number;
+        lng: number;
+        suburbs: string[];
+        active: boolean;
+      }): Promise<Hub> {
+        const rows = await exec<HubRow[]>`
+          insert into hubs (id, name, address, lat, lng, suburbs, active)
+          values (
+            ${hub.id}, ${hub.name}, ${hub.address}, ${hub.lat}, ${hub.lng},
+            ${hub.suburbs}, ${hub.active}
+          )
+          on conflict (id) do update set
+            name    = excluded.name,
+            address = excluded.address,
+            lat     = excluded.lat,
+            lng     = excluded.lng,
+            suburbs = excluded.suburbs,
+            active  = excluded.active
+          returning *
+        `;
+        return toHub(rows[0]);
       },
     },
   };

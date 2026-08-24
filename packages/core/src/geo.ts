@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { Coords } from './types';
+import type { Coords, Hub } from './types';
 
 /**
  * One geography for both apps.
@@ -31,6 +31,75 @@ export const LAUNDRY_HUB: Coords & { name: string } = {
 
 export const LAUNDRY_HUB_ADDRESS =
   'FreshFold Laundry Hub (Wagyingo Opal Hostel, Ayeduase-Kotei)';
+
+/**
+ * The id the constant above is seeded into the `hubs` table under.
+ *
+ * `LAUNDRY_HUB` stays exactly where it is and keeps working, because roughly
+ * twenty call sites read it and a second branch should not be a rewrite of all
+ * twenty. What changed is that it is now the *default* hub rather than the only
+ * conceivable one: a job records which branch it went to, and everything that
+ * measures a distance measures it from that branch, falling back to this when a
+ * job predates the column.
+ */
+export const DEFAULT_HUB_ID = 'HUB-AYEDUASE';
+
+/** The constant as a `Hub`, for surfaces that have no list to read yet. */
+export function defaultHub(): Hub {
+  return {
+    id: DEFAULT_HUB_ID,
+    name: LAUNDRY_HUB.name,
+    address: LAUNDRY_HUB_ADDRESS,
+    lat: LAUNDRY_HUB.lat,
+    lng: LAUNDRY_HUB.lng,
+    suburbs: [],
+    active: true,
+    isDefault: true,
+    createdAt: '',
+  };
+}
+
+/** A hub's position, in the shape everything else measures against. */
+export function hubCoords(hub: Pick<Hub, 'lat' | 'lng'>): Coords {
+  return { lat: hub.lat, lng: hub.lng };
+}
+
+/**
+ * Which branch should take a collection from this pin.
+ *
+ * A branch that names the suburb wins outright, however far away it is: coverage
+ * is an operational decision somebody made deliberately, and overriding it with
+ * arithmetic would mean a hub declaring an area it does not serve gets sent work
+ * there anyway. Among branches that name it — or, if none does, among all of
+ * them — the nearest wins.
+ *
+ * Falls back to the default hub, and then to the first active one, so this
+ * always answers. A booking that could not be assigned a branch is a booking
+ * nobody collects, which is a worse failure than one sent to the wrong branch of
+ * a two-branch laundry.
+ */
+export function hubForPickup(
+  hubs: readonly Hub[],
+  pickup: Coords,
+  suburb?: string
+): Hub {
+  const open = hubs.filter((hub) => hub.active);
+  if (open.length === 0) return hubs[0] ?? defaultHub();
+
+  const needle = (suburb ?? '').trim().toLowerCase();
+
+  const covering = needle
+    ? open.filter((hub) =>
+        hub.suburbs.some((name) => name.trim().toLowerCase() === needle)
+      )
+    : [];
+
+  const candidates = covering.length > 0 ? covering : open;
+
+  return candidates.reduce((closest, hub) =>
+    distanceKm(pickup, hubCoords(hub)) < distanceKm(pickup, hubCoords(closest)) ? hub : closest
+  );
+}
 
 /** Suburbs FreshFold collects from, and the anchor pin for each. */
 export const SUBURB_COORDS: Record<string, Coords> = {

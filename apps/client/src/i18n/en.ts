@@ -332,6 +332,51 @@ export const en = {
    */
   'book.date.placeholder': 'YYYY-MM-DD',
   'book.date.hint': 'Delivery is scheduled for the following day.',
+  // The return leg. Before this the customer chose the hour their clothes left
+  // and had no say at all in the hour they came back — the return was the day
+  // after, with no time on it.
+  'book.return.title': 'Return window',
+  'book.return.day': 'Back to you on {date}',
+  'book.return.tooEarly': 'Too early — your laundry would not be back yet',
+
+  // Promo codes. The first thing in the product aimed at somebody who is not a
+  // customer yet — loyalty and membership both reward people already here.
+  // Standing orders and referrals. The plans screen has always sold "weekly
+  // pickups" and nothing ever scheduled one; `includedPickups` was subtracted in
+  // a dozen places and never added to a calendar.
+  'standing.title': 'Standing orders',
+  'standing.subtitle': 'The weekly pickups your plan already pays for.',
+  'standing.yours': 'Your standing orders',
+  'standing.none': 'None yet. Set one up below and we will book it every week for you.',
+  'standing.add': 'Add a weekly pickup',
+  'standing.create': 'Create standing order',
+  'standing.collectFrom': 'Collected from {address}.',
+  'standing.needAddress': 'Save an address first — a standing order needs somewhere to collect from.',
+  'standing.failed': 'That could not be saved. Try again.',
+  'standing.paused': 'Paused',
+  'standing.lastBooked': 'last booked for {date}',
+  'standing.notYetBooked': 'not booked yet',
+  'standing.remove.title': 'Stop this standing order?',
+  'standing.remove.body': 'Bookings it has already made are unaffected. Nothing further will be booked.',
+  'standing.signedOut.title': 'Sign in for standing orders',
+  'standing.signedOut.body': 'Weekly pickups are tied to your account, so we know where to come and what to bring back.',
+  'standing.referral.title': 'Invite a friend',
+  'standing.referral.blurb': 'They get {welcome} off their first order. You get {reward} when it is delivered.',
+  'standing.referral.count': '{invited} invited · {rewarded} rewarded',
+  'standing.referral.pending': 'Your code will appear here in a moment.',
+  'standing.referral.claimLabel': 'Got a code from a friend?',
+  'standing.referral.claim': 'Use this code',
+  'standing.referral.failed': 'That code could not be used.',
+
+  'book.promo.title': 'Promo or referral code',
+  'book.promo.placeholder': 'FRESHERS24',
+  'book.promo.apply': 'Apply',
+  'book.promo.checking': 'Checking…',
+  'book.promo.applied': '{code} applied — {amount} off this order.',
+  'book.promo.unreachable': 'Could not check that code. You can still book without it.',
+  'book.summary.promo': 'Code {code}',
+  'book.summary.taxIncluded': 'Includes tax',
+
   'book.window.title': 'Collection window',
   'book.window.full': 'Full — choose another window',
   'book.window.remaining': 'Only {count} left in this window',
@@ -583,6 +628,30 @@ export const en = {
 
   // The cancel confirmation. An OS alert rather than one of the app's sheets, so
   // the two button labels are its own and not the kit's.
+  // Moving a booking rather than losing it. Cancel-and-rebook was the only way
+  // before, and it cost the customer their reference, their hand-off codes and
+  // a trip through the refund flow for anything already paid.
+  // What became of a problem they reported. Before claims existed the report
+  // went into the courier thread and stopped, so a customer who photographed a
+  // ruined shirt had no way of knowing whether anybody had looked at it.
+  'order.claims.title': 'Problems you reported',
+  'order.claims.status.open': 'Reported',
+  'order.claims.status.investigating': 'Being looked into',
+  'order.claims.status.upheld': 'Upheld — we owe you',
+  'order.claims.status.rejected': 'Not upheld',
+  'order.claims.status.resolved': 'Settled',
+  'order.claims.credited': '{amount} credited to your wallet.',
+  'order.claims.retreatment': 'We will re-treat this at our cost.',
+
+  'order.reschedule.action': 'Move this pickup',
+  'order.reschedule.title': 'Move this pickup',
+  'order.reschedule.date': 'New collection date',
+  'order.reschedule.confirm': 'Move pickup',
+  'order.reschedule.movesLeft': 'You can move this booking {count} more times.',
+  'order.reschedule.lastMove':
+    'This is the last time this booking can be moved. After that, cancel and rebook.',
+  'order.reschedule.failed': 'That could not be moved just now. Try again.',
+
   'order.cancel.action': 'Cancel this order',
   'order.cancel.title': 'Cancel this order?',
   'order.cancel.body':
@@ -622,6 +691,10 @@ export const en = {
 
   'order.manifest.verified': '{count}/{total} verified by you',
   'order.bag.meta': '{code} · {items} items · {weight}',
+  'order.bag.metaNoWeight': '{code} · {items} items',
+  // Before the hub has counted it. Says what is true rather than printing a
+  // number derived from the booking reference, which is what used to be here.
+  'order.bag.uncounted': '{code} · counted when it reaches the hub',
 
   'order.row.booked': 'Booked',
   'order.row.plan': 'Plan',

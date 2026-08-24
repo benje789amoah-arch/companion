@@ -30,9 +30,9 @@
 import { tierForPoints } from './loyalty';
 import { membershipBookingQuote, roundCedis, type ActivePlan } from './membership';
 import { bookingItems, serviceByName, totalUnits } from './services';
+import { DEFAULT_TAX_RATES, taxOn, type TaxBreakdown, type TaxRates } from './tax';
 import type { BookingItem } from './types';
 
-/** Exact slot strings both booking forms submit, so the two read the same. */
 /**
  * How many collections one window can take.
  *
@@ -51,11 +51,82 @@ import type { BookingItem } from './types';
  */
 export const DEFAULT_SLOT_CAPACITY = 12;
 
-export const PICKUP_TIME_SLOTS = [
-  '08:00 AM - 11:00 AM (Morning Concierge)',
-  '12:00 PM - 03:00 PM (Afternoon Transit)',
-  '05:30 PM - 08:30 PM (Sunset Concierge)',
+/**
+ * The return leg's ceiling, separately settable.
+ *
+ * Its own number rather than a share of the collection one because the two are
+ * different work: a collection is a doorstep and a drive to the hub, a delivery
+ * is a drive out with bags already sorted. They happen to be the same today.
+ * `DELIVERY_SLOT_CAPACITY` in the server's environment overrides it.
+ */
+export const DEFAULT_DELIVERY_SLOT_CAPACITY = 12;
+
+/**
+ * A collection or delivery window, as a thing with a clock on it.
+ *
+ * The slots used to be three display strings and nothing else, which was enough
+ * while nothing needed to *reason* about them. Rescheduling does: "you cannot
+ * move an order into a window that starts in ten minutes" is a comparison
+ * against a time, and deriving one by parsing `'08:00 AM - 11:00 AM (Morning
+ * Concierge)'` back into hours would make the label — a piece of marketing copy
+ * — load-bearing. So the hours are declared beside it.
+ *
+ * `startHour` and `endHour` are hours on a 24-hour clock, fractional for the
+ * half hours, in Ghana's time — which is UTC, so no conversion is involved
+ * anywhere. `label` remains the value stored on the booking: changing one would
+ * orphan every record that holds the old string, so the labels are effectively
+ * frozen and the hours beside them are what may be tuned.
+ */
+export interface TimeSlot {
+  /** The exact string stored on the booking and submitted by both forms. */
+  label: string;
+  /** When the courier's window opens, as an hour on a 24-hour clock. */
+  startHour: number;
+  /** When it closes. */
+  endHour: number;
+}
+
+export const PICKUP_SLOTS: readonly TimeSlot[] = [
+  { label: '08:00 AM - 11:00 AM (Morning Concierge)', startHour: 8, endHour: 11 },
+  { label: '12:00 PM - 03:00 PM (Afternoon Transit)', startHour: 12, endHour: 15 },
+  { label: '05:30 PM - 08:30 PM (Sunset Concierge)', startHour: 17.5, endHour: 20.5 },
 ] as const;
+
+/**
+ * The return windows.
+ *
+ * Deliberately the same three hours as collection: it is one fleet, and a
+ * courier out on a morning round is doing both legs. The labels differ so that
+ * a customer reading their order sees which leg each line is about, and so that
+ * a stored value is unambiguous about which list it came from.
+ *
+ * Before this existed the return was `pickupDate + 1` with no time on it at
+ * all, so "when will it be back?" had no answer beyond a date — the customer
+ * chose the hour their clothes left and had no say at all in the hour they came
+ * back.
+ */
+export const DELIVERY_SLOTS: readonly TimeSlot[] = [
+  { label: '08:00 AM - 11:00 AM (Morning Return)', startHour: 8, endHour: 11 },
+  { label: '12:00 PM - 03:00 PM (Afternoon Return)', startHour: 12, endHour: 15 },
+  { label: '05:30 PM - 08:30 PM (Sunset Return)', startHour: 17.5, endHour: 20.5 },
+] as const;
+
+/**
+ * The labels alone, which is what the pickers render and the record stores.
+ *
+ * Derived rather than declared a second time. Both booking forms, the
+ * availability route and the booking route all read this, and a hand-kept copy
+ * beside {@link PICKUP_SLOTS} is a copy that can drift — which is the exact
+ * failure that made the slots unenforceable in the first place.
+ */
+export const PICKUP_TIME_SLOTS: readonly string[] = PICKUP_SLOTS.map((slot) => slot.label);
+
+export const DELIVERY_TIME_SLOTS: readonly string[] = DELIVERY_SLOTS.map((slot) => slot.label);
+
+/** The window this stored string names, or null if it names none of them. */
+export function findSlot(slots: readonly TimeSlot[], label: string): TimeSlot | null {
+  return slots.find((slot) => slot.label === label) ?? null;
+}
 
 // ---------------------------------------------------------------------------
 // The finish: what a customer can choose, and what it adds
@@ -419,8 +490,29 @@ export interface BookingQuote extends PriceBreakdown {
   memberDiscount: number;
   /** The loyalty tier's cut, taken after the membership. */
   tierDiscount: number;
+  /**
+   * A promo code's cut, taken last of all.
+   *
+   * Last is the only ordering that cannot produce a negative bill: applying it
+   * to the gross and then taking a tier discount off the result would let two
+   * reductions compound past what the booking is worth. See `./promotions`.
+   */
+  promoDiscount: number;
+  /** The code that produced it, so a summary line can name it. */
+  promoCode?: string;
   /** What the customer actually owes. */
   total: number;
+  /**
+   * The tax inside {@link total}, disclosed rather than added.
+   *
+   * Prices in this product have always been quoted to customers as the figure
+   * they pay, so the default mode is inclusive and this is the extraction — see
+   * `./tax`. It is derived here rather than stored on the job because it is a
+   * pure function of the total and the rates: a booking's receipt recomputes it,
+   * and only an *invoice* freezes it, because an invoice states what was owed on
+   * the day it was issued.
+   */
+  tax: TaxBreakdown;
   /** True when this booking spends one of the period's included pickups. */
   coveredByPlan: boolean;
   /** Included pickups left before this booking. */
@@ -449,8 +541,23 @@ export function quoteBooking(input: {
   selections: BookingSelections;
   plan?: ActivePlan | null;
   points?: number;
+  /**
+   * A code the *server* has already validated, with what it is worth.
+   *
+   * Resolved rather than named, because deciding what a code is worth needs the
+   * database — how many times it has been used, whether by this customer, and
+   * whether this is their first order — and this function has none. See
+   * `checkPromo` in `./promotions`, which the server runs first.
+   *
+   * A form showing a customer a quote passes what `checkPromo` told it; the
+   * server passes what `checkPromo` told the server. They agree because it is
+   * the same function over the same code.
+   */
+  promo?: { code: string; discount: number } | null;
+  /** The rates in force. Defaults to the published ones. */
+  taxRates?: TaxRates;
 }): BookingQuote {
-  const { selections, plan, points } = input;
+  const { selections, plan, points, promo } = input;
   const breakdown = priceBreakdown(selections);
 
   const membership = membershipBookingQuote({
@@ -483,12 +590,30 @@ export function quoteBooking(input: {
   const tierDiscount =
     points === undefined ? 0 : roundCedis(afterPlan * tierForPoints(points).discountRate);
 
+  const afterTier = Math.max(0, roundCedis(afterPlan - tierDiscount));
+
+  /**
+   * The code comes off last, and never takes more than is left.
+   *
+   * Clamped here as well as in `checkPromo` because the two run against
+   * different subtotals in one case that matters: a form quotes a code against
+   * the bill it can see, and between that quote and the submission the customer
+   * may have earned a tier, spent an included pickup, or changed the order. The
+   * server re-runs `checkPromo` on the real figure, and this clamp is what
+   * guarantees the arithmetic holds even if a caller does not.
+   */
+  const promoDiscount = promo ? Math.min(roundCedis(promo.discount), afterTier) : 0;
+  const total = Math.max(0, roundCedis(afterTier - promoDiscount));
+
   return {
     ...breakdown,
     waived: membership.waived,
     memberDiscount: membership.discount,
     tierDiscount,
-    total: Math.max(0, roundCedis(afterPlan - tierDiscount)),
+    promoDiscount,
+    promoCode: promo && promoDiscount > 0 ? promo.code : undefined,
+    total,
+    tax: taxOn(total, input.taxRates ?? DEFAULT_TAX_RATES),
     coveredByPlan: membership.covered,
     remainingPickups: membership.remainingPickups,
   };

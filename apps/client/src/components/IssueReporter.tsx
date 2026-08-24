@@ -7,6 +7,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Camera, Check, ImageIcon, RotateCcw, TriangleAlert } from 'lucide-react-native';
 import React, { useEffect, useRef, useState } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import type { ClaimKind } from '@freshfold/core';
 import { useT } from '../i18n';
 import { colors, radius, tints } from '../theme';
 import { Button, Divider, Field } from './ui';
@@ -22,7 +23,16 @@ import { Button, Divider, Field } from './ui';
  */
 
 interface IssueReporterProps {
-  onSubmit: (note: string, photoUri?: string) => void;
+  /**
+   * `kind` is which reason chip was tapped, as a `CLAIM_KINDS` value.
+   *
+   * Carried separately from the note because the two are used for different
+   * things: the note is prose for a person to read in the thread, and the kind
+   * is what the desk filters and counts on. Tapping a chip writes its words into
+   * the note *and* sets this — the customer types over the words freely, and the
+   * kind stays what they chose.
+   */
+  onSubmit: (note: string, photoUri: string | undefined, kind: ClaimKind) => void;
   onCancel?: () => void;
 }
 
@@ -44,9 +54,26 @@ const REASON_KEYS = [
   'issue.reason.late',
 ] as const;
 
+/**
+ * Which claim each chip is, in the vocabulary the server counts on.
+ *
+ * The keys rather than the translated words, because a report filed in Spanish
+ * has to land in the same bucket as one filed in English — matching on the
+ * sentence would give the desk five categories per language.
+ */
+const REASON_KINDS: Record<(typeof REASON_KEYS)[number], ClaimKind> = {
+  'issue.reason.stain': 'stain',
+  'issue.reason.missing': 'missing',
+  'issue.reason.damaged': 'damaged',
+  'issue.reason.finish': 'finish',
+  'issue.reason.late': 'late',
+};
+
 export default function IssueReporter({ onSubmit, onCancel }: IssueReporterProps) {
   const { t } = useT();
   const [note, setNote] = useState('');
+  /** Which chip was tapped. `other` until one is, and again if it is untapped. */
+  const [kind, setKind] = useState<ClaimKind>('other');
   const [captured, setCaptured] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -95,7 +122,10 @@ export default function IssueReporter({ onSubmit, onCancel }: IssueReporterProps
           return (
             <Pressable
               key={key}
-              onPress={() => setNote(active ? '' : reason)}
+              onPress={() => {
+                setNote(active ? '' : reason);
+                setKind(active ? 'other' : REASON_KINDS[key]);
+              }}
               style={[styles.reasonChip, active && styles.reasonChipActive]}
             >
               <Text style={[styles.reasonLabel, active && styles.reasonLabelActive]}>{reason}</Text>
@@ -165,7 +195,7 @@ export default function IssueReporter({ onSubmit, onCancel }: IssueReporterProps
         )}
         <Button
           label={t('issue.send')}
-          onPress={() => onSubmit(note.trim(), captured ?? undefined)}
+          onPress={() => onSubmit(note.trim(), captured ?? undefined, kind)}
           disabled={!note.trim()}
           icon={<Check size={15} color="#FFFFFF" />}
           style={{ flex: 1.3 }}

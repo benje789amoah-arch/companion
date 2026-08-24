@@ -5,20 +5,33 @@
 
 import { Router } from 'express';
 import {
+  DEFAULT_DELIVERY_SLOT_CAPACITY,
   DEFAULT_SLOT_CAPACITY,
+  DELIVERY_TIME_SLOTS,
+  MAX_RESCHEDULES,
   PHONE_LENGTH_MESSAGE,
   PICKUP_TIME_SLOTS,
   applyBookingPatch,
   bookingItems,
   bookingToJob,
+  checkPromo,
+  checkReschedule,
+  defaultHub,
+  deliverySlotsFor,
   describeItems,
   isCompletePhone,
   isIsoDate,
   isOutsideServiceArea,
   isTerminal,
+  hubCoords,
+  hubForPickup,
   newJobId,
+  normalisePromoCode,
   phoneDigits,
+  pickupPinFor,
   quoteBooking,
+  ratesFromEnv,
+  rescheduledDelivery,
   toBookingStatus,
   type Booking,
   type Job,
@@ -27,7 +40,7 @@ import { recordAudit } from '../audit';
 import { accountForToken, bearerToken } from '../auth';
 import { issueTrackingToken, resolveBookingAccess, resolveLister } from '../booking-access';
 import { consumeIncludedPickup, settleAccountByEmail } from '../membership';
-import { mailBookingConfirmation } from '../setup-links';
+import { mailBookingConfirmation, mailReschedule } from '../setup-links';
 import { store } from '../store';
 import { charge, refund } from '../wallet';
 import { verifyPaystackTransaction } from './integrations';
@@ -59,10 +72,50 @@ export const bookingsRouter = Router();
  * that lets a window run a little full.
  */
 function slotCapacity(): number {
-  const configured = Number(process.env.PICKUP_SLOT_CAPACITY);
-  return Number.isFinite(configured) && configured >= 1
-    ? Math.floor(configured)
-    : DEFAULT_SLOT_CAPACITY;
+  return envCapacity(process.env.PICKUP_SLOT_CAPACITY, DEFAULT_SLOT_CAPACITY);
+}
+
+/** The same, for the return leg. `DELIVERY_SLOT_CAPACITY` overrides it. */
+function deliveryCapacity(): number {
+  return envCapacity(process.env.DELIVERY_SLOT_CAPACITY, DEFAULT_DELIVERY_SLOT_CAPACITY);
+}
+
+function envCapacity(value: string | undefined, fallback: number): number {
+  const configured = Number(value);
+  return Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : fallback;
+}
+
+/**
+ * Whether a window on a day still has room, and the shape both callers answer with.
+ *
+ * `exclude` is a job id whose own place in the window does not count against
+ * it. That is what makes a replayed create safe — both apps re-send queued
+ * writes, and a booking already holding a place must not be refused for
+ * occupying it — and it is what makes a reschedule that only changes the return
+ * window work, where the collection is being "moved" to where it already is.
+ */
+async function windowState(
+  leg: 'pickup' | 'delivery',
+  date: string,
+  slot: string,
+  exclude?: string
+): Promise<{ booked: number; capacity: number; full: boolean }> {
+  const capacity = leg === 'pickup' ? slotCapacity() : deliveryCapacity();
+  const taken =
+    leg === 'pickup'
+      ? await store.jobs.countByPickupSlot(date)
+      : await store.jobs.countByDeliverySlot(date);
+
+  const held = exclude ? await store.jobs.find(exclude) : null;
+  const holdsThis =
+    !!held &&
+    held.status !== 'cancelled' &&
+    (leg === 'pickup'
+      ? held.schedule.pickupDate === date && held.schedule.pickupTime === slot
+      : held.schedule.deliveryDate === date && held.schedule.deliveryTime === slot);
+
+  const booked = Math.max(0, (taken[slot] ?? 0) - (holdsThis ? 1 : 0));
+  return { booked, capacity, full: booked >= capacity };
 }
 
 /**
@@ -83,16 +136,72 @@ bookingsRouter.get(
       return;
     }
 
+    /**
+     * The booking id whose own place is discounted, when one is offered.
+     *
+     * A customer on the reschedule screen is looking at the day their order is
+     * already booked into, and without this the window they currently hold
+     * reads as one place fuller than it is — which on a nearly-full morning
+     * shows them their own collection as unavailable.
+     *
+     * Safe to take from the query string: it can only ever *free* a place in a
+     * window the named booking already occupies, and the count is not a secret.
+     */
+    const exclude = typeof req.query.exclude === 'string' ? req.query.exclude : undefined;
+
     const capacity = slotCapacity();
     const taken = await store.jobs.countByPickupSlot(date);
+
+    /**
+     * The return day, and what is left in its windows.
+     *
+     * Asked for separately rather than derived here, because the form knows the
+     * turnaround it is offering and this route should not have to guess at it.
+     * Omitted from the response when the caller does not ask, so the marketing
+     * site's existing call is unchanged.
+     */
+    const deliveryDate =
+      typeof req.query.deliveryDate === 'string' && isIsoDate(req.query.deliveryDate)
+        ? req.query.deliveryDate
+        : null;
+
+    const held = exclude ? await store.jobs.find(exclude) : null;
+    const holdsPickup = (slot: string) =>
+      !!held &&
+      held.status !== 'cancelled' &&
+      held.schedule.pickupDate === date &&
+      held.schedule.pickupTime === slot;
+
+    const deliveryCap = deliveryCapacity();
+    const takenBack = deliveryDate ? await store.jobs.countByDeliverySlot(deliveryDate) : {};
+    const holdsDelivery = (slot: string) =>
+      !!held &&
+      held.status !== 'cancelled' &&
+      held.schedule.deliveryDate === deliveryDate &&
+      held.schedule.deliveryTime === slot;
 
     res.json({
       date,
       capacity,
       slots: PICKUP_TIME_SLOTS.map((slot) => {
-        const booked = taken[slot] ?? 0;
+        const booked = Math.max(0, (taken[slot] ?? 0) - (holdsPickup(slot) ? 1 : 0));
         return { slot, booked, remaining: Math.max(0, capacity - booked), full: booked >= capacity };
       }),
+      ...(deliveryDate
+        ? {
+            deliveryDate,
+            deliveryCapacity: deliveryCap,
+            deliverySlots: DELIVERY_TIME_SLOTS.map((slot) => {
+              const booked = Math.max(0, (takenBack[slot] ?? 0) - (holdsDelivery(slot) ? 1 : 0));
+              return {
+                slot,
+                booked,
+                remaining: Math.max(0, deliveryCap - booked),
+                full: booked >= deliveryCap,
+              };
+            }),
+          }
+        : {}),
     });
   })
 );
@@ -291,18 +400,14 @@ bookingsRouter.post(
      * against the unbounded overbooking that was there before.
      */
     if (incoming.pickupTime) {
-      const capacity = slotCapacity();
-      const taken = await store.jobs.countByPickupSlot(incoming.pickupDate ?? '');
-      const already = incoming.id ? await store.jobs.find(incoming.id) : null;
+      const window = await windowState(
+        'pickup',
+        incoming.pickupDate ?? '',
+        incoming.pickupTime,
+        incoming.id
+      );
 
-      const holdsThisSlot =
-        already?.schedule.pickupDate === incoming.pickupDate &&
-        already?.schedule.pickupTime === incoming.pickupTime &&
-        already.status !== 'cancelled';
-
-      const booked = (taken[incoming.pickupTime] ?? 0) - (holdsThisSlot ? 1 : 0);
-
-      if (booked >= capacity) {
+      if (window.full) {
         res.status(409).json({
           error:
             'That collection window is full. Choose another window, or another day — ' +
@@ -315,7 +420,74 @@ bookingsRouter.post(
       }
     }
 
-    const quote = quoteBooking({
+    /**
+     * The return window, checked the same way and for the same reason.
+     *
+     * A return is a courier's afternoon exactly as a collection is a courier's
+     * morning, so a window customers can choose is a window that can be
+     * oversold — the failure gap #2 named for collections, arriving on the
+     * other leg. Only checked when one was chosen: the field is optional, and a
+     * booking that names no return window is asking for the day rather than the
+     * hour, which is what every booking did before this existed.
+     */
+    if (incoming.deliveryTime) {
+      if (!DELIVERY_TIME_SLOTS.includes(incoming.deliveryTime)) {
+        res.status(400).json({
+          error: 'Choose one of the return windows offered.',
+          reason: 'unknown-slot',
+        });
+        return;
+      }
+
+      /**
+       * A same-day return cannot leave before the collection is back.
+       *
+       * `deliverySlotsFor` drops the windows that open before the collection
+       * window closes, so an express order collected at 5:30pm cannot be
+       * promised back at 8am the same morning.
+       */
+      const offered = deliverySlotsFor(
+        incoming.pickupDate ?? '',
+        incoming.pickupTime ?? '',
+        incoming.deliveryDate ?? ''
+      );
+
+      if (!offered.some((slot) => slot.label === incoming.deliveryTime)) {
+        res.status(400).json({
+          error: 'That return window is before your laundry would be back. Choose a later one.',
+          reason: 'delivery-before-pickup',
+        });
+        return;
+      }
+
+      const window = await windowState(
+        'delivery',
+        incoming.deliveryDate ?? '',
+        incoming.deliveryTime,
+        incoming.id
+      );
+
+      if (window.full) {
+        res.status(409).json({
+          error: 'That return window is full. Choose another — the form shows which are open.',
+          reason: 'delivery-slot-full',
+          slot: incoming.deliveryTime,
+          date: incoming.deliveryDate,
+        });
+        return;
+      }
+    }
+
+    /**
+     * The bill before any promo code, so the code can be checked against it.
+     *
+     * Quoted twice, deliberately. A promo code's minimum spend and its
+     * percentage both apply to what the customer *actually* owes — after the
+     * membership's waived pickup, the member rate and the loyalty tier — so
+     * there is no way to know what a code is worth without first working out the
+     * bill without it. The second quote below is the one that counts.
+     */
+    const undiscounted = quoteBooking({
       selections: {
         serviceType: incoming.serviceType,
         scent: incoming.scent,
@@ -327,6 +499,81 @@ bookingsRouter.post(
       // `undefined` rather than 0 for a guest: no account, so no tier.
       points: member ? (member.points ?? 0) : undefined,
     });
+
+    /**
+     * What the code the customer typed is actually worth.
+     *
+     * Decided here and nowhere else. The forms run the same `checkPromo` to show
+     * a customer what to expect, but they run it against a code record they
+     * fetched and a usage count that was true a moment ago — only the server,
+     * holding the row, can say whether the last redemption of a limited code was
+     * somebody else's.
+     *
+     * A refused code does not fail the booking. Somebody typing `FRESHERS24`
+     * wrongly wants the wash more than they want the discount, and losing the
+     * pickup over a typo would be the wrong trade; the response says which code
+     * did not apply and why, and the form shows it.
+     */
+    const typed = normalisePromoCode(incoming.promoCode ?? '');
+    let promoApplied: { code: string; discount: number } | null = null;
+    let promoRefusal: { code: string; error: string; reason: string } | null = null;
+
+    if (typed) {
+      const record = await store.promos.find(typed);
+      const usage = await store.promos.usage(typed, incoming.email ?? '');
+
+      /**
+       * "First order" is asked of the bookings already on the ledger.
+       *
+       * Counted rather than inferred from the account's age, because a customer
+       * who booked as a guest and registered afterwards has a history the
+       * account does not know about — and a first-order code that fired for them
+       * a second time is the campaign paying twice for one acquisition.
+       */
+      const history = incoming.email
+        ? await store.jobs.list({ email: incoming.email, phone: incoming.phone ?? null })
+        : [];
+
+      const verdict = checkPromo(record, undiscounted.total, {
+        ...usage,
+        firstOrder: history.filter((job) => job.id !== incoming.id).length === 0,
+      });
+
+      if (verdict.ok) promoApplied = { code: verdict.code, discount: verdict.discount };
+      else promoRefusal = { code: typed, error: verdict.message, reason: verdict.reason };
+    }
+
+    const quote = quoteBooking({
+      selections: {
+        serviceType: incoming.serviceType,
+        scent: incoming.scent,
+        starch: incoming.starch,
+        addonIds: incoming.specialtyAddons,
+        items,
+      },
+      plan: member?.plan ?? null,
+      points: member ? (member.points ?? 0) : undefined,
+      promo: promoApplied,
+      taxRates: ratesFromEnv(process.env),
+    });
+
+    /**
+     * Which branch takes this collection.
+     *
+     * Read from the `hubs` table rather than from `LAUNDRY_HUB`, so a second
+     * branch is a row rather than a deploy. Falls back to the constant when the
+     * table is empty, which is true of a database that has not run the migration
+     * — a booking that could not be assigned a branch is a booking nobody
+     * collects, and that is a worse failure than one sent to the only branch
+     * there is.
+     */
+    const hubs = await store.hubs.list().catch(() => []);
+    const pin = pickupPinFor({
+      address: incoming.address,
+      suburb: incoming.suburb,
+      pickupCoords: incoming.pickupCoords,
+    });
+    const hub = hubs.length > 0 ? hubForPickup(hubs, pin, incoming.suburb) : defaultHub();
 
     const booking: Booking = {
       ...incoming,
@@ -349,6 +596,18 @@ bookingsRouter.post(
       planId: member?.plan?.planId,
       amount: quote.total,
       /**
+       * The code and what it took off, both the server's numbers.
+       *
+       * `promoDiscount` is `quote.promoDiscount` rather than the figure
+       * `checkPromo` returned, because the quote clamps it to what is actually
+       * left on the bill — a ₵20 code on a ₵12 order takes ₵12 off, and the
+       * difference is not change owed to the customer.
+       */
+      promoCode: quote.promoCode,
+      promoDiscount: quote.promoDiscount || undefined,
+      /** Which branch it goes to. See `hubForPickup`. */
+      hubId: hub.id,
+      /**
        * Nothing is paid at the moment it is booked.
        *
        * The client used to send `paymentStatus: 'Paid'` along with a
@@ -363,13 +622,25 @@ bookingsRouter.post(
       paymentStatus: incoming.paymentMethod === 'Pay on Pickup' ? 'Pay on Pickup' : 'Pending',
       paidAt: undefined,
       transactionRef: undefined,
+      /**
+       * The reschedule allowance is not the client's to state.
+       *
+       * `bookingToJob` writes whatever this says onto the job, so a body
+       * carrying `rescheduleCount: -99` would buy unlimited moves — the same
+       * shape of claim `amount` and `paymentStatus` above are stripped for.
+       * Restored from the existing row inside the transaction, so a replayed
+       * offline create does not refill a spent allowance either.
+       */
+      rescheduleCount: undefined,
     };
 
     const { job, replayed } = await store.tx(async (t) => {
       // POSTing an id that already exists is an upsert rather than an error:
       // the web app replays its offline queue on reconnect.
       const existing = await t.jobs.find(booking.id, { lock: true });
-      const created = bookingToJob(booking);
+      // Measured against the branch this collection is going to, which is what
+      // `priorityForBooking` and the courier's job card both read.
+      const created = bookingToJob(booking, undefined, hubCoords(hub));
 
       // `bookingToJob` mints fresh hand-off codes every time it runs. On a
       // replay that would invalidate the code the customer is already looking
@@ -384,6 +655,11 @@ bookingsRouter.post(
         created.dispatch.pickupOtp = existing.dispatch.pickupOtp;
         created.dispatch.dropoffOtp = existing.dispatch.dropoffOtp;
         created.dispatch.deliveryOtp = existing.dispatch.deliveryOtp;
+
+        // And the moves already spent, for the same reason: a replay is the
+        // *original* create arriving late, so it must not hand a booking that
+        // has since been rescheduled a fresh allowance.
+        created.schedule.rescheduleCount = existing.schedule.rescheduleCount;
       }
 
       const saved = await t.jobs.upsert(created);
@@ -402,6 +678,28 @@ bookingsRouter.post(
        */
       if (!existing && quote.coveredByPlan && member) {
         await consumeIncludedPickup(t, member);
+      }
+
+      /**
+       * The redemption, in the same transaction as the booking it discounted.
+       *
+       * Which is the whole point of it being here rather than after the
+       * response: a discount granted with no redemption recorded is a limited
+       * code with no limit, and a customer who could make the write fail after
+       * the booking committed would have an unlimited one.
+       *
+       * `redeem` is a no-op on conflict against `(code, job_id)`, so a replayed
+       * offline booking files one redemption rather than burning a second of the
+       * customer's one.
+       */
+      if (quote.promoCode && quote.promoDiscount > 0) {
+        await t.promos.redeem({
+          id: `redeem-${saved.id}-${quote.promoCode}`,
+          code: quote.promoCode,
+          jobId: saved.id,
+          customerEmail: saved.customer.email,
+          discount: quote.promoDiscount,
+        });
       }
 
       // After the job, never before: the notification carries a foreign key
@@ -442,7 +740,19 @@ bookingsRouter.post(
       console.error(`[bookings] could not issue a tracking token for ${job.id}:`, error);
     }
 
-    res.status(201).json({ ...view, trackingToken });
+    res.status(201).json({
+      ...view,
+      trackingToken,
+      /**
+       * The code that did not apply, if one did not.
+       *
+       * On a 201 rather than as an error, because the booking succeeded — see
+       * the note beside `promoRefusal`. The form shows the sentence beside the
+       * total so the customer learns their code was refused at the moment they
+       * would otherwise be wondering why the price is what it is.
+       */
+      promoRefused: promoRefusal ?? undefined,
+    });
 
     // After the response, and never on a replay.
     //
@@ -471,6 +781,24 @@ bookingsRouter.post(
  * address correction because it mentioned a price it was not changing.
  */
 const SUPERVISOR_ONLY_FIELDS = ['status', 'amount'] as const;
+
+/**
+ * The schedule. Stripped from a customer's patch, and only from theirs.
+ *
+ * `applyBookingPatch` has always written these, and `PATCH /:id` has always
+ * accepted them — which meant the route that corrects a house number was also
+ * the route that could drag a collection the courier was standing in front of
+ * into next week, with no capacity check on where it landed and no limit on how
+ * often. `POST /:id/reschedule` is where a customer moves a booking now; it is
+ * the only path that asks whether the move is allowed and whether the new
+ * window has room.
+ *
+ * The desk keeps them. A supervisor moving an order is doing dispatch — they
+ * are the ones who know a courier called in sick — and the dashboard's
+ * whole-record echoes carry the schedule on every unrelated edit, so refusing
+ * would break an address correction for mentioning a date it was not changing.
+ */
+const SCHEDULE_FIELDS = ['pickupDate', 'pickupTime', 'deliveryDate', 'deliveryTime'] as const;
 
 /**
  * The money. Stripped from every patch, whoever is asking.
@@ -519,7 +847,13 @@ bookingsRouter.patch(
       for (const field of PAYMENT_LEDGER_FIELDS) delete patch[field];
       if (access.kind !== 'supervisor') {
         for (const field of SUPERVISOR_ONLY_FIELDS) delete patch[field];
+        for (const field of SCHEDULE_FIELDS) delete patch[field];
       }
+
+      // Nobody patches the allowance — see the note beside it in
+      // `applyBookingPatch`. Deleted here as well as ignored there so a supervisor
+      // echo cannot refill a customer's moves either.
+      delete patch.rescheduleCount;
 
       const job = await t.jobs.upsert(applyBookingPatch(existing, patch));
 
@@ -571,6 +905,254 @@ bookingsRouter.patch(
       return;
     }
     res.json(await bookingView(outcome.job));
+  })
+);
+
+/**
+ * Moves a booking to another day or another window.
+ *
+ * Its own route rather than a field on `PATCH /:id`, because rescheduling is
+ * four things a patch cannot do: it asks whether the booking is still movable,
+ * it checks the window it is moving *into* for room, it spends one of a finite
+ * allowance, and it tells the customer it happened. A patch that wrote
+ * `pickupDate` did none of those — and it could do it to a job whose courier was
+ * already at the door.
+ *
+ * What it deliberately does not do is reprice. Same services, same total, same
+ * reference, same three hand-off codes: the customer keeps everything except the
+ * date. That is the difference between this and the cancel-and-rebook they had
+ * to do before, which lost all four.
+ *
+ * Open to whoever can already read the booking — a session, or the tracking
+ * token a guest left with. A guest who booked from the website has no account to
+ * sign into and is exactly the customer most likely to need this.
+ */
+bookingsRouter.post(
+  '/:id/reschedule',
+  guard(async (req, res) => {
+    const { pickupDate, pickupTime, deliveryTime } = (req.body ?? {}) as {
+      pickupDate?: string;
+      pickupTime?: string;
+      deliveryTime?: string;
+    };
+
+    const job = await store.jobs.find(req.params.id);
+    if (!job) {
+      notFound(res, 'Booking');
+      return;
+    }
+
+    const access = await resolveBookingAccess(req, job);
+    if (!access) {
+      notFound(res, 'Booking');
+      return;
+    }
+
+    // A courier is not a party to when the customer wants their laundry
+    // collected. They move a job's *status*, through the rider routes.
+    if (access.kind === 'rider') {
+      res.status(403).json({ error: 'Only the customer or the desk can move a booking.' });
+      return;
+    }
+
+    const request = {
+      pickupDate: pickupDate ?? '',
+      pickupTime: pickupTime ?? '',
+      deliveryTime,
+    };
+
+    /**
+     * The policy, from core — the same function both order screens call to
+     * decide whether to offer the button at all.
+     *
+     * The desk is held to it too, with one exception below. A supervisor moving
+     * a booking is still moving it into a window that has to exist and has to
+     * have room, and still onto a date that has not passed; what they may
+     * ignore is the customer's *allowance*, which is a rule about how often a
+     * customer may change their mind rather than one about dispatch.
+     */
+    const verdict = checkReschedule(job, request);
+
+    if (!verdict.ok && !(access.kind === 'supervisor' && verdict.reason === 'allowance-spent')) {
+      // `no-change` is the customer having confirmed twice, which is a replay
+      // rather than a mistake: hand back the booking as it stands instead of an
+      // error the client would have to special-case.
+      if (verdict.reason === 'no-change') {
+        res.json(await bookingView(job));
+        return;
+      }
+
+      res.status(409).json({ error: verdict.message, reason: verdict.reason });
+      return;
+    }
+
+    const nextDelivery = rescheduledDelivery(request.pickupDate);
+    const nextDeliveryTime = deliveryTime ?? job.schedule.deliveryTime;
+
+    /**
+     * Room in the window it is moving into, checked here for the reason the
+     * create route checks it: `checkReschedule` runs in three places, two of
+     * which have no database to ask.
+     *
+     * The job's own place is discounted, so a customer changing only their
+     * return window is not refused the collection they already hold.
+     */
+    const pickupWindow = await windowState(
+      'pickup',
+      request.pickupDate,
+      request.pickupTime,
+      job.id
+    );
+
+    if (pickupWindow.full) {
+      res.status(409).json({
+        error: 'That collection window filled up. Choose another window, or another day.',
+        reason: 'slot-full',
+        slot: request.pickupTime,
+        date: request.pickupDate,
+      });
+      return;
+    }
+
+    if (nextDeliveryTime) {
+      /**
+       * The return has to still be reachable from the new collection.
+       *
+       * A customer who moves a Tuesday morning pickup to Tuesday evening has
+       * not touched their return window, but a same-day return that was fine
+       * before it moved may now fall before the laundry is back. Refused rather
+       * than silently dropped: telling them to pick a later one is better than
+       * quietly leaving them without a window at all.
+       */
+      const offered = deliverySlotsFor(request.pickupDate, request.pickupTime, nextDelivery);
+
+      if (!offered.some((slot) => slot.label === nextDeliveryTime)) {
+        res.status(409).json({
+          error:
+            'Your return window is now before your laundry would be back. ' +
+            'Choose a later one along with the new collection.',
+          reason: 'delivery-before-pickup',
+        });
+        return;
+      }
+
+      const deliveryWindow = await windowState('delivery', nextDelivery, nextDeliveryTime, job.id);
+
+      if (deliveryWindow.full) {
+        res.status(409).json({
+          error: 'That return window is full. Choose another.',
+          reason: 'delivery-slot-full',
+          slot: nextDeliveryTime,
+          date: nextDelivery,
+        });
+        return;
+      }
+    }
+
+    const previous = { pickupDate: job.schedule.pickupDate, pickupTime: job.schedule.pickupTime };
+
+    const outcome = await store.tx(async (t) => {
+      /**
+       * Re-read under a lock, and re-check.
+       *
+       * Everything above ran against a row nobody was holding, and the thing
+       * most likely to have happened in between is the one that matters most: a
+       * courier accepting the job. Re-running the policy on the locked row is
+       * what stops a booking being moved out from under a courier who took it
+       * while the customer was choosing a date.
+       */
+      const current = await t.jobs.find(job.id, { lock: true });
+      if (!current) return { kind: 'missing' } as const;
+
+      const recheck = checkReschedule(current, request);
+      if (
+        !recheck.ok &&
+        recheck.reason !== 'no-change' &&
+        !(access.kind === 'supervisor' && recheck.reason === 'allowance-spent')
+      ) {
+        return { kind: 'refused', verdict: recheck } as const;
+      }
+
+      const moved = applyBookingPatch(current, {
+        pickupDate: request.pickupDate,
+        pickupTime: request.pickupTime,
+        deliveryDate: nextDelivery,
+        deliveryTime: nextDeliveryTime,
+      });
+
+      /**
+       * The allowance is spent by the customer, not by the desk.
+       *
+       * A supervisor moving an order is doing dispatch — a courier called in
+       * sick, a van broke down — and charging that to the customer's two moves
+       * would mean the laundry's own problem cost them the ability to solve
+       * theirs.
+       */
+      if (access.kind !== 'supervisor') {
+        moved.schedule.rescheduleCount = (current.schedule.rescheduleCount ?? 0) + 1;
+      }
+      moved.schedule.rescheduledAt = new Date().toISOString();
+
+      const saved = await t.jobs.upsert(moved);
+
+      if (access.kind === 'supervisor') {
+        await recordAudit(t, {
+          actor: access.supervisor.email,
+          actorName: access.supervisor.name,
+          action: 'Booking rescheduled',
+          details:
+            `Moved order ${saved.id} from ${previous.pickupDate} ${previous.pickupTime} ` +
+            `to ${saved.schedule.pickupDate} ${saved.schedule.pickupTime}`,
+          type: 'stage',
+          orderId: saved.id,
+          subject: saved.customer.email,
+        });
+      }
+
+      /**
+       * The desk finds out either way.
+       *
+       * A collection that moved is a round that has to be re-planned, and the
+       * board is where that gets noticed. Keyed `notif-reschedule-` plus the id
+       * rather than the id alone, so it does not collide with the `notif-` row
+       * the create route wrote for the same booking.
+       */
+      await t.notifications.insert({
+        id: `notif-reschedule-${saved.id}`,
+        title: 'Pickup Rescheduled',
+        body:
+          `${saved.customer.name} moved ${saved.id} from ${previous.pickupDate}, ` +
+          `${previous.pickupTime} to ${saved.schedule.pickupDate}, ${saved.schedule.pickupTime}.`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        type: 'order',
+        orderId: saved.id,
+        read: false,
+      });
+
+      return { kind: 'ok', job: saved } as const;
+    });
+
+    if (outcome.kind === 'missing') {
+      notFound(res, 'Booking');
+      return;
+    }
+
+    if (outcome.kind === 'refused') {
+      res.status(409).json({ error: outcome.verdict.message, reason: outcome.verdict.reason });
+      return;
+    }
+
+    const view = await bookingView(outcome.job);
+    res.json(view);
+
+    // After the response, for the reason the confirmation is sent after the 201:
+    // the booking has already moved, and a mail provider's bad morning must not
+    // read to the customer as a change that did not take.
+    void mailReschedule(
+      view,
+      previous,
+      Math.max(0, MAX_RESCHEDULES - (outcome.job.schedule.rescheduleCount ?? 0))
+    );
   })
 );
 

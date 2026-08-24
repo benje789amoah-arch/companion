@@ -834,9 +834,33 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (error instanceof ApiError) {
             setConnected(true);
             patchOrder(orderId, { status: 'unassigned', riderId: undefined });
+
+            /**
+             * Three refusals reach here now, and calling them all "no longer
+             * available" would be wrong about two of them.
+             *
+             * A job can be taken by somebody else, which is what that title has
+             * always meant. It can also be refused because this courier is
+             * already carrying the maximum — there was no cap at all before, so
+             * one courier tapping down the board took the board — or because
+             * they are not on shift. Those two are about the courier rather than
+             * about the job, and a title saying the job has gone sends them
+             * looking for a different card when the answer is to finish one or
+             * check the rota.
+             */
+            const reason =
+              error.body && typeof error.body === 'object' && 'reason' in error.body
+                ? String((error.body as { reason?: unknown }).reason)
+                : '';
+
             pushNotification({
               id: `notif-conflict-${Date.now()}`,
-              title: 'Job No Longer Available',
+              title:
+                reason === 'at-capacity'
+                  ? 'Your board is full'
+                  : reason === 'off-shift'
+                    ? 'You are not on shift'
+                    : 'Job No Longer Available',
               body: error.message,
               type: 'alert',
               orderId,

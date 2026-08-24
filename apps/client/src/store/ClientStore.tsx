@@ -26,6 +26,9 @@ import {
   type ActivePlan,
   type Booking,
   type BookingAuth,
+  type Claim,
+  type ClaimKind,
+  type RecurringPickup,
   type JobStatus,
   type LaundryBag,
   type Message,
@@ -284,6 +287,36 @@ interface ClientState extends Mirror {
    * reassigned.
    */
   rateBooking: (id: string, stars: number) => Promise<void>;
+  /**
+   * Moves a booking to another day or window.
+   *
+   * Not queued and not optimistic, unlike `patchBooking`. The server decides
+   * whether the move is allowed at all — the window may have filled, a courier
+   * may have accepted the job while the customer was choosing — so writing the
+   * new date into the mirror first would show them a change that is about to be
+   * refused. Rejects with the `ApiError` so the sheet can show the sentence the
+   * server wrote.
+   */
+  /** The problems this customer has reported, newest first. */
+  claims: Claim[];
+  /** Standing orders — the weekly pickups every membership plan sells. */
+  recurring: RecurringPickup[];
+  loadRecurring: () => Promise<void>;
+  saveRecurring: (
+    id: string,
+    pickup: Parameters<typeof api.saveRecurring>[1]
+  ) => Promise<void>;
+  deleteRecurring: (id: string) => Promise<void>;
+  /** The customer's own referral code, and how it is doing. */
+  referral: { code: string; reward: number; welcome: number; invited: number; rewarded: number } | null;
+  loadReferral: () => Promise<void>;
+  claimReferral: (code: string) => Promise<void>;
+  /** Re-reads them. The order screen calls it when it opens. */
+  loadClaims: () => Promise<void>;
+  rescheduleBooking: (
+    id: string,
+    change: { pickupDate: string; pickupTime: string; deliveryTime?: string }
+  ) => Promise<void>;
   bookingById: (id: string) => Booking | undefined;
   /**
    * Fetches one order in full, which is the only way to get its proof-of-service
@@ -303,7 +336,20 @@ interface ClientState extends Mirror {
   /** Signature + handover code at the door. Returns false on a wrong code. */
   confirmDelivery: (orderId: string, signature: string, code: string) => Promise<boolean>;
   /** Attaches a photo and a note to the job's conversation. */
-  reportIssue: (orderId: string, note: string, photoUri?: string) => void;
+  /**
+   * Reports a problem, and files a claim for it.
+   *
+   * Two acts, deliberately. The message goes into the courier thread because
+   * somebody with a ruined shirt wants to talk to a person, and that is where
+   * that conversation lives. The claim is the half a conversation cannot do —
+   * a state, an owner and an ending — and before it existed the report reached
+   * the thread and stopped there.
+   *
+   * The claim is best effort and the message is not: if the claim route refuses
+   * — past the fortnight, or ten already open — the customer has still reached
+   * the desk, which is what they were trying to do.
+   */
+  reportIssue: (orderId: string, note: string, photoUri?: string, kind?: ClaimKind) => void;
 
   /**
    * Credits the wallet against a settled Paystack payment, named by its
@@ -1031,9 +1077,159 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
     [drain]
   );
 
+  /**
+   * The claims this customer has raised.
+   *
+   * Held outside the booking mirror rather than folded onto each booking. A
+   * claim outlives the order it is about — it can still be open a fortnight
+   * after delivery — and the mirror is pruned and replaced wholesale on every
+   * pull, which would take the claims with it.
+   *
+   * Not queued and not written offline: a claim is only ever created by the
+   * server, and a list that invented rows would show a customer a complaint
+   * nobody had received.
+   */
+  const [claims, setClaims] = useState<Claim[]>([]);
+
+  /**
+   * Standing orders and the referral code.
+   *
+   * Both held outside the booking mirror and neither queued offline. A standing
+   * order is a scheduling instruction the server acts on — writing one locally
+   * and syncing later would mean a customer believing they had a weekly pickup
+   * that nothing was going to book — and a referral code is minted by the
+   * server, so a locally invented one would name nobody.
+   */
+  const [recurring, setRecurring] = useState<RecurringPickup[]>([]);
+  const [referral, setReferral] = useState<ClientState['referral']>(null);
+
+  const loadRecurring = useCallback<ClientState['loadRecurring']>(async () => {
+    const token = tokenRef.current;
+    if (!token) {
+      setRecurring([]);
+      return;
+    }
+
+    try {
+      setRecurring(await api.listRecurring(token));
+    } catch {
+      // Best effort, like the claims below: this screen is worth showing with
+      // what it already has rather than failing whole.
+    }
+  }, []);
+
+  const saveRecurring = useCallback<ClientState['saveRecurring']>(
+    async (id, pickup) => {
+      const token = tokenRef.current;
+      if (!token) throw new Error('Sign in to set up a standing order.');
+
+      await api.saveRecurring(id, pickup, token);
+      await loadRecurring();
+    },
+    [loadRecurring]
+  );
+
+  const deleteRecurring = useCallback<ClientState['deleteRecurring']>(
+    async (id) => {
+      const token = tokenRef.current;
+      if (!token) return;
+
+      await api.deleteRecurring(id, token);
+      await loadRecurring();
+    },
+    [loadRecurring]
+  );
+
+  const loadReferral = useCallback<ClientState['loadReferral']>(async () => {
+    const token = tokenRef.current;
+    if (!token) {
+      setReferral(null);
+      return;
+    }
+
+    try {
+      setReferral(await api.myReferral(token));
+    } catch {
+      // The code is minted on this call, so a failure means they simply do not
+      // have one yet — which the screen renders as "not available", not as an
+      // error.
+    }
+  }, []);
+
+  const claimReferral = useCallback<ClientState['claimReferral']>(
+    async (code) => {
+      const token = tokenRef.current;
+      if (!token) throw new Error('Sign in to use a referral code.');
+
+      await api.claimReferral(code, token);
+      await loadReferral();
+    },
+    [loadReferral]
+  );
+
+  const loadClaims = useCallback<ClientState['loadClaims']>(async () => {
+    const token = tokenRef.current;
+    if (!token) {
+      // A guest holding only a tracking token has no cross-order view to load;
+      // their claims are read per-order by whoever can read the order.
+      setClaims([]);
+      return;
+    }
+
+    try {
+      setClaims(await api.myClaims(token));
+    } catch {
+      // Best effort. The order screen shows the reports it knows about and says
+      // nothing about the ones it could not fetch, which is better than an
+      // error on a screen the customer opened to track a courier.
+    }
+  }, []);
+
+  const rescheduleBooking = useCallback<ClientState['rescheduleBooking']>(
+    async (id, change) => {
+      // Drained first, like `rateBooking`: a booking made offline has to exist
+      // on the server before it can be moved on it.
+      await drain();
+      const moved = await api.rescheduleBooking(id, change, bookingAuthRef.current(id));
+
+      // The server's answer, not the request: it derives the return date from
+      // the new collection and may have kept a return window the request did
+      // not mention, so the record it sends back is the only accurate one.
+      commit((current) => ({
+        ...current,
+        bookings: current.bookings.map((booking) => (booking.id === id ? moved : booking)),
+      }));
+    },
+    [drain, commit]
+  );
+
   const reportIssue = useCallback<ClientState['reportIssue']>(
-    (orderId, note, photoUri) => {
+    (orderId, note, photoUri, kind) => {
       sendMessage(orderId, photoUri ? `${note}\n\nPhoto attached: ${photoUri}` : note);
+
+      /**
+       * And a claim beside it, so the report has somewhere to end up.
+       *
+       * Fired without awaiting, and its failure swallowed on purpose. The
+       * message above has already reached the desk, and a customer who has just
+       * photographed a ruined shirt should not be shown an error because their
+       * order fell outside a fortnight — the thread still works, and the desk
+       * can still act on it.
+       */
+      void (async () => {
+        try {
+          await drain();
+          await api.raiseClaim(
+            orderId,
+            { kind: kind ?? 'other', description: note, photo: photoUri },
+            bookingAuthRef.current(orderId)
+          );
+          await loadClaims();
+        } catch {
+          // Deliberately silent: this is the customer's screen, and the thing
+          // they actually asked for has happened.
+        }
+      })();
 
       // The photo is also attached to the job itself, so it sits beside the
       // rider's own proof shots rather than only in the chat log. The dispatch
@@ -1046,7 +1242,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
         enqueue({ kind: 'order:status', id: orderId, patch: { status: live, photo: photoUri } });
       }
     },
-    [sendMessage, enqueue, mirror.bookings]
+    [sendMessage, enqueue, mirror.bookings, drain, loadClaims]
   );
 
   // ---------------------------------------------------------------- wallet
@@ -1493,6 +1689,16 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       patchBooking,
       cancelBooking,
       rateBooking,
+      rescheduleBooking,
+      claims,
+      loadClaims,
+      recurring,
+      loadRecurring,
+      saveRecurring,
+      deleteRecurring,
+      referral,
+      loadReferral,
+      claimReferral,
       bookingById,
       loadBookingProof,
       messagesFor,
@@ -1536,6 +1742,16 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       patchBooking,
       cancelBooking,
       rateBooking,
+      rescheduleBooking,
+      claims,
+      loadClaims,
+      recurring,
+      loadRecurring,
+      saveRecurring,
+      deleteRecurring,
+      referral,
+      loadReferral,
+      claimReferral,
       bookingById,
       loadBookingProof,
       messagesFor,

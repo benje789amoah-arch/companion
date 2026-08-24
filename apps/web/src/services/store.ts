@@ -539,6 +539,37 @@ export async function refundBooking(id: string): Promise<Booking> {
   return refunded;
 }
 
+/**
+ * Moves a booking to another day or window.
+ *
+ * Not queued and not optimistic, unlike `patchBooking` below. The server owns
+ * this decision — the window may have filled while the customer was choosing, a
+ * courier may have accepted the job, the allowance may be spent — so writing the
+ * new date into the mirror first would show a change that is about to be
+ * refused. Rejects with the `ApiError`, whose `message` is a sentence written
+ * for the customer.
+ *
+ * `PATCH /bookings/:id` no longer writes schedule fields for anybody but the
+ * desk, so this is the only path a customer has to a new date.
+ */
+export async function rescheduleBooking(
+  id: string,
+  change: { pickupDate: string; pickupTime: string; deliveryTime?: string }
+): Promise<Booking> {
+  await drain();
+
+  const moved = await api.rescheduleBooking(id, change, bookingAuth(id));
+
+  // The server's answer rather than the request: it derives the return date
+  // from the new collection, and may have kept a return window the request
+  // never mentioned.
+  mirror.bookings = mirror.bookings.map((booking) => (booking.id === id ? moved : booking));
+  writeLocal(KEYS.bookings, mirror.bookings);
+  notify();
+
+  return moved;
+}
+
 export function patchBooking(id: string, patch: Partial<Booking>): void {
   mirror.bookings = mirror.bookings.map((booking) =>
     booking.id === id ? { ...booking, ...patch } : booking
