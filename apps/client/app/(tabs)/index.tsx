@@ -54,7 +54,7 @@ import {
 } from '../../src/components/ui';
 import { useClient } from '../../src/store/ClientStore';
 import { useSession } from '../../src/store/SessionStore';
-import { useT, type TranslationKey } from '../../src/i18n';
+import { servicePriceLabel, useT, type TranslationKey } from '../../src/i18n';
 import {
   colors,
   courierName,
@@ -78,7 +78,7 @@ export default function HomeScreen() {
   const router = useRouter();
   const { account, isAuthenticated } = useSession();
   const { primaryBooking, activeBookings, unreadCount, online, probed, points, refresh } = useClient();
-  const { t, locale } = useT();
+  const { t, locale, c } = useT();
 
   const [category, setCategory] = useState<ServiceCategory>('core');
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -285,7 +285,7 @@ export default function HomeScreen() {
                   style={[styles.chip, active && styles.chipActive]}
                 >
                   <Text style={[styles.chipLabel, active && styles.chipLabelActive]}>
-                    {entry.label}
+                    {c(`category.${entry.id}.label`, entry.label)}
                   </Text>
                 </Pressable>
               );
@@ -293,7 +293,10 @@ export default function HomeScreen() {
           </ScrollView>
 
           <Text style={styles.categoryBlurb}>
-            {SERVICE_CATEGORIES.find((entry) => entry.id === category)?.blurb}
+            {(() => {
+              const entry = SERVICE_CATEGORIES.find((row) => row.id === category);
+              return entry ? c(`category.${entry.id}.blurb`, entry.blurb) : null;
+            })()}
           </Text>
 
           <View style={{ gap: 10, marginTop: 12 }}>
@@ -309,9 +312,11 @@ export default function HomeScreen() {
                     {service.name}
                   </Text>
                   <Text style={styles.serviceBody} numberOfLines={2}>
-                    {service.description}
+                    {c(`service.${service.id}.desc`, service.description)}
                   </Text>
-                  <Text style={styles.servicePrice}>{service.priceInfo}</Text>
+                  <Text style={styles.servicePrice}>
+                    {servicePriceLabel(t, c, locale, service)}
+                  </Text>
                 </View>
                 <ChevronRight size={15} color={colors.textMuted} />
               </Pressable>
@@ -329,8 +334,8 @@ export default function HomeScreen() {
                   <Text style={styles.stepIndexLabel}>{index + 1}</Text>
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.stepTitle}>{step.title}</Text>
-                  <Text style={styles.stepBody}>{step.body}</Text>
+                  <Text style={styles.stepTitle}>{c(`step.${step.id}.title`, step.title)}</Text>
+                  <Text style={styles.stepBody}>{c(`step.${step.id}.body`, step.body)}</Text>
                 </View>
                 <Icon name={step.iconName} size={17} color={colors.brandStone} />
               </View>
@@ -347,8 +352,8 @@ export default function HomeScreen() {
                 <View style={styles.gridIcon}>
                   <Icon name={reason.iconName} size={16} color={colors.brandSage} />
                 </View>
-                <Text style={styles.gridTitle}>{reason.title}</Text>
-                <Text style={styles.gridBody}>{reason.body}</Text>
+                <Text style={styles.gridTitle}>{c(`why.${reason.id}.title`, reason.title)}</Text>
+                <Text style={styles.gridBody}>{c(`why.${reason.id}.body`, reason.body)}</Text>
               </Card>
             ))}
           </View>
@@ -373,8 +378,12 @@ export default function HomeScreen() {
                 <View style={styles.segmentIcon}>
                   <Icon name={segment.iconName} size={17} color={colors.brandGold} />
                 </View>
-                <Text style={styles.segmentTitle}>{segment.title}</Text>
-                <Text style={styles.segmentBody}>{segment.body}</Text>
+                <Text style={styles.segmentTitle}>
+                  {c(`segment.${segment.id}.title`, segment.title)}
+                </Text>
+                <Text style={styles.segmentBody}>
+                  {c(`segment.${segment.id}.body`, segment.body)}
+                </Text>
               </Pressable>
             ))}
           </ScrollView>
@@ -388,16 +397,18 @@ export default function HomeScreen() {
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={{ gap: 10, paddingRight: 20 }}
           >
-            {TESTIMONIALS.map((testimonial) => (
+            {TESTIMONIALS.map((testimonial, index) => (
               <Card key={testimonial.id} style={styles.testimonial}>
                 <Quote size={17} color={colors.brandStone} />
-                <Text style={styles.testimonialQuote}>{testimonial.quote}</Text>
+                <Text style={styles.testimonialQuote}>
+                  {c(`testimonial.${index}.quote`, testimonial.quote)}
+                </Text>
                 <View style={styles.testimonialFoot}>
                   <Image source={{ uri: testimonial.avatarUrl }} style={styles.testimonialAvatar} />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.testimonialName}>{testimonial.name}</Text>
                     <Text style={styles.testimonialRole} numberOfLines={1}>
-                      {testimonial.role}
+                      {c(`testimonial.${index}.role`, testimonial.role)}
                     </Text>
                   </View>
                 </View>

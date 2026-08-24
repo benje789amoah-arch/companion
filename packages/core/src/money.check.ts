@@ -24,13 +24,24 @@
 
 import { check, checkTrue, report, section } from './check';
 import {
+  DEFAULT_SLOT_CAPACITY,
   DEFAULT_STARCH,
+  PICKUP_TIME_SLOTS,
   SPECIALTY_ADDONS,
   isPlanCoverable,
   priceBreakdown,
   quoteBooking,
   serviceBasePrice,
 } from './pricing';
+import {
+  MAX_ITEMS,
+  MAX_QUANTITY,
+  clampQuantity,
+  describeItems,
+  serviceTakesQuantity,
+  serviceUnit,
+} from './services';
+import { MAX_BAGS, PRIORITY_THRESHOLD, bagsForJob, priorityForBooking } from './job';
 import {
   MEMBERSHIP_PLANS,
   addMonthClamped,
@@ -49,6 +60,7 @@ const CAR = 'Bespoke Car Detailing';
 const LAVENDER = 'Organic Lavender';
 const UNSCENTED = 'Fragrance-Free (Pure Hypoallergenic Soap)';
 const SHIELDING = 'Garment Shielding';
+const LINEN = 'Bed Sheets & Linens Care';
 
 const plan = (id: string, pickupsUsed = 0): ActivePlan =>
   ({ ...startMembership(membershipPlan(id)!), pickupsUsed }) as ActivePlan;
@@ -59,11 +71,27 @@ section('the list price');
 check('a wash is its listed price', serviceBasePrice(WASH), 30);
 check('an unlisted service falls back to the default', serviceBasePrice('Alchemy'), 25);
 
-check('scent and starch are itemised away from the base', priceBreakdown({
+/**
+ * The money fields only, not the whole object.
+ *
+ * These two used to compare `priceBreakdown` against a literal, which meant
+ * every field added to the return type broke assertions that were not about it —
+ * `quantity`, `unitLaundry` and `items` each did exactly that. What they are
+ * checking is the arithmetic, so that is what they name.
+ */
+const money = (b: ReturnType<typeof priceBreakdown>) => ({
+  base: b.base,
+  finishes: b.finishes,
+  addons: b.addons,
+  laundry: b.laundry,
+  gross: b.gross,
+});
+
+check('scent and starch are itemised away from the base', money(priceBreakdown({
   serviceType: WASH,
   scent: LAVENDER,
   starch: DEFAULT_STARCH,
-}), { base: 30, finishes: 5, addons: 0, laundry: 35, gross: 35 });
+})), { base: 30, finishes: 5, addons: 0, laundry: 35, gross: 35 });
 
 // The comment on SCENTS names this: a string compare once charged ₵5 for
 // choosing *unscented*, which is the option that exists to cost nothing.
@@ -81,11 +109,11 @@ check('a finish cannot be billed onto a car detail', priceBreakdown({
   starch: 'Medium',
 }).finishes, 0);
 
-check('add-ons are separable from the laundry', priceBreakdown({
+check('add-ons are separable from the laundry', money(priceBreakdown({
   serviceType: WASH,
   scent: UNSCENTED,
   addonIds: [SHIELDING],
-}), { base: 30, finishes: 0, addons: 10, laundry: 30, gross: 40 });
+})), { base: 30, finishes: 0, addons: 10, laundry: 30, gross: 40 });
 
 check('an unknown add-on is worth nothing, not NaN', priceBreakdown({
   serviceType: WASH,
@@ -179,6 +207,352 @@ checkTrue(
     )
   )
 );
+
+// ---------------------------------------------------------------------------
+section('how many of it');
+
+// Every service advertises a price per something. Until quantity existed, four
+// loads and one load were both billed as one load.
+check('one load is the list price', priceBreakdown({ serviceType: WASH, scent: UNSCENTED }).gross, 30);
+check('four loads is four times it',
+  priceBreakdown({ serviceType: WASH, scent: UNSCENTED, quantity: 4 }).gross, 120);
+
+{
+  // The agreed rule: base and finishes scale because that work is done per
+  // unit; add-ons are chosen once for the order and billed once.
+  const three = priceBreakdown({
+    serviceType: WASH,
+    scent: LAVENDER,
+    addonIds: [SHIELDING],
+    quantity: 3,
+  });
+  check('the base scales', three.base, 90);
+  check('the finishes scale with it', three.finishes, 15);
+  check('the add-on does not', three.addons, 10);
+  check('so the laundry is three units worth', three.laundry, 105);
+  check('and the gross carries the add-on once', three.gross, 115);
+  check('one unit is reported alongside, for the membership', three.unitLaundry, 35);
+}
+
+// A service priced per order is one order however much of it there is.
+check('a per-order service ignores a quantity',
+  priceBreakdown({ serviceType: 'Ironing & Folding', quantity: 5 }).gross, 25);
+check('...and reports the quantity it actually used',
+  priceBreakdown({ serviceType: 'Ironing & Folding', quantity: 5 }).quantity, 1);
+checkTrue('a load is countable and an order is not',
+  serviceTakesQuantity(WASH) && !serviceTakesQuantity('Ironing & Folding'));
+check('a car detail counts by the ride', serviceUnit(CAR), 'ride');
+
+// The number multiplies a price and arrives off the wire, so it is clamped
+// before it is used — by the forms, and again by the server.
+check('absent means one', priceBreakdown({ serviceType: WASH, scent: UNSCENTED }).quantity, 1);
+check('zero means one', clampQuantity(0, WASH), 1);
+check('negative means one', clampQuantity(-5, WASH), 1);
+check('a fraction floors', clampQuantity(2.9, WASH), 2);
+check('a fraction under one still means one', clampQuantity(0.0001, WASH), 1);
+check('nonsense means one', clampQuantity('lots', WASH), 1);
+check('NaN means one', clampQuantity(NaN, WASH), 1);
+check('past the ceiling stops at it', clampQuantity(1e9, WASH), MAX_QUANTITY);
+check('a per-order service is always one', clampQuantity(9, 'Ironing & Folding'), 1);
+
+// The exploit the clamp exists to stop: a crafted quantity quoting a wash at
+// nothing, or at a number `priorityForBooking` reads as elite.
+checkTrue('a crafted fraction cannot quote a booking at nothing',
+  priceBreakdown({ serviceType: WASH, scent: UNSCENTED, quantity: 0.0001 }).gross === 30);
+checkTrue('a crafted huge quantity is bounded',
+  priceBreakdown({ serviceType: WASH, scent: UNSCENTED, quantity: 1e9 }).gross === 30 * MAX_QUANTITY);
+
+// ---------------------------------------------------------------------------
+section('one included pickup is worth one unit');
+
+{
+  // Four loads on a Student plan: the first load is waived, the other three are
+  // charged at the member rate. Letting one pickup absorb the lot would let a
+  // ₵79 plan with two pickups waive forty loads.
+  const quote = quoteBooking({
+    selections: { serviceType: WASH, scent: UNSCENTED, quantity: 4 },
+    plan: plan('student'),
+  });
+  check('the allowance waives one load', quote.waived, 30);
+  checkTrue('...and the booking still counts as covered', quote.coveredByPlan);
+  check('...the other three are at the member rate',
+    quote.memberDiscount, roundCedis((120 - 30) * 0.1));
+  check('...so the member pays for three loads less their rate',
+    quote.total, roundCedis(120 - 30 - (120 - 30) * 0.1));
+}
+
+check('a single load is still fully waived',
+  quoteBooking({
+    selections: { serviceType: WASH, scent: UNSCENTED },
+    plan: plan('student'),
+  }).total, 0);
+
+checkTrue(
+  'no quantity on any plan can waive more than one unit',
+  MEMBERSHIP_PLANS.every((definition) =>
+    [1, 2, 10, MAX_QUANTITY].every((quantity) => {
+      const quote = quoteBooking({
+        selections: { serviceType: WASH, scent: LAVENDER, quantity },
+        plan: plan(definition.id),
+      });
+      return quote.waived <= quote.unitLaundry;
+    })
+  )
+);
+
+// ---------------------------------------------------------------------------
+section('several services on one order');
+
+{
+  // One collection, one courier, one doorstep — but two services.
+  const quote = quoteBooking({
+    selections: {
+      serviceType: WASH,
+      scent: UNSCENTED,
+      items: [
+        { serviceType: WASH, quantity: 2 },
+        { serviceType: LINEN, quantity: 1 },
+      ],
+    },
+  });
+  check('every line is priced and summed', quote.gross, 30 * 2 + 45);
+  check('...and the units are counted across them', quote.quantity, 3);
+  check('...with the lines handed back', quote.items.length, 2);
+}
+
+{
+  // A finish is an order-level decision applied per line: the scent is charged
+  // on the loads of washing and not on the car sitting beside them.
+  const quote = quoteBooking({
+    selections: {
+      serviceType: WASH,
+      scent: LAVENDER,
+      items: [
+        { serviceType: WASH, quantity: 2 },
+        { serviceType: CAR, quantity: 1 },
+      ],
+    },
+  });
+  check('a finish is charged only on the garment lines', quote.finishes, 5 * 2);
+  check('...and the base still covers both', quote.base, 30 * 2 + 150);
+}
+
+{
+  // The allowance is worth the best single unit, whatever order things were
+  // added in.
+  const linenFirst = quoteBooking({
+    selections: {
+      serviceType: LINEN,
+      scent: UNSCENTED,
+      items: [
+        { serviceType: LINEN, quantity: 1 },
+        { serviceType: WASH, quantity: 2 },
+      ],
+    },
+    plan: plan('student'),
+  });
+  const washFirst = quoteBooking({
+    selections: {
+      serviceType: WASH,
+      scent: UNSCENTED,
+      items: [
+        { serviceType: WASH, quantity: 2 },
+        { serviceType: LINEN, quantity: 1 },
+      ],
+    },
+    plan: plan('student'),
+  });
+  check('the allowance waives the most valuable unit', linenFirst.waived, 45);
+  check('...regardless of the order the lines are in', washFirst.waived, 45);
+  check('...and the two orders cost the same', linenFirst.total, washFirst.total);
+}
+
+{
+  // A car detail is not coverable, but the washing beside it is — the order
+  // must not lose its allowance because the car was added first.
+  const quote = quoteBooking({
+    selections: {
+      serviceType: CAR,
+      scent: UNSCENTED,
+      items: [
+        { serviceType: CAR, quantity: 1 },
+        { serviceType: WASH, quantity: 1 },
+      ],
+    },
+    plan: plan('family'),
+  });
+  checkTrue('an uncoverable first line does not lose the allowance', quote.coveredByPlan);
+  check('...which waives the washing, not the car', quote.waived, 30);
+}
+
+check('an order of nothing but uncoverable work gets no allowance',
+  quoteBooking({
+    selections: { serviceType: CAR, items: [{ serviceType: CAR, quantity: 2 }] },
+    plan: plan('family'),
+  }).waived, 0);
+
+// A booking from before line items existed is a list of one.
+check('a single-service booking still prices',
+  quoteBooking({ selections: { serviceType: WASH, scent: UNSCENTED, quantity: 3 } }).gross, 90);
+check('...and reports itself as one line',
+  priceBreakdown({ serviceType: WASH, quantity: 3 }).items.length, 1);
+check('more lines than allowed are dropped',
+  priceBreakdown({
+    serviceType: WASH,
+    items: Array.from({ length: MAX_ITEMS + 4 }, () => ({ serviceType: WASH, quantity: 1 })),
+  }).items.length, MAX_ITEMS);
+check('a line naming no service is dropped',
+  priceBreakdown({
+    serviceType: WASH,
+    items: [{ serviceType: '  ', quantity: 2 }, { serviceType: WASH, quantity: 1 }],
+  }).items.length, 1);
+
+// ---------------------------------------------------------------------------
+section('the bag manifest follows the count');
+
+// It used to be `ceil(amount / 50)` capped at three: ten loads produced three
+// bags, and a car detail produced three for a job with no bags in it.
+check('one load is one bag', bagsForJob('FFC-123456', { serviceType: WASH, quantity: 1 }).length, 1);
+check('four loads are four bags', bagsForJob('FFC-123456', { serviceType: WASH, quantity: 4 }).length, 4);
+check('two services are the sum of their units',
+  bagsForJob('FFC-123456', {
+    serviceType: WASH,
+    items: [
+      { serviceType: WASH, quantity: 2 },
+      { serviceType: LINEN, quantity: 1 },
+    ],
+  }).length, 3);
+
+{
+  const bags = bagsForJob('FFC-123456', {
+    serviceType: WASH,
+    items: [
+      { serviceType: WASH, quantity: 2 },
+      { serviceType: LINEN, quantity: 1 },
+    ],
+  });
+  check('each bag is labelled with the service it belongs to',
+    bags.map((bag) => bag.type), [WASH, WASH, LINEN]);
+  checkTrue('every QR is distinct',
+    new Set(bags.map((bag) => bag.qrCode)).size === bags.length);
+  // The suffix used to be a single letter, which ran out at 26.
+  check('the suffixes run past Z',
+    bagsForJob('FFC-123456', {
+      serviceType: WASH,
+      items: [{ serviceType: WASH, quantity: 28 }],
+    }).slice(26, 28).map((bag) => bag.qrCode.slice(-2)),
+    ['AA', 'AB']);
+}
+
+checkTrue('the manifest is capped so it stays scannable',
+  bagsForJob('FFC-123456', {
+    serviceType: WASH,
+    items: Array.from({ length: MAX_ITEMS }, () => ({ serviceType: WASH, quantity: MAX_QUANTITY })),
+  }).length === MAX_BAGS);
+
+checkTrue('the same booking always yields the same codes',
+  JSON.stringify(bagsForJob('FFC-123456', { serviceType: WASH, quantity: 3 })) ===
+    JSON.stringify(bagsForJob('FFC-123456', { serviceType: WASH, quantity: 3 })));
+
+// ---------------------------------------------------------------------------
+section('re-deriving a price from a stored booking');
+
+/**
+ * Three screens re-derive a list price when a booking has no `amount` on it, or
+ * to itemise a receipt beside the amount the server charged: `displayAmount`,
+ * the desk's receipt and the patron portal's.
+ *
+ * All three passed `serviceType` and the finish and nothing else, so a
+ * three-load order re-derived as one load. On a receipt that is worse than a
+ * wrong number — the itemisation is subtracted from the real total to show what
+ * a discount took off, so the missing ₵70 appeared as though the customer had
+ * been given it.
+ *
+ * `bookingItems` reads either shape, which is why passing both `items` and
+ * `quantity` covers a record from before line items as well as one from a
+ * client that only sends the count.
+ */
+{
+  const stored = {
+    serviceType: WASH,
+    scent: UNSCENTED,
+    items: [
+      { serviceType: WASH, quantity: 2 },
+      { serviceType: LINEN, quantity: 1 },
+    ],
+    quantity: 2,
+  };
+
+  const derived = priceBreakdown(stored);
+  check('re-deriving from a stored booking counts every line', derived.gross, 30 * 2 + 45);
+
+  // What the three screens used to do.
+  const serviceOnly = priceBreakdown({ serviceType: stored.serviceType, scent: UNSCENTED });
+  checkTrue('...which the service name alone could not', serviceOnly.gross < derived.gross);
+}
+
+check('a booking carrying only a quantity still re-derives correctly',
+  priceBreakdown({ serviceType: WASH, scent: UNSCENTED, quantity: 3 }).gross, 90);
+
+check('a booking from before either existed is still one unit',
+  priceBreakdown({ serviceType: WASH, scent: UNSCENTED }).gross, 30);
+
+// ---------------------------------------------------------------------------
+section('where a job sits in the queue');
+
+// `elite` is what the plans screen sells. It stopped meaning anything when a
+// booking could carry a quantity: `amount >= 80` put every order of three loads
+// or more in the same tier as a paying member.
+check('a member is elite on any order', priorityForBooking(35, 'student'), 'elite');
+check('...however small', priorityForBooking(0, 'student'), 'elite');
+
+check('one load is ordinary', priorityForBooking(35), 'standard');
+check('two loads are worked first', priorityForBooking(70), 'priority');
+check('a car detail is worked first', priorityForBooking(150), 'priority');
+
+checkTrue(
+  'no guest order reaches the tier a membership sells, at any size',
+  [45, 105, 350, 1200, 999999].every((amount) => priorityForBooking(amount) !== 'elite')
+);
+
+check('the threshold is the boundary itself', priorityForBooking(PRIORITY_THRESHOLD), 'priority');
+check('...and a penny under it is not', priorityForBooking(PRIORITY_THRESHOLD - 0.01), 'standard');
+
+// ---------------------------------------------------------------------------
+section('what the courier and the desk are told');
+
+// Every staff surface used to print `job.service.type`, which names the *first*
+// service — so a courier sent for two loads and a set of linen read "Washing".
+check('a single service reads as its name alone',
+  describeItems({ serviceType: WASH }), WASH);
+check('...with no count on a single unit',
+  describeItems({ serviceType: WASH, quantity: 1 }), WASH);
+check('a counted single service says how many',
+  describeItems({ serviceType: WASH, quantity: 3 }), `3 loads · ${WASH}`);
+check('a per-order service never carries a count',
+  describeItems({ serviceType: 'Ironing & Folding', quantity: 4 }), 'Ironing & Folding');
+check('two services are both named',
+  describeItems({
+    serviceType: WASH,
+    items: [
+      { serviceType: WASH, quantity: 2 },
+      { serviceType: LINEN, quantity: 1 },
+    ],
+  }),
+  `2 loads · ${WASH} + ${LINEN}`);
+check('an empty booking describes nothing rather than throwing',
+  describeItems({ serviceType: '' }), '');
+
+// ---------------------------------------------------------------------------
+section('collection windows have a ceiling');
+
+// `PICKUP_TIME_SLOTS` had no references anywhere in the server: every customer
+// could book the same 08:00–11:00 and nothing refused the eleventh.
+checkTrue('there is a capacity to enforce', DEFAULT_SLOT_CAPACITY >= 1);
+checkTrue('the slots are a closed set the server can count against',
+  PICKUP_TIME_SLOTS.length === 3 && PICKUP_TIME_SLOTS.every((slot) => slot.length > 0));
+checkTrue('every slot is distinct, so counts cannot collide',
+  new Set(PICKUP_TIME_SLOTS).size === PICKUP_TIME_SLOTS.length);
 
 // ---------------------------------------------------------------------------
 section('renewal dates');

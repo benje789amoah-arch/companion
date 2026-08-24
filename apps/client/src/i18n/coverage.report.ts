@@ -29,6 +29,7 @@
 import { en, type TranslationKey } from './en';
 import { es } from './es';
 import { fr } from './fr';
+import { CATALOGUE_KEYS, catalogueCoverage } from './catalogue';
 import { LOCALES, LOCALE_LABELS, type Locale } from './locales';
 
 const DICTIONARIES: Record<Locale, Partial<Record<TranslationKey, string>>> = { en, es, fr };
@@ -80,6 +81,24 @@ if (!only) {
         `${bar(fraction)} ${String(Math.round(fraction * 100)).padStart(3)}%  ` +
         `${String(written).padStart(4)}/${KEYS.length}` +
         (missing.length ? `  (${missing.length} to write)` : '')
+    );
+  }
+
+  /**
+   * The catalogue, counted separately.
+   *
+   * A different kind of dictionary and so a different number: it has no English
+   * map to measure against — the English lives in the data and is passed in as
+   * the fallback — so Spanish is the yardstick, and this says whether the others
+   * have fallen behind it. See `./catalogue`.
+   */
+  console.log(`\nService catalogue (${CATALOGUE_KEYS.length} strings)\n`);
+  for (const locale of LOCALES) {
+    const fraction = catalogueCoverage(locale);
+    console.log(
+      `  ${locale.padEnd(4)} ${LOCALE_LABELS[locale].english.padEnd(12)} ` +
+        `${bar(fraction)} ${String(Math.round(fraction * 100)).padStart(3)}%` +
+        (locale === 'en' ? '  (the source: the data itself)' : '')
     );
   }
 

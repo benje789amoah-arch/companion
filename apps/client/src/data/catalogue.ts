@@ -123,6 +123,16 @@ export interface ClientService extends ServicePresentation {
    * it used to be, and said "From ₵15 / load" over a ₵30 wash.
    */
   priceInfo: string;
+  /**
+   * The charge and what it buys, carried through from core.
+   *
+   * `priceInfo` is the English advert built from these two. The customer's
+   * screens rebuild the same sentence in their own language — see
+   * `servicePriceLabel` — and need the parts rather than the finished string.
+   */
+  price: number;
+  unit: string;
+  priceNote?: string;
   category: ServiceCategory;
   /**
    * Whether this can be the service on a booking.
@@ -139,6 +149,9 @@ export const SERVICES: ClientService[] = SERVICE_CATALOGUE.map((service) => ({
   name: service.name,
   description: service.description,
   priceInfo: priceLabel(service),
+  price: service.price,
+  unit: service.unit,
+  priceNote: service.priceNote,
   category: service.category,
   bookable: service.bookable,
   ...SERVICE_PRESENTATION[service.id],

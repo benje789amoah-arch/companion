@@ -29,9 +29,28 @@
 
 import { tierForPoints } from './loyalty';
 import { membershipBookingQuote, roundCedis, type ActivePlan } from './membership';
-import { serviceByName } from './services';
+import { bookingItems, serviceByName, totalUnits } from './services';
+import type { BookingItem } from './types';
 
 /** Exact slot strings both booking forms submit, so the two read the same. */
+/**
+ * How many collections one window can take.
+ *
+ * A window is a courier's morning, and there are only so many couriers. Until
+ * this existed the slots were a display list and nothing more — they had no
+ * references in the server at all, so every customer could book the same
+ * 08:00–11:00 and the eleventh was accepted exactly like the first. A window
+ * that cannot be served is worse than one that is closed: the customer is told
+ * a courier is coming.
+ *
+ * Twelve is a starting number rather than a measured one, and it is deliberately
+ * one number rather than a table — the desk can raise it when it knows better,
+ * and `PICKUP_SLOT_CAPACITY` in the server's environment overrides it without a
+ * deploy. Per-slot and per-day capacities are the next thing to want; a single
+ * ceiling is the thing that stops the overbooking today.
+ */
+export const DEFAULT_SLOT_CAPACITY = 12;
+
 export const PICKUP_TIME_SLOTS = [
   '08:00 AM - 11:00 AM (Morning Concierge)',
   '12:00 PM - 03:00 PM (Afternoon Transit)',
@@ -239,19 +258,60 @@ export interface BookingSelections {
   scent?: string;
   starch?: string;
   addonIds?: string[];
+  /**
+   * How many of the service's unit — four loads, two sofas, one car.
+   *
+   * Absent means one, which is what every booking made before this field
+   * existed meant. Always 1 for a service priced per order; see
+   * `clampQuantity`, which every caller runs it through.
+   *
+   * Describes `serviceType` only. An order with several services carries them
+   * in `items` and this is the first line's count.
+   */
+  quantity?: number;
+  /**
+   * Every service on the order. Wins over `serviceType`/`quantity` when present.
+   *
+   * Read through `bookingItems`, never directly, so that a single-service
+   * booking and a multi-line one are the same shape by the time anything prices
+   * them.
+   */
+  items?: BookingItem[];
 }
 
 export interface PriceBreakdown {
-  /** The service itself, before finishes. */
+  /** The service itself, for all of the units, before finishes. */
   base: number;
-  /** Scent and starch surcharges — part of the laundry, not an extra. */
+  /** Scent and starch surcharges, for all of the units. */
   finishes: number;
-  /** Specialty add-ons, which a membership does not cover. */
+  /** Specialty add-ons, which a membership does not cover. Not multiplied. */
   addons: number;
   /** The laundry a membership's included pickups pay for: base + finishes. */
   laundry: number;
   /** Everything, before any discount. */
   gross: number;
+  /**
+   * The lines this was priced from, normalised and clamped.
+   *
+   * Handed back so a caller does not have to re-derive them to render a
+   * summary — and so the booking that gets submitted carries exactly the lines
+   * the quote was computed from.
+   */
+  items: BookingItem[];
+  /** Total countable things across every line. */
+  quantity: number;
+  /**
+   * The most valuable single unit on the order, among the lines a membership
+   * can cover. Zero when no line is coverable.
+   *
+   * Carried separately because it is what a membership's included pickup
+   * waives. A pickup is worth one unit, not one booking: four loads on one
+   * included pickup waives one load and charges the other three at the member
+   * rate. Without this the allowance would be worth whatever the customer
+   * happened to put in the bag, which is the loophole `isPlanCoverable` already
+   * exists to close on the specialist services.
+   */
+  unitLaundry: number;
 }
 
 /**
@@ -285,17 +345,63 @@ function finishesFor(selections: BookingSelections): number {
  * quote has to say which part is which before anything can be waived.
  */
 export function priceBreakdown(selections: BookingSelections): PriceBreakdown {
-  const base = serviceBasePrice(selections.serviceType ?? '');
-  const finishes = finishesFor(selections);
+  // Through `bookingItems` so a single-service booking and a multi-line one
+  // take the same path — the one-line case is not a special case, it is a list
+  // of length one.
+  const items = bookingItems(selections);
+
+  /**
+   * Each line priced on its own, then summed.
+   *
+   * Within a line the base and the finishes scale and the add-ons do not, which
+   * is a statement about the work rather than about the arithmetic: a scent is
+   * applied to each load and a starch pressed into each shirt, so three loads is
+   * three times that work. Garment shielding or a laser crease is chosen once
+   * for the order and billed once.
+   *
+   * `finishesFor` is asked per line, so a scent chosen for the order is charged
+   * on the two loads of washing and not on the car detail sitting beside them.
+   */
+  let base = 0;
+  let finishes = 0;
+  let unitLaundry = 0;
+
+  for (const item of items) {
+    const unitBase = serviceBasePrice(item.serviceType);
+    const unitFinishes = finishesFor({ ...selections, serviceType: item.serviceType });
+
+    base += unitBase * item.quantity;
+    finishes += unitFinishes * item.quantity;
+
+    /**
+     * The best single unit on the order, for the membership below.
+     *
+     * An included pickup is worth one unit, and with several services on one
+     * booking somebody has to say which. The most valuable one, which is both
+     * the convention anywhere else a customer is given "one free" and the only
+     * choice that does not depend on the order they happened to add things in.
+     * Bounded either way: it can never exceed one unit.
+     */
+    if (isPlanCoverable(item.serviceType)) {
+      unitLaundry = Math.max(unitLaundry, unitBase + unitFinishes);
+    }
+  }
+
   const addons = (selections.addonIds ?? []).reduce(
     (total, id) => total + (specialtyAddon(id)?.price ?? 0),
     0
   );
 
+  base = roundCedis(base);
+  finishes = roundCedis(finishes);
+
   return {
     base,
     finishes,
     addons,
+    items,
+    quantity: totalUnits(items),
+    unitLaundry: roundCedis(unitLaundry),
     laundry: roundCedis(base + finishes),
     gross: roundCedis(base + finishes + addons),
   };
@@ -351,7 +457,19 @@ export function quoteBooking(input: {
     plan,
     gross: breakdown.gross,
     laundry: breakdown.laundry,
-    coverable: isPlanCoverable(selections.serviceType ?? ''),
+    // One included pickup is worth one unit — the most valuable coverable one
+    // on the order. See the note in `membershipBookingQuote`.
+    unitLaundry: breakdown.unitLaundry,
+    /**
+     * Coverable when *any* line is.
+     *
+     * `unitLaundry` is only ever set from a coverable line, so a positive value
+     * is exactly that test — and asking it this way rather than re-running
+     * `isPlanCoverable` on `serviceType` is what stops an order of "car detail
+     * plus two loads of washing" being refused an allowance because the car
+     * happened to be added first.
+     */
+    coverable: breakdown.unitLaundry > 0,
   });
 
   const afterPlan = Math.max(

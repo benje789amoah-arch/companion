@@ -201,6 +201,7 @@ export interface RiderRow {
   heading: number;
   coords: Coords;
   rating: number;
+  rating_count: number;
   today_distance: number;
   distance_date: string;
   today_earnings: number;
@@ -365,6 +366,7 @@ export function toRider(row: RiderRow): StoredRider {
     heading: row.heading,
     coords: row.coords,
     rating: row.rating,
+    ratingCount: row.rating_count ?? 0,
     todayDistance: row.today_distance,
     distanceDate: row.distance_date,
     todayEarnings: row.today_earnings,

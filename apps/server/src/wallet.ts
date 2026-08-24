@@ -126,6 +126,63 @@ export async function topUp(input: {
 }
 
 /**
+ * Returns money for work that was paid for and will not be done.
+ *
+ * To the wallet, always — which is what the cancel dialog has been promising all
+ * along: "anything already paid is refunded to your wallet by the concierge
+ * desk." Not back down the rail it arrived on: a Paystack refund is a separate
+ * API with its own settlement delay and its own failure modes, and a customer
+ * owed ₵105 for a pickup that never happened is better served by a balance they
+ * can spend today than by a card refund landing in five working days. A customer
+ * who wants it off the platform entirely is a conversation with the desk, and
+ * the ledger row this writes is what that conversation is held against.
+ *
+ * The mirror image of {@link charge}, with one asymmetry that is deliberate:
+ * **the points earned on the original spend are not clawed back.** They were
+ * earned on a booking the customer made in good faith, the tier they bought is
+ * already being enjoyed, and reversing them could demote somebody mid-order for
+ * a cancellation the laundry may itself have caused. The money comes back; the
+ * standing does not move.
+ *
+ * `reference` is what makes it idempotent, and the caller passes the booking's —
+ * so a desk that clicks twice, or two supervisors acting on the same complaint,
+ * refunds once.
+ */
+export async function refund(input: {
+  email: string;
+  amount: number;
+  description: string;
+  bookingId?: string;
+  reference: string;
+}): Promise<WalletOutcome> {
+  if (!isPositiveAmount(input.amount)) return { ok: false, reason: 'bad-amount' };
+
+  const amount = roundCedis(input.amount);
+
+  return onAccount(input.email, async (t, account) => {
+    const existing = await alreadyApplied(t, input.reference);
+    if (existing) return { ok: true, account, transaction: existing } as const;
+
+    const balance = roundCedis((account.walletBalance ?? 0) + amount);
+    const saved = await t.accounts.updateProfile(account.email, { walletBalance: balance });
+
+    const transaction = await t.transactions.upsert({
+      id: `txn-refund-${accountSlug(account.email)}-${Date.now()}`,
+      bookingId: input.bookingId,
+      userEmail: account.email,
+      amount,
+      method: 'Refund',
+      status: 'Successful',
+      reference: input.reference,
+      timestamp: new Date().toISOString(),
+      description: input.description || 'FreshFold refund',
+    });
+
+    return { ok: true, account: saved ?? account, transaction } as const;
+  });
+}
+
+/**
  * Spends from the wallet, and earns the points that spend is worth.
  *
  * One point per whole cedi, by `pointsForSpend` — the rule the Bronze tier's

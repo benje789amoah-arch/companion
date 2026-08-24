@@ -173,6 +173,35 @@ export const es: Partial<Record<TranslationKey, string>> = {
   'book.service.helper':
     'Toque para cambiar. Cada servicio se presupuesta antes de confirmar, y el mensajero es gratuito en todos ellos.',
   'book.picker.service': 'Elija un servicio',
+  'service.priceFrom': 'Desde {amount} / {unit}',
+  'book.extra.add': '+ Añadir otro servicio',
+  'book.extra.change': 'Cambiar de servicio',
+  'book.extra.remove': 'Quitar este servicio',
+
+  /**
+   * `de {unit}` en vez de «¿Cuántas…?»: la unidad llega en tiempo de ejecución
+   * y su género no se puede concordar de antemano — «carga» es femenina,
+   * «juego» masculino.
+   */
+  'book.quantity.title': 'Cantidad de {unit}',
+  'book.quantity.each': '{amount} por {unit}',
+  'book.quantity.fewer': 'Reducir la cantidad',
+  'book.quantity.more': 'Aumentar la cantidad',
+
+  // ----------------------------------------------------------- unidades
+  'unit.load.one': 'carga',
+  'unit.load.many': 'cargas',
+  'unit.set.one': 'juego',
+  'unit.set.many': 'juegos',
+  // El servicio es el detallado de un coche, así que la unidad es el vehículo.
+  'unit.ride.one': 'vehículo',
+  'unit.ride.many': 'vehículos',
+  'unit.space.one': 'espacio',
+  'unit.space.many': 'espacios',
+  'unit.unit.one': 'unidad',
+  'unit.unit.many': 'unidades',
+  'unit.order.one': 'pedido',
+  'unit.order.many': 'pedidos',
 
   'book.plan.coveredTitle': 'Esta recogida está incluida en su membresía',
   'book.plan.title': 'Reservado con su membresía',
@@ -192,6 +221,8 @@ export const es: Partial<Record<TranslationKey, string>> = {
   'book.date.placeholder': 'AAAA-MM-DD',
   'book.date.hint': 'La entrega se programa para el día siguiente.',
   'book.window.title': 'Franja de recogida',
+  'book.window.full': 'Completa — elija otra franja',
+  'book.window.remaining': 'Sólo quedan {count} en esta franja',
 
   'book.address.saved': 'Usar una dirección guardada',
   'book.picker.addresses': 'Direcciones guardadas',
@@ -408,6 +439,7 @@ export const es: Partial<Record<TranslationKey, string>> = {
 
   'order.row.booked': 'Reservado',
   'order.row.plan': 'Plan',
+  'order.row.quantity': 'Cantidad',
   'order.row.care': 'Notas de cuidado',
   'order.row.courierNote': 'Nota del mensajero',
   'order.row.courier': 'Mensajero',
@@ -427,6 +459,10 @@ export const es: Partial<Record<TranslationKey, string>> = {
   'order.receipt.reference': 'Referencia',
 
   'order.again': 'Volver a reservar esto',
+  'order.rate.title': '¿Qué tal ha ido?',
+  'order.rate.prompt': 'Valore a {name}: es sólo un toque, y el mostrador las lee todas.',
+  'order.rate.thanks': 'Gracias. Su valoración está en el mostrador.',
+  'order.rate.star': '{count} de 5',
 
   // --------------------------------------------------------------- scanner
   'scanner.title': 'Compruebe sus bolsas',

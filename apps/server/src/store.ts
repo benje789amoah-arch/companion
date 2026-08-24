@@ -282,6 +282,129 @@ function repositories(exec: Executor) {
         const rows = await exec<{ count: number }[]>`select count(*)::int as count from jobs`;
         return rows[0].count;
       },
+
+      /**
+       * How many collections are already booked into each window on a day.
+       *
+       * A collection window is a courier's hour, and there are only so many
+       * couriers — so this is the number the booking form has to respect.
+       * Nothing counted it before: `PICKUP_TIME_SLOTS` existed in the two forms
+       * and had **no references anywhere in the server**, so every customer in
+       * Ayeduase could book the same 08:00–11:00 window and nothing refused the
+       * eleventh.
+       *
+       * Cancelled jobs are excluded. A window does not stay full because
+       * somebody changed their mind, and counting them would let a morning of
+       * cancellations lock out a whole day.
+       *
+       * Grouped in one query rather than one per slot: the booking form asks for
+       * a whole day at a time, and three round trips to answer one screen is
+       * three chances for them to disagree with each other.
+       */
+      async countByPickupSlot(pickupDate: string): Promise<Record<string, number>> {
+        const rows = await exec<{ slot: string; count: number }[]>`
+          select schedule ->> 'pickupTime' as slot, count(*)::int as count
+          from jobs
+          where schedule ->> 'pickupDate' = ${pickupDate}
+            and status <> 'cancelled'
+          group by 1
+        `;
+
+        const counts: Record<string, number> = {};
+        for (const row of rows) {
+          if (row.slot) counts[row.slot] = row.count;
+        }
+        return counts;
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Ratings
+    // -----------------------------------------------------------------------
+    ratings: {
+      /**
+       * Records a customer's rating and returns the courier's new average.
+       *
+       * Upsert on the job, so a customer who changes their mind revises rather
+       * than stacks — the primary key is what makes rating the same delivery
+       * twice impossible rather than merely discouraged.
+       *
+       * The average is recomputed from the rows in the same statement batch,
+       * rather than incremented on the rider. An incremented average drifts, and
+       * cannot be corrected without the rows anyway; recomputing over an indexed
+       * column costs one aggregate on a table with one row per delivery.
+       */
+      async record(rating: {
+        jobId: string;
+        riderId: string;
+        customerEmail: string;
+        stars: number;
+        comment: string;
+      }): Promise<{ average: number; count: number }> {
+        await exec`
+          insert into job_ratings (job_id, rider_id, customer_email, stars, comment)
+          values (
+            ${rating.jobId}, ${rating.riderId}, ${rating.customerEmail.toLowerCase()},
+            ${rating.stars}, ${rating.comment}
+          )
+          on conflict (job_id) do update set
+            stars      = excluded.stars,
+            comment    = excluded.comment,
+            created_at = now()
+        `;
+
+        const rows = await exec<{ average: number; count: number }[]>`
+          select coalesce(avg(stars), 0)::double precision as average,
+                 count(*)::int as count
+          from job_ratings
+          where rider_id = ${rating.riderId}
+        `;
+
+        const { average, count } = rows[0];
+
+        await exec`
+          update riders
+          set rating = ${average}, rating_count = ${count}
+          where id = ${rating.riderId}
+        `;
+
+        return { average, count };
+      },
+
+      /** This job's rating, so a customer can see what they left. */
+      async find(jobId: string): Promise<{ stars: number; comment: string } | null> {
+        const rows = await exec<{ stars: number; comment: string }[]>`
+          select stars, comment from job_ratings where job_id = ${jobId}
+        `;
+        return rows[0] ?? null;
+      },
+
+      /**
+       * A courier's ratings, newest first, for the desk.
+       *
+       * A number on its own tells a supervisor something is wrong and nothing
+       * about what — the comments are the half that can be acted on.
+       */
+      async forRider(
+        riderId: string,
+        limit = 50
+      ): Promise<{ jobId: string; stars: number; comment: string; createdAt: string }[]> {
+        const rows = await exec<
+          { job_id: string; stars: number; comment: string; created_at: string }[]
+        >`
+          select job_id, stars, comment, created_at
+          from job_ratings
+          where rider_id = ${riderId}
+          order by created_at desc
+          limit ${limit}
+        `;
+        return rows.map((row) => ({
+          jobId: row.job_id,
+          stars: row.stars,
+          comment: row.comment,
+          createdAt: new Date(row.created_at).toISOString(),
+        }));
+      },
     },
 
     // -----------------------------------------------------------------------

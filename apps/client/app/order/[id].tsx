@@ -18,11 +18,12 @@ import {
   QrCode,
   Receipt,
   RefreshCcw,
+  Star,
 } from 'lucide-react-native';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { bagsForJob, type JobStatus } from '@freshfold/core';
+import { bagsForJob, serviceUnit, type JobStatus } from '@freshfold/core';
 
 /**
  * Dispatch states in which the bags are still with the customer. `unassigned`
@@ -57,6 +58,8 @@ import {
   jobStatusLabel,
   paymentStatusLabel,
   stageLabel,
+  describeOrder,
+  unitLabel,
   useT,
 } from '../../src/i18n';
 import {
@@ -93,6 +96,7 @@ export default function OrderDetailScreen() {
     confirmDelivery,
     reportIssue,
     cancelBooking,
+    rateBooking,
     messagesFor,
   } = useClient();
 
@@ -126,7 +130,7 @@ export default function OrderDetailScreen() {
   const bags = useMemo(
     () =>
       booking
-        ? bagsForJob(booking.id, booking.amount ?? 0, booking.serviceType)
+        ? bagsForJob(booking.id, booking, booking.serviceType)
         : [],
     [booking]
   );
@@ -153,6 +157,41 @@ export default function OrderDetailScreen() {
 
   const atTheDoor = booking?.rider?.jobStatus === 'arrived_at_delivery';
   const closed = booking?.status === 'Delivered' || booking?.status === 'Cancelled';
+
+  /**
+   * What the customer thought of the courier.
+   *
+   * `null` until they have pressed a star or we have loaded one they left
+   * earlier — the row only appears on a delivered order with a courier on it,
+   * which is the same pair of conditions the server checks.
+   */
+  const [stars, setStars] = useState<number | null>(null);
+  const [ratingBusy, setRatingBusy] = useState(false);
+  const [ratingDone, setRatingDone] = useState(false);
+
+  const rateable = booking?.status === 'Delivered' && !!booking?.rider?.id;
+
+  const rate = useCallback(
+    async (value: number) => {
+      if (!booking || ratingBusy) return;
+
+      // Optimistic: the star fills under the thumb. A failure puts it back
+      // rather than leaving a rating on screen that was never recorded.
+      const previous = stars;
+      setStars(value);
+      setRatingBusy(true);
+
+      try {
+        await rateBooking(booking.id, value);
+        setRatingDone(true);
+      } catch {
+        setStars(previous);
+      } finally {
+        setRatingBusy(false);
+      }
+    },
+    [booking, stars, ratingBusy, rateBooking]
+  );
 
   /** Before the courier has taken the bags — the window the code is for. */
   const awaitingCollection =
@@ -200,7 +239,7 @@ export default function OrderDetailScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <Header
         title={booking.id}
-        subtitle={booking.serviceType}
+        subtitle={describeOrder(t, booking)}
         onBack={() => router.back()}
       />
 
@@ -368,7 +407,7 @@ export default function OrderDetailScreen() {
               track tab's — the same field labelled the same way, so the same
               key. The service name, the plan id and the add-on names are
               catalogue data and are rendered as they arrive. */}
-          <Row label={t('book.summary.service')} value={booking.serviceType} />
+          <Row label={t('book.summary.service')} value={describeOrder(t, booking)} />
           <Row
             label={t('book.done.collection')}
             value={t('track.row.collectionValue', {
@@ -381,6 +420,14 @@ export default function OrderDetailScreen() {
             label={t('book.summary.address')}
             value={[booking.address, booking.suburb, booking.city].filter(Boolean).join(', ')}
           />
+          {/* Only when there is more than one — "1 load" on every single-unit
+              order is a row that says nothing. */}
+          {(booking.quantity ?? 1) > 1 && (
+            <Row
+              label={t('order.row.quantity')}
+              value={`${booking.quantity} ${unitLabel(t, serviceUnit(booking.serviceType), booking.quantity ?? 1)}`}
+            />
+          )}
           <Row label={t('order.row.booked')} value={formatDate(booking.createdAt, locale)} />
           {!!booking.planId && <Row label={t('order.row.plan')} value={booking.planId} />}
           {!!booking.specialInstructions && (
@@ -429,6 +476,50 @@ export default function OrderDetailScreen() {
               ))}
             </ScrollView>
           </Card>
+        )}
+
+        {/*
+          How the delivery went. Only on a delivered order with a courier
+          recorded — the two things the server also insists on, so the row is
+          never offered where it would be refused.
+
+          Stars alone, with no comment box. The overwhelming majority of ratings
+          anywhere are a tap and nothing more, and a text field would make this
+          look like a form to fill in rather than a question to answer. A
+          customer with something to say has the issue reporter above, which
+          reaches the same desk and carries a photograph.
+        */}
+        {rateable && (
+          <View style={{ gap: 9 }}>
+            <SectionLabel>{t('order.rate.title')}</SectionLabel>
+            <Card style={{ gap: 10 }}>
+              <Text style={styles.rateCaption}>
+                {ratingDone
+                  ? t('order.rate.thanks')
+                  : t('order.rate.prompt', { name: courierName(booking.rider) })}
+              </Text>
+
+              <View style={styles.starRow}>
+                {[1, 2, 3, 4, 5].map((value) => (
+                  <Pressable
+                    key={value}
+                    onPress={() => void rate(value)}
+                    disabled={ratingBusy}
+                    hitSlop={6}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('order.rate.star', { count: value })}
+                    style={styles.star}
+                  >
+                    <Star
+                      size={26}
+                      color={colors.brandGold}
+                      fill={stars !== null && value <= stars ? colors.brandGold : 'transparent'}
+                    />
+                  </Pressable>
+                ))}
+              </View>
+            </Card>
+          </View>
         )}
 
         {/* --------------------------------------------------------- closing */}
@@ -502,7 +593,7 @@ export default function OrderDetailScreen() {
           <Text style={styles.receiptRef}>{booking.id}</Text>
           <Divider style={{ marginVertical: 12 }} />
 
-          <Row label={t('book.summary.service')} value={booking.serviceType} />
+          <Row label={t('book.summary.service')} value={describeOrder(t, booking)} />
           <Row label={t('order.receipt.collected')} value={formatDate(booking.pickupDate, locale)} />
           <Row label={t('order.receipt.returned')} value={formatDate(booking.deliveryDate, locale)} />
           {/* The method is a free-form string the server writes and is rendered
@@ -641,6 +732,12 @@ const styles = StyleSheet.create({
   scroll: { padding: 20, paddingTop: 4, paddingBottom: 40, gap: 14 },
 
   statusHead: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  rateCaption: { fontSize: 12, color: colors.textSlate, lineHeight: 16.5 },
+  starRow: { flexDirection: 'row', gap: 6 },
+  // 40pt of tappable area around a 26pt glyph: this is tapped once, in a hurry,
+  // and a star that misses is a rating that never happens.
+  star: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+
   amount: { flex: 1, textAlign: 'right', fontSize: 15, fontWeight: '800', color: colors.textCharcoal },
 
   cardHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },

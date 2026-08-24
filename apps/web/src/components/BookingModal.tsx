@@ -16,8 +16,16 @@ import {
   isoPlusDays,
   limitPhoneInput,
   newJobId,
+  describeItems,
   quoteBooking,
   samePhone,
+  serviceTakesQuantity,
+  serviceUnit,
+  clampQuantity,
+  pluraliseUnit,
+  MAX_ITEMS,
+  MAX_QUANTITY,
+  type BookingItem,
   deriveSuburb,
   type Coords,
   type UserAccount,
@@ -62,9 +70,114 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
    * reconciled them.
    */
   const suburb = useMemo(() => deriveSuburb(pickupPin, address), [pickupPin, address]);
-  const [service, setService] = useState(BOOKABLE_SERVICE_ITEMS[0]?.name || 'Washing (Machine & Hand Wash)');
+  /**
+   * The services on this order, and how many of each.
+   *
+   * A list rather than a single service: "two loads of washing and a set of bed
+   * linen" is one collection, one courier and one doorstep, and making the
+   * customer book it twice produced two jobs for one visit. The first line is
+   * the order's primary service — it is what `serviceType` is submitted as, and
+   * what the rider app and the desk board display.
+   *
+   * Quantities are clamped on the way in here and again by `quoteBooking` and
+   * the server: this is a form, and a form is not the only thing that can post
+   * a booking.
+   */
+  const [items, setItems] = useState<BookingItem[]>(() => [
+    { serviceType: BOOKABLE_SERVICE_ITEMS[0]?.name || 'Washing (Machine & Hand Wash)', quantity: 1 },
+  ]);
+
+  /** The primary line, which the rest of the form still speaks in terms of. */
+  const service = items[0]?.serviceType ?? '';
+
+  const setItemService = (index: number, next: string) =>
+    setItems((current) =>
+      current.map((item, i) =>
+        // A new service starts at one: four loads of washing is not four car
+        // details, and carrying the count across would quote ₵600 for a change
+        // of mind.
+        i === index ? { serviceType: next, quantity: 1 } : item
+      )
+    );
+
+  const setItemQuantity = (index: number, next: number) =>
+    setItems((current) =>
+      current.map((item, i) =>
+        i === index ? { ...item, quantity: clampQuantity(next, item.serviceType) } : item
+      )
+    );
+
+  const addItem = () =>
+    setItems((current) =>
+      current.length >= MAX_ITEMS
+        ? current
+        : [
+            ...current,
+            {
+              // The first service they have not already added, so a second line
+              // does not open as a duplicate of the first.
+              serviceType:
+                BOOKABLE_SERVICE_ITEMS.find(
+                  (candidate) => !current.some((item) => item.serviceType === candidate.name)
+                )?.name ?? BOOKABLE_SERVICE_ITEMS[0].name,
+              quantity: 1,
+            },
+          ]
+    );
+
+  // Never below one line: an order with no service is not an order.
+  const removeItem = (index: number) =>
+    setItems((current) => (current.length <= 1 ? current : current.filter((_, i) => i !== index)));
   const [pickupDate, setPickupDate] = useState('');
   const [pickupTimeSlot, setPickupTimeSlot] = useState<string>(PICKUP_TIME_SLOTS[0]);
+
+  /**
+   * How full each window is on the chosen day.
+   *
+   * Advisory: the booking route enforces the same ceiling regardless, so a form
+   * working from a stale answer is refused rather than allowed to overbook. What
+   * this buys is the customer finding out *before* they fill in the rest of the
+   * form rather than after they press Confirm.
+   *
+   * Empty while it loads and on any failure — an unreachable server should not
+   * grey out every window and make the form look broken.
+   */
+  const [slotState, setSlotState] = useState<Record<string, { remaining: number; full: boolean }>>({});
+
+  useEffect(() => {
+    if (!isOpen || !pickupDate) return;
+
+    let cancelled = false;
+    store.api
+      .slotAvailability(pickupDate)
+      .then((answer) => {
+        if (cancelled) return;
+        const next: Record<string, { remaining: number; full: boolean }> = {};
+        for (const row of answer.slots) next[row.slot] = { remaining: row.remaining, full: row.full };
+        setSlotState(next);
+      })
+      .catch(() => {
+        if (!cancelled) setSlotState({});
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, pickupDate]);
+
+  /**
+   * Move off a window that filled up while the form was open.
+   *
+   * Without this the customer keeps a selection the server will refuse, and
+   * finds out at the end. Falls back to leaving it alone when every window is
+   * full — there is nowhere to move them to, and the error on submit is then
+   * the honest answer.
+   */
+  useEffect(() => {
+    if (!slotState[pickupTimeSlot]?.full) return;
+    const open = PICKUP_TIME_SLOTS.find((slot) => !slotState[slot]?.full);
+    if (open) setPickupTimeSlot(open);
+  }, [slotState, pickupTimeSlot]);
   const [specialScent, setSpecialScent] = useState(DEFAULT_SCENT);
   const [starchLevel, setStarchLevel] = useState(DEFAULT_STARCH);
   const [specialInstructions, setSpecialInstructions] = useState('');
@@ -305,7 +418,9 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
   // Sync preselected services on open
   useEffect(() => {
     if (preselectedService) {
-      setService(preselectedService);
+      // Replaces the first line rather than appending: this is the card the
+      // visitor clicked on the marketing page, so it is the order's subject.
+      setItemService(0, preselectedService);
     }
   }, [preselectedService, isOpen]);
 
@@ -334,11 +449,16 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
   const estimate = useMemo(
     () =>
       quoteBooking({
-        selections: { serviceType: service, scent: specialScent, starch: starchLevel },
+        selections: {
+          serviceType: service,
+          scent: specialScent,
+          starch: starchLevel,
+          items,
+        },
         plan: loggedInUser?.plan ?? null,
         points: loggedInUser ? (loggedInUser.points ?? 0) : undefined,
       }),
-    [service, specialScent, starchLevel, loggedInUser]
+    [service, specialScent, starchLevel, items, loggedInUser]
   );
   const estimatedPrice = estimate.total;
 
@@ -355,6 +475,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
   useEffect(() => {
     setPickupDate(isoDaysFromNow(1));
   }, [isOpen]);
+
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -410,7 +531,11 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
       name,
       email: email.trim(),
       phone,
-      serviceType: service,
+      // The lines the quote was computed from, and the primary pair derived
+      // from the first of them — the server rewrites both the same way.
+      items: estimate.items,
+      serviceType: estimate.items[0].serviceType,
+      quantity: estimate.items[0].quantity,
       pickupDate,
       pickupTime: pickupTimeSlot,
       deliveryDate: deliveryDateStr,
@@ -719,21 +844,121 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                   03. Garment specifications & Scent matching
                 </h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
-                      Primary Service Treatment
-                    </label>
-                    <select
-                      value={service}
-                      onChange={(e) => setService(e.target.value)}
-                      className="w-full bg-[#161616] text-white rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors text-left"
-                    >
-                      {BOOKABLE_SERVICE_ITEMS.map((srv) => (
-                        <option key={srv.id} value={srv.name}>
-                          {srv.name} ({srv.priceInfo})
-                        </option>
-                      ))}
-                    </select>
+                  {/*
+                    One row per service. A single-service order is the common
+                    case and looks like one row; "two loads and a set of linen"
+                    is two, and travels as one collection rather than two
+                    bookings for one doorstep.
+                  */}
+                  <div className="md:col-span-2 space-y-3">
+                    {items.map((item, index) => {
+                      const itemUnit = serviceUnit(item.serviceType);
+                      const itemCountable = serviceTakesQuantity(item.serviceType);
+
+                      return (
+                        <div
+                          key={index}
+                          className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 items-end"
+                        >
+                          <div>
+                            <label
+                              htmlFor={`booking-service-${index}`}
+                              className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5"
+                            >
+                              {index === 0 ? 'Primary Service Treatment' : `Service ${index + 1}`}
+                            </label>
+                            <select
+                              id={`booking-service-${index}`}
+                              value={item.serviceType}
+                              onChange={(e) => setItemService(index, e.target.value)}
+                              className="w-full bg-[#161616] text-white rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors text-left"
+                            >
+                              {BOOKABLE_SERVICE_ITEMS.map((srv) => (
+                                <option key={srv.id} value={srv.name}>
+                                  {srv.name} ({srv.priceInfo})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div className="flex items-end gap-2">
+                            {/* The stepper, only for a service priced per
+                                countable thing — an order is one order however
+                                much of it there is. */}
+                            {itemCountable && (
+                              <div>
+                                <label
+                                  htmlFor={`booking-quantity-${index}`}
+                                  className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5"
+                                >
+                                  {pluraliseUnit(itemUnit, 2)}
+                                </label>
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => setItemQuantity(index, item.quantity - 1)}
+                                    disabled={item.quantity <= 1}
+                                    aria-label={`One fewer ${itemUnit}`}
+                                    className={`w-10 h-11 shrink-0 rounded-xl border text-lg font-bold transition-colors ${
+                                      item.quantity <= 1
+                                        ? 'bg-white/5 border-white/5 text-stone-600 cursor-not-allowed'
+                                        : 'bg-[#161616] border-white/10 text-white hover:border-brand-sage cursor-pointer'
+                                    }`}
+                                  >
+                                    &minus;
+                                  </button>
+                                  <input
+                                    id={`booking-quantity-${index}`}
+                                    type="number"
+                                    inputMode="numeric"
+                                    min={1}
+                                    max={MAX_QUANTITY}
+                                    value={item.quantity}
+                                    onChange={(e) => setItemQuantity(index, Number(e.target.value))}
+                                    className="w-16 bg-[#161616] text-white rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs text-center font-mono"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => setItemQuantity(index, item.quantity + 1)}
+                                    disabled={item.quantity >= MAX_QUANTITY}
+                                    aria-label={`One more ${itemUnit}`}
+                                    className={`w-10 h-11 shrink-0 rounded-xl border text-lg font-bold transition-colors ${
+                                      item.quantity >= MAX_QUANTITY
+                                        ? 'bg-white/5 border-white/5 text-stone-600 cursor-not-allowed'
+                                        : 'bg-[#161616] border-white/10 text-white hover:border-brand-sage cursor-pointer'
+                                    }`}
+                                  >
+                                    +
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Never on the first row: an order needs a service. */}
+                            {items.length > 1 && index > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => removeItem(index)}
+                                aria-label={`Remove ${item.serviceType}`}
+                                className="w-10 h-11 shrink-0 rounded-xl border border-white/10 bg-[#161616] text-stone-400 hover:text-red-400 hover:border-red-400/40 transition-colors cursor-pointer"
+                              >
+                                &times;
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {items.length < MAX_ITEMS && (
+                      <button
+                        type="button"
+                        onClick={addItem}
+                        className="text-[11px] font-semibold uppercase tracking-wider text-brand-sage hover:text-brand-sage-light transition-colors cursor-pointer"
+                      >
+                        + Add another service
+                      </button>
+                    )}
                   </div>
                   {/*
                     A car detail and an office clean take no fabric finish, and
@@ -784,9 +1009,19 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                       onChange={(e) => setPickupTimeSlot(e.target.value)}
                       className="w-full bg-[#161616] text-white rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors text-left"
                     >
-                      {PICKUP_TIME_SLOTS.map((slot) => (
-                        <option key={slot} value={slot}>{slot}</option>
-                      ))}
+                      {PICKUP_TIME_SLOTS.map((slot) => {
+                        const state = slotState[slot];
+                        return (
+                          <option key={slot} value={slot} disabled={state?.full}>
+                            {slot}
+                            {state?.full
+                              ? ' — full'
+                              : state && state.remaining <= 3
+                                ? ` — ${state.remaining} left`
+                                : ''}
+                          </option>
+                        );
+                      })}
                     </select>
                   </div>
                 </div>
@@ -1019,6 +1254,16 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                     <Sparkles className="w-4 h-4 text-brand-sage" />
                     Estimated: <span className="text-brand-sage font-bold">₵{estimatedPrice.toFixed(2)} GHS</span>
                   </span>
+                  {/* What the total is *for*, itemised — a customer who set a
+                      stepper three screens ago can see it is still counted, and
+                      one who added a second service can see both lines. Silent
+                      for the ordinary single-unit order, where it would only
+                      repeat the service name above. */}
+                  {(estimate.items.length > 1 || estimate.quantity > 1) && (
+                    <span className="block font-mono text-[9px] text-stone-400 mt-1">
+                      {describeItems({ items: estimate.items, serviceType: service })}
+                    </span>
+                  )}
                 </div>
                 <div className="text-right">
                   <span className={`font-sans text-[9px] px-2.5 py-1 rounded-lg uppercase border font-bold ${
@@ -1085,7 +1330,9 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
                 </div>
                 <div className="flex justify-between">
                   <span className="text-stone-400">Garment Treatment:</span>
-                  <span className="text-white font-medium">{createdBooking?.serviceType}</span>
+                  <span className="text-white font-medium">
+                    {(createdBooking && describeItems(createdBooking)) || createdBooking?.serviceType}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-stone-400">Pickup Schedule:</span>

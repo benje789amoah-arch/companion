@@ -11,6 +11,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { addMonthClamped, membershipPlan, membershipSwitchQuote } from '@freshfold/core';
 import { Icon } from '../src/components/Icon';
+import { useT } from '../src/i18n';
 import { Badge, Button, Card, Divider, SectionLabel } from '../src/components/ui';
 import { SUBSCRIPTION_PLANS } from '../src/data/catalogue';
 import { useClient } from '../src/store/ClientStore';
@@ -27,6 +28,9 @@ import { colors, formatCedis, radius, shadow, tints } from '../src/theme';
  */
 export default function PlansScreen() {
   const router = useRouter();
+  // This screen's own chrome is still English — only the plan copy that comes
+  // out of the catalogue is translated. See `src/i18n/catalogue.ts`.
+  const { c } = useT();
   const { isAuthenticated } = useSession();
   const { plan, walletBalance, subscribeToPlan, includedPickupsLeft } = useClient();
 
@@ -148,7 +152,9 @@ export default function PlansScreen() {
                       />
                     )}
                   </View>
-                  <Text style={styles.planTagline}>{candidate.tagline}</Text>
+                  <Text style={styles.planTagline}>
+                    {c(`plan.${candidate.id}.tagline`, candidate.tagline)}
+                  </Text>
                 </View>
 
                 {active && <Check size={18} color={colors.brandSage} strokeWidth={3} />}
@@ -162,11 +168,15 @@ export default function PlansScreen() {
               <View style={styles.capacityRow}>
                 <View style={styles.capacityChip}>
                   <Package size={11} color={colors.textSlate} />
-                  <Text style={styles.capacityText}>{candidate.capacity}</Text>
+                  <Text style={styles.capacityText}>
+                    {c(`plan.${candidate.id}.capacity`, candidate.capacity)}
+                  </Text>
                 </View>
                 <View style={styles.capacityChip}>
                   <Clock size={11} color={colors.textSlate} />
-                  <Text style={styles.capacityText}>{candidate.turnaround}</Text>
+                  <Text style={styles.capacityText}>
+                    {c(`plan.${candidate.id}.turnaround`, candidate.turnaround)}
+                  </Text>
                 </View>
                 {/* The allowance, on the plan actually being spent from. */}
                 {current && (
@@ -184,12 +194,14 @@ export default function PlansScreen() {
                   <Divider style={{ marginVertical: 12 }} />
                   <SectionLabel>What's included</SectionLabel>
                   <View style={{ gap: 8, marginTop: 9 }}>
-                    {candidate.benefits.map((benefit) => (
+                    {candidate.benefits.map((benefit, at) => (
                       <View key={benefit} style={styles.benefitRow}>
                         <View style={styles.benefitTick}>
                           <Check size={9} color="#FFFFFF" strokeWidth={3.5} />
                         </View>
-                        <Text style={styles.benefitText}>{benefit}</Text>
+                        <Text style={styles.benefitText}>
+                          {c(`plan.${candidate.id}.benefit.${at}`, benefit)}
+                        </Text>
                       </View>
                     ))}
                   </View>

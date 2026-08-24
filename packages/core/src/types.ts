@@ -89,6 +89,23 @@ export interface JobCustomer {
 export interface JobService {
   /** Free-text service name, e.g. "Boutique Wash & Press". */
   type: string;
+  /**
+   * How many of the service's unit this job is for.
+   *
+   * On the job rather than only on the booking because it is dispatch
+   * information: four loads is a different vehicle from one, and the courier's
+   * job card and the desk's board both need to say so. Absent means one.
+   *
+   * Mirrors `items[0]`, like `type` above.
+   */
+  quantity?: number;
+  /**
+   * Every service on the job, when it has more than one.
+   *
+   * `type` and `quantity` name the first; this is the whole list, and it is what
+   * the bag manifest was built from.
+   */
+  items?: BookingItem[];
   /** Subscription plan this job was booked under, if any. */
   planId?: string;
   /**
@@ -223,12 +240,56 @@ export interface Job {
 // Booking — the customer-facing projection (apps/web)
 // ---------------------------------------------------------------------------
 
+/**
+ * One service on an order, and how many of it.
+ *
+ * A booking used to be one service, which is most of them — but "two loads of
+ * washing and a set of bed linen" is one collection, one courier and one
+ * doorstep, and making the customer book it twice produced two jobs for one
+ * visit.
+ */
+export interface BookingItem {
+  serviceType: string;
+  /** How many of the service's unit. Always 1 for a per-order service. */
+  quantity: number;
+}
+
 export interface Booking {
   id: string;
   name: string;
   email: string;
   phone: string;
+  /**
+   * Every service on this order, in the order the customer added them.
+   *
+   * The authoritative list. `serviceType` and `quantity` below mirror the first
+   * line and are what the rider app, the desk console, the confirmation email
+   * and every other existing reader still use — an order is *mostly* its first
+   * service, and rewriting eighty read sites to say `items[0]` would have been a
+   * worse change than keeping the pair in step.
+   *
+   * Absent on every booking made before line items existed, and on any client
+   * that has not been updated. Read it through `bookingItems`, which returns the
+   * single-line equivalent when it is missing rather than making each caller
+   * remember to.
+   *
+   * Finishes are deliberately *not* per line: scent and starch are one decision
+   * about how the customer's laundry should come back, applied to whichever
+   * lines are garment services. Add-ons are order-level for the same reason.
+   */
+  items?: BookingItem[];
   serviceType: string;
+  /**
+   * How many of the service's unit: four loads, two sofas, one car.
+   *
+   * Optional because every booking made before this field existed means one,
+   * and a `Booking` is parsed straight off the wire from clients that may not
+   * send it. The server clamps whatever arrives — see `clampQuantity` — and
+   * `quoteBooking` prices from the clamped value, never from this one directly.
+   *
+   * Always 1 for a service priced per order rather than per countable thing.
+   */
+  quantity?: number;
   planId?: string;
   pickupDate: string;
   pickupTime: string;
@@ -309,6 +370,15 @@ export interface BookingRiderView {
   vehicle: string;
   vehiclePlate: string;
   rating: number;
+  /**
+   * How many ratings that average is made of.
+   *
+   * Beside the average because the average alone misleads in the direction that
+   * matters: 5.0 from one delighted customer and 4.6 from ninety are not the
+   * same claim, and a supervisor deciding who to send to a difficult address
+   * needs to know which they are looking at.
+   */
+  ratingCount?: number;
   coords: Coords;
   /**
    * Dispatch-granularity status, for the live map's stage readout.
@@ -406,6 +476,8 @@ export interface RiderState {
   vehicle: string;
   vehiclePlate: string;
   rating: number;
+  /** How many ratings that average is made of. See `BookingRiderView`. */
+  ratingCount?: number;
   isOnline: boolean;
   /** in meters */
   gpsAccuracy: number;

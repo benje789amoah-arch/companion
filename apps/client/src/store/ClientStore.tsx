@@ -274,6 +274,16 @@ interface ClientState extends Mirror {
   ) => Promise<Booking>;
   patchBooking: (id: string, patch: Partial<Booking>) => void;
   cancelBooking: (id: string) => void;
+  /**
+   * Rates the courier on a delivered order.
+   *
+   * Awaited rather than queued, unlike most writes here. A rating is a thing
+   * somebody is pressing and watching: the star fills under their thumb and has
+   * to go back if the server refuses, and there is no version of this worth
+   * replaying days later against an order whose courier may since have been
+   * reassigned.
+   */
+  rateBooking: (id: string, stars: number) => Promise<void>;
   bookingById: (id: string) => Booking | undefined;
   /**
    * Fetches one order in full, which is the only way to get its proof-of-service
@@ -1011,6 +1021,16 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
     [commit, enqueue, mirror.bookings]
   );
 
+  const rateBooking = useCallback<ClientState['rateBooking']>(
+    async (id, stars) => {
+      // Drained first, like `payForBooking`: an order created offline has to
+      // exist on the server before anything can be attached to it.
+      await drain();
+      await api.rateBooking(id, { stars }, bookingAuthRef.current(id));
+    },
+    [drain]
+  );
+
   const reportIssue = useCallback<ClientState['reportIssue']>(
     (orderId, note, photoUri) => {
       sendMessage(orderId, photoUri ? `${note}\n\nPhoto attached: ${photoUri}` : note);
@@ -1472,6 +1492,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       payForBooking,
       patchBooking,
       cancelBooking,
+      rateBooking,
       bookingById,
       loadBookingProof,
       messagesFor,
@@ -1514,6 +1535,7 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
       payForBooking,
       patchBooking,
       cancelBooking,
+      rateBooking,
       bookingById,
       loadBookingProof,
       messagesFor,

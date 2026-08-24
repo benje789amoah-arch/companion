@@ -10,9 +10,11 @@ import {
   distanceKm,
   isOutsideServiceArea,
 } from './geo';
+import { bookingItems, describeItems, totalUnits } from './services';
 import { fromBookingStatus, toBookingStatus } from './status';
 import type {
   Booking,
+  BookingItem,
   BookingRiderView,
   Coords,
   Job,
@@ -131,20 +133,58 @@ export function referenceFor(id: string, priority: OrderPriority): string {
 }
 
 /**
- * Bookings don't declare bags — the customer just describes the work — but the
- * rider's scan-in flow needs something physical to check off. Bags are
- * synthesised from the order value, deterministically, so the same booking
- * always yields the same bag manifest and QR codes.
+ * The manifest the courier checks off, one bag per thing the customer ordered.
+ *
+ * It used to be `Math.ceil(amount / 50)` capped at three — the order's *value*
+ * standing in for a count, because a booking had no count to give. That made
+ * the manifest wrong in both directions: a ₵180 office clean produced three
+ * bags for a job with no bags in it, and ten loads of washing produced three
+ * as well, so a courier checked off three, found ten at the door, and had
+ * nothing to scan the rest against.
+ *
+ * Now the lines say. One bag per unit — a load is roughly a bag of laundry,
+ * which is what makes the mapping honest — summed across every service on the
+ * order, so "two loads and a set of linen" is three bags.
+ *
+ * Still deterministic from the job id, so the same booking always yields the
+ * same codes and a replayed offline write does not invalidate a tag the courier
+ * is already holding.
+ *
+ * `MAX_BAGS` is a ceiling on the manifest rather than on the order: past it the
+ * job is still priced for everything, the courier just gets a list they can
+ * realistically scan. It sits above what `MAX_QUANTITY` allows on one line, so
+ * only a genuinely large multi-service order reaches it.
  */
-export function bagsForJob(id: string, amount: number, serviceType: string): LaundryBag[] {
+export const MAX_BAGS = 40;
+
+export function bagsForJob(
+  id: string,
+  booking: { items?: BookingItem[]; serviceType?: string; quantity?: number },
+  /**
+   * The service to label the first bag with, when the caller has one to hand.
+   * Defaults to the first line's, which is what it always is in practice.
+   */
+  serviceType?: string
+): LaundryBag[] {
   const digits = id.replace(/\D/g, '') || '000000';
-  const count = Math.min(3, Math.max(1, Math.ceil(amount / 50)));
+  const items = bookingItems(booking);
+  const count = Math.min(MAX_BAGS, Math.max(1, totalUnits(items)));
+
+  // Which service each bag belongs to, so a mixed order's manifest says which
+  // bag is the bed linen rather than calling everything "Premium Textiles".
+  const labels: string[] = [];
+  for (const item of items) {
+    for (let n = 0; n < item.quantity && labels.length < count; n += 1) {
+      labels.push(item.serviceType);
+    }
+  }
 
   return Array.from({ length: count }, (_, i) => {
-    const suffix = String.fromCharCode(65 + i);
+    // A, B … Z, then AA, AB — the old single letter ran out at 26.
+    const suffix = bagSuffix(i);
     return {
       id: `BAG-${digits}-${suffix}`,
-      type: i === 0 ? serviceType || 'Premium Textiles' : 'Premium Textiles',
+      type: labels[i] || serviceType || items[0]?.serviceType || 'Premium Textiles',
       weight: `${(2 + ((digits.charCodeAt(i % digits.length) % 40) / 10)).toFixed(1)}kg`,
       itemCount: 3 + ((digits.charCodeAt((i + 2) % digits.length) + i) % 8),
       qrCode: `FF-BAG-${digits}-${suffix}`,
@@ -153,11 +193,47 @@ export function bagsForJob(id: string, amount: number, serviceType: string): Lau
   });
 }
 
-/** Bigger jobs and plan members get moved up the queue. */
+/** `0` -> `A`, `25` -> `Z`, `26` -> `AA`. Spreadsheet columns, essentially. */
+function bagSuffix(index: number): string {
+  let n = index;
+  let out = '';
+  do {
+    out = String.fromCharCode(65 + (n % 26)) + out;
+    n = Math.floor(n / 26) - 1;
+  } while (n >= 0);
+  return out;
+}
+
+/**
+ * What a booking is worth, at ₵45, above which a guest order is worked before
+ * the ordinary ones.
+ *
+ * One load of washing with a scent is ₵35 and lands below it; two loads, or any
+ * of the specialist services, land above. That split was chosen when a booking
+ * was a single unit and it still holds, because it is a question about the size
+ * of one job rather than about the range of them.
+ */
+export const PRIORITY_THRESHOLD = 45;
+
+/**
+ * Where a job sits in the queue.
+ *
+ * **`elite` is a membership benefit and nothing else buys it.** The plans screen
+ * sells "included pickups and elite priority", and for a while a guest reached
+ * the same tier by ordering three loads: `amount >= 80` was written when a
+ * booking was one unit and ₵80 meant a large single job, but once an order could
+ * carry a quantity, three loads of ordinary washing came to ₵105 and every
+ * multi-unit order in the system was elite. A tier everybody is in is not a
+ * tier, and a paid entitlement everybody gets for free is not an entitlement.
+ *
+ * So value still orders guests against each other — a ₵150 car detail is worked
+ * before a ₵35 wash — but it stops at `priority`. The consequence is worth
+ * stating: a very large guest order now sits behind a member's single load.
+ * That is the membership doing what it is sold as doing.
+ */
 export function priorityForBooking(amount: number, planId?: string): OrderPriority {
   if (planId) return 'elite';
-  if (amount >= 80) return 'elite';
-  if (amount >= 45) return 'priority';
+  if (amount >= PRIORITY_THRESHOLD) return 'priority';
   return 'standard';
 }
 
@@ -212,6 +288,10 @@ export function bookingToJob(booking: Booking, now = new Date().toISOString()): 
     },
     service: {
       type: booking.serviceType,
+      quantity: booking.quantity,
+      // Normalised on the way in, so a job always carries a usable list even
+      // when the booking that made it described a single service the old way.
+      items: bookingItems(booking),
       planId: booking.planId,
       specialtyAddons: booking.specialtyAddons,
       specialInstructions: booking.specialInstructions,
@@ -236,7 +316,7 @@ export function bookingToJob(booking: Booking, now = new Date().toISOString()): 
     },
     dispatch: {
       priority,
-      bags: bagsForJob(id, amount, booking.serviceType),
+      bags: bagsForJob(id, booking, booking.serviceType),
       distanceKm: Number(distance.toFixed(2)),
       pickupOtp: newHandoffCode(),
       dropoffOtp: newHandoffCode(),
@@ -266,6 +346,8 @@ export function jobToBooking(job: Job, rider?: RiderState): Booking {
     email: job.customer.email,
     phone: job.customer.phone,
     serviceType: job.service.type,
+    quantity: job.service.quantity,
+    items: job.service.items,
     planId: job.service.planId,
     pickupDate: job.schedule.pickupDate,
     pickupTime: job.schedule.pickupTime,
@@ -336,7 +418,20 @@ export function jobToOrder(job: Job): Order {
     pickupCoords: job.location.pickupCoords,
     deliveryAddress: job.location.deliveryAddress,
     deliveryCoords: job.location.deliveryCoords,
-    laundryType: job.service.type,
+    /**
+     * Every service on the job, not just the first.
+     *
+     * This is the line the courier's job card and the offer sheet print. It
+     * used to be `job.service.type`, which names the primary service — so a
+     * courier sent for two loads of washing and a set of bed linen was told
+     * "Washing (Machine & Hand Wash)" and found something else in the third bag.
+     */
+    laundryType:
+      describeItems({
+        items: job.service.items,
+        serviceType: job.service.type,
+        quantity: job.service.quantity,
+      }) || job.service.type,
     bagCount: job.dispatch.bags.length,
     bags: job.dispatch.bags,
     priority: job.dispatch.priority,
@@ -558,6 +653,16 @@ export function applyBookingPatch(
   if (patch.phone !== undefined) next.customer.phone = patch.phone;
 
   if (patch.serviceType !== undefined) next.service.type = patch.serviceType;
+  /**
+   * `quantity` is deliberately absent from this list.
+   *
+   * It multiplies the price, and this function does not reprice — `amount` is
+   * the server's, written once by `POST /bookings` and moved only by the payment
+   * route. Accepting a new quantity here would leave a job saying "four loads"
+   * beside a total quoted for one, which is worse than not being able to edit
+   * it. Correcting a quantity means cancelling and rebooking, which is also
+   * what correcting the service itself effectively means today.
+   */
   if (patch.planId !== undefined) next.service.planId = patch.planId;
   if (patch.specialtyAddons !== undefined) next.service.specialtyAddons = patch.specialtyAddons;
   if (patch.specialInstructions !== undefined) {

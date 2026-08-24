@@ -5,10 +5,15 @@
 
 import { Router } from 'express';
 import {
+  DEFAULT_SLOT_CAPACITY,
   PHONE_LENGTH_MESSAGE,
+  PICKUP_TIME_SLOTS,
   applyBookingPatch,
+  bookingItems,
   bookingToJob,
+  describeItems,
   isCompletePhone,
+  isIsoDate,
   isOutsideServiceArea,
   isTerminal,
   newJobId,
@@ -24,7 +29,7 @@ import { issueTrackingToken, resolveBookingAccess, resolveLister } from '../book
 import { consumeIncludedPickup, settleAccountByEmail } from '../membership';
 import { mailBookingConfirmation } from '../setup-links';
 import { store } from '../store';
-import { charge } from '../wallet';
+import { charge, refund } from '../wallet';
 import { verifyPaystackTransaction } from './integrations';
 import { accountBlocked, bookingView, bookingViews, guard, notFound } from '../helpers';
 
@@ -43,6 +48,54 @@ import { accountBlocked, bookingView, bookingViews, guard, notFound } from '../h
  * `../booking-access` for who qualifies as whom.
  */
 export const bookingsRouter = Router();
+
+/**
+ * How many collections one window can take.
+ *
+ * `PICKUP_SLOT_CAPACITY` in the environment wins, so the desk can widen a busy
+ * Saturday without a deploy. Anything unparseable or below one falls back to
+ * core's number rather than to zero — a misconfigured variable that closed every
+ * window would take bookings offline entirely, which is a worse failure than one
+ * that lets a window run a little full.
+ */
+function slotCapacity(): number {
+  const configured = Number(process.env.PICKUP_SLOT_CAPACITY);
+  return Number.isFinite(configured) && configured >= 1
+    ? Math.floor(configured)
+    : DEFAULT_SLOT_CAPACITY;
+}
+
+/**
+ * What is left in each window on a day.
+ *
+ * Answered for any caller, with no session: this is the booking form's own
+ * question and the form is open to strangers — that is what a booking form is.
+ * It leaks how busy a day is and nothing else; no customer, no address, no
+ * order id.
+ */
+bookingsRouter.get(
+  '/availability',
+  guard(async (req, res) => {
+    const date = typeof req.query.date === 'string' ? req.query.date : '';
+
+    if (!isIsoDate(date)) {
+      res.status(400).json({ error: 'A date in YYYY-MM-DD form is required.' });
+      return;
+    }
+
+    const capacity = slotCapacity();
+    const taken = await store.jobs.countByPickupSlot(date);
+
+    res.json({
+      date,
+      capacity,
+      slots: PICKUP_TIME_SLOTS.map((slot) => {
+        const booked = taken[slot] ?? 0;
+        return { slot, booked, remaining: Math.max(0, capacity - booked), full: booked >= capacity };
+      }),
+    });
+  })
+);
 
 /**
  * One customer's orders, or the whole board.
@@ -201,12 +254,74 @@ bookingsRouter.post(
      * did, the website did not, so the same member paid two different prices for
      * the same order depending on where they booked it.
      */
+    /**
+     * How many of the service's unit, decided here rather than trusted.
+     *
+     * `clampQuantity` forces a whole number between 1 and `MAX_QUANTITY`, and
+     * forces 1 for a service priced per order. It matters that this happens on
+     * the server and not only in the forms: the number multiplies the price, so
+     * a request carrying `quantity: 0.0001` would quote a wash at nothing, and
+     * one carrying `1e9` would quote it at a number `priorityForBooking` reads
+     * as elite dispatch.
+     */
+    const items = bookingItems(incoming);
+
+    if (items.length === 0) {
+      res.status(400).json({ error: 'A booking needs at least one service.' });
+      return;
+    }
+
+    /**
+     * The collection window has to have room in it.
+     *
+     * Checked here rather than only in the forms, because the forms are not the
+     * only thing that can post a booking — and because two customers filling in
+     * the same form at the same time both saw room a moment ago.
+     *
+     * `existing` is what makes a replay safe: both apps queue writes while
+     * offline and re-send them on reconnect, and a booking that already holds a
+     * place in this window must not be refused for occupying it. Its own count
+     * is discounted before the comparison.
+     *
+     * There is a race left, and it is worth naming: two bookings landing in the
+     * same millisecond can both read a window with one place free and both take
+     * it. Closing it properly means a lock on the window rather than on the job,
+     * which is a table this schema does not have. The consequence is a window
+     * that occasionally runs one over, which the desk can see and absorb — as
+     * against the unbounded overbooking that was there before.
+     */
+    if (incoming.pickupTime) {
+      const capacity = slotCapacity();
+      const taken = await store.jobs.countByPickupSlot(incoming.pickupDate ?? '');
+      const already = incoming.id ? await store.jobs.find(incoming.id) : null;
+
+      const holdsThisSlot =
+        already?.schedule.pickupDate === incoming.pickupDate &&
+        already?.schedule.pickupTime === incoming.pickupTime &&
+        already.status !== 'cancelled';
+
+      const booked = (taken[incoming.pickupTime] ?? 0) - (holdsThisSlot ? 1 : 0);
+
+      if (booked >= capacity) {
+        res.status(409).json({
+          error:
+            'That collection window is full. Choose another window, or another day — ' +
+            'the booking form shows which are still open.',
+          reason: 'slot-full',
+          slot: incoming.pickupTime,
+          date: incoming.pickupDate,
+        });
+        return;
+      }
+    }
+
     const quote = quoteBooking({
       selections: {
         serviceType: incoming.serviceType,
         scent: incoming.scent,
         starch: incoming.starch,
         addonIds: incoming.specialtyAddons,
+        items,
       },
       plan: member?.plan ?? null,
       // `undefined` rather than 0 for a guest: no account, so no tier.
@@ -216,6 +331,19 @@ bookingsRouter.post(
     const booking: Booking = {
       ...incoming,
       id: incoming.id || newJobId(),
+      /**
+       * The normalised lines, not the ones that arrived, so the record and the
+       * price it was quoted at cannot disagree.
+       *
+       * `serviceType` and `quantity` are rewritten from the first line for the
+       * same reason: the rider app, the desk board and the confirmation email
+       * all read those two, and a booking whose primary service says one thing
+       * while `items[0]` says another is a bug waiting for whichever surface
+       * reads the wrong one.
+       */
+      items: quote.items,
+      serviceType: quote.items[0].serviceType,
+      quantity: quote.items[0].quantity,
       phone: phoneDigits(incoming.phone),
       momoNumber: incoming.momoNumber ? phoneDigits(incoming.momoNumber) : incoming.momoNumber,
       planId: member?.plan?.planId,
@@ -281,7 +409,7 @@ bookingsRouter.post(
       await t.notifications.insert({
         id: `notif-${saved.id}`,
         title: 'New Pickup Request',
-        body: `${saved.customer.name} booked ${saved.service.type} in ${saved.location.suburb}.`,
+        body: `${saved.customer.name} booked ${describeItems({ items: saved.service.items, serviceType: saved.service.type, quantity: saved.service.quantity }) || saved.service.type} in ${saved.location.suburb}.`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         type: 'order',
         orderId: saved.id,
@@ -802,6 +930,241 @@ bookingsRouter.delete(
     });
 
     res.json(await bookingView(reversed));
+  })
+);
+
+/**
+ * Refunds a settled booking to the customer's wallet. Supervisor only.
+ *
+ * The act the reversal above kept pointing at and could not perform. Until now
+ * `Refunded` was a `PaymentStatus` value that no route ever set: a customer who
+ * paid ₵105 for a pickup the laundry then cancelled had their money recorded as
+ * received and no way to get it back, and the desk's only option was to leave
+ * the order marked `Paid` or lie about it with a status change.
+ *
+ * **To the wallet.** Not back down the rail it came in on — that is a separate
+ * Paystack API with its own settlement delay — and the cancel dialog has been
+ * promising exactly this all along: "anything already paid is refunded to your
+ * wallet by the concierge desk." The customer gets a balance they can spend
+ * today rather than a card refund in five working days.
+ *
+ * Three things make it safe to click twice. The reference is the booking's, so
+ * `refund` finds its own ledger row and returns it rather than crediting again.
+ * The job is re-read under its row lock before the status moves. And the status
+ * check is `Paid`, so a booking already refunded answers with itself.
+ *
+ * Deliberately no partial refunds. A part-refund is a negotiation — a stained
+ * shirt, a late delivery — and it wants a reason, an amount somebody agreed and
+ * a record of who agreed it. That is a bigger feature than this, and a field
+ * that silently accepted any number would be the wrong half of it. What this
+ * does is the whole bill or nothing.
+ */
+bookingsRouter.post(
+  '/:id/refund',
+  guard(async (req, res) => {
+    const job = await store.jobs.find(req.params.id);
+    if (!job) {
+      notFound(res, 'Booking');
+      return;
+    }
+
+    const access = await resolveBookingAccess(req, job);
+    if (!access) {
+      notFound(res, 'Booking');
+      return;
+    }
+
+    if (access.kind !== 'supervisor') {
+      res.status(403).json({
+        error: 'Only the desk can refund a booking.',
+        reason: 'refund-needs-supervisor',
+      });
+      return;
+    }
+
+    // Idempotent, like the settle and reversal paths: a booking already refunded
+    // answers with itself rather than crediting a second time.
+    if (job.payment.status === 'Refunded') {
+      res.json(await bookingView(job));
+      return;
+    }
+
+    if (job.payment.status !== 'Paid') {
+      res.status(409).json({
+        error: 'Only a settled booking can be refunded.',
+        reason: 'not-settled',
+      });
+      return;
+    }
+
+    const amount = job.payment.amount;
+    if (!(amount > 0)) {
+      res.status(409).json({
+        error: 'There is nothing to refund on this booking.',
+        reason: 'nothing-to-refund',
+      });
+      return;
+    }
+
+    /**
+     * The money moves before the status does.
+     *
+     * If the credit fails the booking stays `Paid`, which is true — nothing was
+     * returned — and the desk can try again. The other order would leave a
+     * booking marked `Refunded` with the customer no better off, which is the
+     * failure that cannot be seen from either end.
+     */
+    const outcome = await refund({
+      email: job.customer.email,
+      amount,
+      description: `Booking ${job.id} — refunded by ${access.supervisor.email}`,
+      bookingId: job.id,
+      reference: `REFUND-${job.id}`,
+    });
+
+    if (!outcome.ok) {
+      // `no-account` is the realistic one: a guest booking has no wallet to
+      // credit, and the desk has to settle that outside the app.
+      res.status(outcome.reason === 'no-account' ? 409 : 400).json({
+        error:
+          outcome.reason === 'no-account'
+            ? 'This booking has no FreshFold account behind it, so there is no wallet to refund to. ' +
+              'Return the money directly and reverse it from the ledger.'
+            : 'That refund could not be applied.',
+        reason: outcome.reason,
+      });
+      return;
+    }
+
+    const refunded = await store.tx(async (t) => {
+      const current = await t.jobs.find(job.id, { lock: true });
+      if (!current) return null;
+
+      // Re-checked under the lock. The credit above is idempotent on the
+      // reference, so a second desk arriving here has already been a no-op in
+      // the ledger and only needs the status to agree.
+      if (current.payment.status === 'Refunded') return current;
+
+      return t.jobs.upsert({
+        ...current,
+        updatedAt: new Date().toISOString(),
+        payment: { ...current.payment, status: 'Refunded' },
+      });
+    });
+
+    if (!refunded) {
+      notFound(res, 'Booking');
+      return;
+    }
+
+    await recordAudit(store, {
+      actor: access.supervisor.email,
+      actorName: access.supervisor.name,
+      action: 'Payment refund',
+      details:
+        `Refunded GHS ${amount.toFixed(2)} on order ${job.id} to ` +
+        `${job.customer.email}'s wallet`,
+      type: 'payment',
+      orderId: job.id,
+      subject: job.customer.email,
+    });
+
+    res.json(await bookingView(refunded));
+  })
+);
+
+/**
+ * Rates the courier who carried a delivery.
+ *
+ * The write path for `riders.rating`, which has sat at zero since the schema was
+ * written — and which the concierge chatbot has been telling customers they can
+ * move. The column existed, the seed comment explained why it was not
+ * pre-filled, and nothing ever wrote to it.
+ *
+ * Four gates, and each is a way the number could otherwise be made meaningless:
+ *
+ *  - **The customer whose order it is.** `resolveBookingAccess` already answers
+ *    this; the rating is refused for a courier or a supervisor, who are the two
+ *    parties with a reason to move it.
+ *  - **Delivered only.** A rating before the work is done is a rating of
+ *    something that has not happened. It is also how a courier could be marked
+ *    down for a delay the laundry caused.
+ *  - **A courier to rate.** A job delivered with no `riderId` on it — a desk
+ *    completion, a reassignment gone wrong — has nobody to attribute this to.
+ *  - **One per job**, enforced by the primary key rather than by a check that
+ *    could race. A revision overwrites; it does not stack.
+ *
+ * The stars are clamped rather than rejected at the edges, because a slider that
+ * emits 6 is a client bug and refusing it loses a real opinion; a value that is
+ * not a number at all is refused, because that is not an opinion.
+ *
+ * **No loyalty points.** Foldie's script promised them and this does not pay
+ * them — a point-per-rating is farmable by anybody willing to press one star on
+ * every order, and defending it needs its own story about thresholds and
+ * clawbacks. The chatbot's line has been corrected to describe what actually
+ * happens instead of what did not.
+ */
+bookingsRouter.post(
+  '/:id/rating',
+  guard(async (req, res) => {
+    const job = await store.jobs.find(req.params.id);
+    if (!job) {
+      notFound(res, 'Booking');
+      return;
+    }
+
+    const access = await resolveBookingAccess(req, job);
+    if (!access) {
+      notFound(res, 'Booking');
+      return;
+    }
+
+    if (access.kind !== 'customer' && access.kind !== 'tracking') {
+      res.status(403).json({
+        error: 'Only the customer on an order can rate its courier.',
+        reason: 'rating-is-the-customers',
+      });
+      return;
+    }
+
+    if (job.status !== 'delivered') {
+      res.status(409).json({
+        error: 'This order has not been delivered yet.',
+        reason: 'not-delivered',
+      });
+      return;
+    }
+
+    const riderId = job.dispatch.riderId;
+    if (!riderId) {
+      res.status(409).json({
+        error: 'No courier is recorded on this order, so there is nobody to rate.',
+        reason: 'no-courier',
+      });
+      return;
+    }
+
+    const body = (req.body ?? {}) as { stars?: unknown; comment?: unknown };
+    const raw = typeof body.stars === 'number' ? body.stars : Number(body.stars);
+
+    if (!Number.isFinite(raw)) {
+      res.status(400).json({ error: 'A rating is a number of stars from 1 to 5.' });
+      return;
+    }
+
+    const stars = Math.min(5, Math.max(1, Math.round(raw)));
+    const comment =
+      typeof body.comment === 'string' ? body.comment.trim().slice(0, 500) : '';
+
+    const { average, count } = await store.ratings.record({
+      jobId: job.id,
+      riderId,
+      customerEmail: job.customer.email,
+      stars,
+      comment,
+    });
+
+    res.json({ jobId: job.id, stars, comment, riderRating: average, riderRatingCount: count });
   })
 );
 

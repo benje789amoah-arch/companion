@@ -8,6 +8,7 @@ import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { Booking } from '@freshfold/core';
 import { colors, courierName, formatCedis, formatDate, radius, shadow, tints } from '../theme';
+import { describeOrder, useT } from '../i18n';
 import { StageTimeline } from './StageTimeline';
 import { Badge, type BadgeTone } from './ui';
 
@@ -32,6 +33,7 @@ export default function OrderCard({
   booking: Booking;
   onPress?: () => void;
 }) {
+  const { t } = useT();
   const cancelled = booking.status === 'Cancelled';
   const delivered = booking.status === 'Delivered';
 
@@ -44,7 +46,7 @@ export default function OrderCard({
         <View style={{ flex: 1 }}>
           <Text style={styles.reference}>{booking.id}</Text>
           <Text style={styles.service} numberOfLines={1}>
-            {booking.serviceType}
+            {describeOrder(t, booking)}
           </Text>
         </View>
         <Badge

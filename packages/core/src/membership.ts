@@ -319,11 +319,20 @@ export function membershipBookingQuote(input: {
   plan: ActivePlan | null | undefined;
   /** Full quote, add-ons included. */
   gross: number;
-  /** The laundry portion: base service plus scent and starch. */
+  /** The laundry portion: base service plus scent and starch, for every unit. */
   laundry: number;
+  /**
+   * One unit's laundry — what a single included pickup is worth.
+   *
+   * Defaults to the whole `laundry` when omitted, which is what it meant before
+   * bookings could carry a quantity: one booking, one unit. Callers that know
+   * the quantity pass it, and `quoteBooking` always does.
+   */
+  unitLaundry?: number;
   coverable: boolean;
 }): MembershipBookingQuote {
   const { plan, gross, laundry, coverable } = input;
+  const unitLaundry = input.unitLaundry ?? laundry;
   const none: MembershipBookingQuote = {
     covered: false,
     waived: 0,
@@ -337,12 +346,25 @@ export function membershipBookingQuote(input: {
   const remainingPickups = Math.max(0, definition.includedPickups - (plan.pickupsUsed ?? 0));
 
   if (coverable && remainingPickups > 0) {
-    const waived = Math.min(roundCedis(laundry), roundCedis(gross));
+    /**
+     * One pickup, one unit.
+     *
+     * Four loads on an included pickup waives the first load and charges the
+     * other three at the member rate — the allowance is worth a fixed, knowable
+     * amount rather than however much the customer put in the bag. Letting one
+     * pickup absorb an unbounded quantity would reopen exactly the hole
+     * `isPlanCoverable` closes on the specialist services: a ₵79 Student plan
+     * with two pickups could waive twenty loads of washing.
+     *
+     * Capped at `gross` as well, so a booking whose add-ons were removed cannot
+     * waive more than the booking is worth.
+     */
+    const waived = Math.min(roundCedis(unitLaundry), roundCedis(laundry), roundCedis(gross));
     return {
       covered: true,
       waived,
-      // Extras are billed at the member rate too — the discount applies to
-      // whatever the allowance did not absorb.
+      // Everything the allowance did not absorb — the other units and the
+      // extras alike — is billed at the member rate.
       discount: roundCedis(Math.max(0, gross - waived) * definition.overageDiscount),
       remainingPickups,
     };

@@ -32,6 +32,7 @@ import {
   SectionLabel,
 } from '../../src/components/ui';
 import {
+  describeOrder,
   jobStatusLabel,
   paymentStatusLabel,
   stageLabel,
@@ -273,7 +274,7 @@ export default function TrackScreen() {
           {/* Five of these six labels are the booking flow's own — the same
               field labelled the same way, so the same key. Only "Payment" is
               new, because the booking summary never puts a label on that row. */}
-          <Row label={t('book.summary.service')} value={booking.serviceType} />
+          <Row label={t('book.summary.service')} value={describeOrder(t, booking)} />
           <Row
             label={t('book.done.collection')}
             value={t('track.row.collectionValue', {

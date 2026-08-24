@@ -16,6 +16,7 @@ import {
   decodeFinish,
   isCompletePhone,
   limitPhoneInput,
+  describeItems,
   membershipPlan,
   priceBreakdown,
   samePhone,
@@ -1658,7 +1659,7 @@ export default function ClientPortal({
                                     <div className="flex items-center space-x-2">
                                       <span className="text-[11px] bg-brand-sage/20 text-brand-sage border border-brand-sage/20 font-mono px-2 py-0.5 rounded-lg font-black">{booking.id}</span>
                                       <span className="text-stone-600 font-bold">•</span>
-                                      <span className="text-stone-300 font-sans font-bold text-xs uppercase tracking-wider">{booking.serviceType}</span>
+                                      <span className="text-stone-300 font-sans font-bold text-xs uppercase tracking-wider">{describeItems(booking) || booking.serviceType}</span>
                                     </div>
                                     <p className="font-sans text-[11px] font-light text-[#8E9299] flex items-center gap-1.5">
                                       <MapPin className="w-3.5 h-3.5 text-brand-sage shrink-0" />
@@ -1831,7 +1832,7 @@ export default function ClientPortal({
                                   {booking.id}
                                 </span>
                                 <span className="font-serif text-base text-white font-medium">
-                                  {booking.serviceType}
+                                  {describeItems(booking) || booking.serviceType}
                                 </span>
                               </div>
 
@@ -2726,11 +2727,16 @@ export default function ClientPortal({
                 */}
                 {(() => {
                   const finish = decodeFinish(receiptModalBooking.specialInstructions);
+                  // See the note on the desk's copy of this: without the
+                  // lines, a three-load order itemises as one and the arithmetic
+                  // on the receipt stops adding up.
                   const lines = priceBreakdown({
                     serviceType: receiptModalBooking.serviceType,
                     scent: finish.scent,
                     starch: finish.starch,
                     addonIds: receiptModalBooking.specialtyAddons,
+                    items: receiptModalBooking.items,
+                    quantity: receiptModalBooking.quantity,
                   });
                   const total = displayAmount(receiptModalBooking);
                   // Charged below list price: an included pickup, the member
@@ -2742,7 +2748,9 @@ export default function ClientPortal({
                 <div className="space-y-3 font-sans text-xs">
                   <div className="flex justify-between text-stone-300">
                     <span>Service Tier:</span>
-                    <strong className="text-white">{receiptModalBooking.serviceType}</strong>
+                    <strong className="text-white">
+                      {describeItems(receiptModalBooking) || receiptModalBooking.serviceType}
+                    </strong>
                   </div>
                   <div className="flex justify-between text-stone-300">
                     <span>Pickup Suburb:</span>

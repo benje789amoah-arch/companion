@@ -35,6 +35,9 @@ import {
   deriveSuburb,
   encodeFinish,
   isCompletePhone,
+  MAX_ITEMS,
+  MAX_QUANTITY,
+  clampQuantity,
   isEmailShaped,
   isoDaysFromNow,
   isoPlusDays,
@@ -42,7 +45,11 @@ import {
   membershipBookingQuote,
   membershipPlan,
   newJobId,
+  serviceBasePrice,
+  serviceTakesQuantity,
+  serviceUnit,
   type Booking,
+  type BookingItem,
   type Coords,
   type PaymentStatus,
 } from '@freshfold/core';
@@ -78,7 +85,7 @@ import {
   tierForPoints,
   type PaymentChoice,
 } from '../../src/data/catalogue';
-import { intlTag, useT, type TranslationKey } from '../../src/i18n';
+import { intlTag, servicePriceLabel, unitLabel, useT, type TranslationKey } from '../../src/i18n';
 import { api } from '../../src/services/api';
 import { useClient } from '../../src/store/ClientStore';
 import { useSession } from '../../src/store/SessionStore';
@@ -149,14 +156,71 @@ export default function BookScreen() {
     saveAddress,
     plan,
   } = useClient();
-  const { t, locale } = useT();
+  const { t, locale, c } = useT();
 
   const [step, setStep] = useState<Step>(0);
 
   // -- selections ----------------------------------------------------------
   const [serviceId, setServiceId] = useState(() => bookableServiceId(params.serviceId));
+  /**
+   * How many of the service's unit.
+   *
+   * Every service advertises a price per something — ₵30 a load, ₵90 a sofa —
+   * and there was nowhere to say how many, so four loads billed as one. Reset to
+   * 1 whenever the service changes: four loads of washing is not four car
+   * details, and carrying the number across would quote ₵600 for a change of
+   * mind.
+   */
+  const [quantity, setQuantity] = useState(1);
   const [pickupDate, setPickupDate] = useState(() => isoDaysFromNow(1));
   const [timeSlot, setTimeSlot] = useState<string>(PICKUP_TIME_SLOTS[0]);
+
+  /**
+   * How full each collection window is on the chosen day.
+   *
+   * Advisory only — the booking route enforces the same ceiling, so a phone
+   * working from a stale answer is refused rather than allowed to overbook. What
+   * it buys is the customer seeing a full window before they walk through four
+   * more steps to reach it.
+   *
+   * Empty on any failure, which is the important half: this screen has to work
+   * on a phone that cannot reach the server, and greying out every window would
+   * make an offline form look broken rather than optimistic.
+   */
+  const [slotState, setSlotState] = useState<
+    Record<string, { remaining: number; full: boolean }>
+  >({});
+
+  useEffect(() => {
+    if (!pickupDate) return;
+
+    let cancelled = false;
+    api
+      .slotAvailability(pickupDate)
+      .then((answer) => {
+        if (cancelled) return;
+        const next: Record<string, { remaining: number; full: boolean }> = {};
+        for (const row of answer.slots) {
+          next[row.slot] = { remaining: row.remaining, full: row.full };
+        }
+        setSlotState(next);
+      })
+      .catch(() => {
+        if (!cancelled) setSlotState({});
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pickupDate]);
+
+  // Move off a window that filled while the screen was open, unless every one
+  // has — in which case the refusal on submit is the honest answer.
+  useEffect(() => {
+    if (!slotState[timeSlot]?.full) return;
+    const open = PICKUP_TIME_SLOTS.find((slot) => !slotState[slot]?.full);
+    if (open) setTimeSlot(open);
+  }, [slotState, timeSlot]);
   const [address, setAddress] = useState('');
   const [city, setCity] = useState('Kumasi');
   /**
@@ -215,7 +279,26 @@ export default function BookScreen() {
   const [paymentNotice, setPaymentNotice] = useState('');
 
   // -- ui ------------------------------------------------------------------
-  const [servicePickerOpen, setServicePickerOpen] = useState(false);
+  /**
+   * Which line the service sheet is choosing for: 0 is the primary service
+   * card, 1+ an extra line, `null` closed.
+   *
+   * One sheet rather than one per line — it is the same list of services either
+   * way, and the only thing that differs is where the answer goes.
+   */
+  const [servicePickerFor, setServicePickerFor] = useState<number | null>(null);
+  const servicePickerOpen = servicePickerFor !== null;
+
+  /**
+   * Services beyond the first.
+   *
+   * The primary service keeps its own card, its picker and its quantity — it is
+   * the hero of this screen and the thing the home tab links into. Anything the
+   * customer adds after that lives here, and `items` below is the two joined.
+   * "Two loads and a set of linen" is one collection, one courier and one
+   * doorstep; booking it twice produced two jobs for one visit.
+   */
+  const [extras, setExtras] = useState<BookingItem[]>([]);
   const [addressPickerOpen, setAddressPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -229,9 +312,61 @@ export default function BookScreen() {
 
   const tier = useMemo(() => tierForPoints(points), [points]);
 
+  const items = useMemo<BookingItem[]>(
+    () => [{ serviceType: service.name, quantity }, ...extras],
+    [service.name, quantity, extras]
+  );
+
+  const setLineService = (index: number, next: string) => {
+    // A new service starts at one, per line.
+    if (index === 0) {
+      const chosen = BOOKABLE_SERVICES.find((candidate) => candidate.name === next);
+      if (chosen) setServiceId(chosen.id);
+      return;
+    }
+    setExtras((current) =>
+      current.map((item, i) => (i === index - 1 ? { serviceType: next, quantity: 1 } : item))
+    );
+  };
+
+  const setLineQuantity = (index: number, next: number) => {
+    if (index === 0) {
+      setQuantity(clampQuantity(next, service.name));
+      return;
+    }
+    setExtras((current) =>
+      current.map((item, i) =>
+        i === index - 1 ? { ...item, quantity: clampQuantity(next, item.serviceType) } : item
+      )
+    );
+  };
+
+  const addLine = () =>
+    setExtras((current) => {
+      if (current.length + 1 >= MAX_ITEMS) return current;
+      // The first service not already on the order, so a new line does not open
+      // as a duplicate of one above it.
+      const taken = [service.name, ...current.map((item) => item.serviceType)];
+      const next =
+        BOOKABLE_SERVICES.find((candidate) => !taken.includes(candidate.name)) ??
+        BOOKABLE_SERVICES[0];
+      return [...current, { serviceType: next.name, quantity: 1 }];
+    });
+
+  const removeLine = (index: number) =>
+    setExtras((current) => current.filter((_, i) => i !== index - 1));
+
+  const unit = useMemo(() => serviceUnit(service.name), [service.name]);
+  const countable = useMemo(() => serviceTakesQuantity(service.name), [service.name]);
+
+  // A new service starts at one. See the note on `quantity` above.
+  useEffect(() => {
+    setQuantity(1);
+  }, [service.name]);
+
   const quote = useMemo(
-    () => priceBreakdown({ serviceType: service.name, scent, starch, addonIds }),
-    [service.name, scent, starch, addonIds]
+    () => priceBreakdown({ serviceType: service.name, scent, starch, addonIds, items }),
+    [service.name, scent, starch, addonIds, items]
   );
   const gross = quote.gross;
 
@@ -252,9 +387,11 @@ export default function BookScreen() {
         plan: isAuthenticated ? plan : null,
         gross,
         laundry: quote.laundry,
+        // One included pickup waives one unit, not the whole booking.
+        unitLaundry: quote.unitLaundry,
         coverable: isPlanCoverable(service.name),
       }),
-    [isAuthenticated, plan, gross, quote.laundry, service.name]
+    [isAuthenticated, plan, gross, quote.laundry, quote.unitLaundry, service.name]
   );
 
   /**
@@ -526,7 +663,11 @@ export default function BookScreen() {
          */
         email: email.trim().toLowerCase(),
         phone: phone.trim(),
-        serviceType: service.name,
+        // The lines the quote was computed from, with the primary pair derived
+        // from the first — the server rewrites both the same way.
+        items: quote.items,
+        serviceType: quote.items[0].serviceType,
+        quantity: quote.items[0].quantity,
         // No `planId` here on purpose. The server reads the membership off the
         // session and writes it onto the job itself — a plan sent from the app
         // was a claim it had no way to check, and `elite` priority for anyone
@@ -711,7 +852,7 @@ export default function BookScreen() {
             <View style={{ gap: 14 }}>
               <SectionLabel>{t('book.service.prompt')}</SectionLabel>
 
-              <Pressable onPress={() => setServicePickerOpen(true)}>
+              <Pressable onPress={() => setServicePickerFor(0)}>
                 <Card tone="sage" style={styles.selectedService}>
                   <View style={styles.serviceIcon}>
                     <Icon name={service.iconName} size={20} color={colors.brandSage} />
@@ -719,15 +860,176 @@ export default function BookScreen() {
                   <View style={{ flex: 1 }}>
                     <Text style={styles.selectedServiceName}>{service.name}</Text>
                     <Text style={styles.selectedServiceBody} numberOfLines={3}>
-                      {service.description}
+                      {c(`service.${service.id}.desc`, service.description)}
                     </Text>
-                    <Badge label={service.priceInfo} tone="sage" style={{ marginTop: 7 }} />
+                    <Badge
+                      label={servicePriceLabel(t, c, locale, service)}
+                      tone="sage"
+                      style={{ marginTop: 7 }}
+                    />
                   </View>
                   <ChevronRight size={16} color={colors.brandSage} />
                 </Card>
               </Pressable>
 
               <Text style={styles.helper}>{t('book.service.helper')}</Text>
+
+              {/*
+                How many. Only for a service priced per countable thing — an
+                order is one order however much of it there is, and a stepper
+                beside "₵25 / order" asks a question with no answer.
+              */}
+              {countable && (
+                <Card style={styles.quantityCard}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.quantityLabel}>
+                      {t('book.quantity.title', { unit: unitLabel(t, unit, 2) })}
+                    </Text>
+                    <Text style={styles.quantityHint}>
+                      {/* This line's own price, not `base / quantity` — that
+                          averages across every line on the order, so adding a
+                          ₵25 service made a ₵30 load advertise itself at
+                          ₵27.50. */}
+                      {t('book.quantity.each', {
+                        amount: formatCedis(serviceBasePrice(service.name), locale),
+                        unit: unitLabel(t, unit, 1),
+                      })}
+                    </Text>
+                  </View>
+
+                  <View style={styles.stepper}>
+                    <Pressable
+                      onPress={() => setQuantity((n) => Math.max(1, n - 1))}
+                      disabled={quantity <= 1}
+                      hitSlop={8}
+                      accessibilityLabel={t('book.quantity.fewer')}
+                      style={[styles.stepperButton, quantity <= 1 && styles.stepperButtonOff]}
+                    >
+                      <Text style={[styles.stepperGlyph, quantity <= 1 && styles.stepperGlyphOff]}>
+                        −
+                      </Text>
+                    </Pressable>
+
+                    <Text style={styles.stepperValue}>{quantity}</Text>
+
+                    <Pressable
+                      onPress={() => setQuantity((n) => clampQuantity(n + 1, service.name))}
+                      disabled={quantity >= MAX_QUANTITY}
+                      hitSlop={8}
+                      accessibilityLabel={t('book.quantity.more')}
+                      style={[
+                        styles.stepperButton,
+                        quantity >= MAX_QUANTITY && styles.stepperButtonOff,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.stepperGlyph,
+                          quantity >= MAX_QUANTITY && styles.stepperGlyphOff,
+                        ]}
+                      >
+                        +
+                      </Text>
+                    </Pressable>
+                  </View>
+                </Card>
+              )}
+
+              {/*
+                Anything beyond the first service. Each row is its own picker
+                and its own stepper: a customer sending two loads of washing and
+                a set of bed linen is one collection, and used to have to book
+                it as two.
+              */}
+              {extras.map((item, i) => {
+                const index = i + 1;
+                const rowUnit = serviceUnit(item.serviceType);
+                const rowCountable = serviceTakesQuantity(item.serviceType);
+
+                return (
+                  <Card key={index} style={{ gap: 10 }}>
+                    <View style={styles.extraHead}>
+                      <Pressable
+                        onPress={() => setServicePickerFor(index)}
+                        style={{ flex: 1 }}
+                        accessibilityLabel={t('book.extra.change')}
+                      >
+                        <Text style={styles.extraName}>{item.serviceType}</Text>
+                        <Text style={styles.extraChange}>{t('book.extra.change')}</Text>
+                      </Pressable>
+
+                      <Pressable
+                        onPress={() => removeLine(index)}
+                        hitSlop={10}
+                        accessibilityLabel={t('book.extra.remove')}
+                        style={styles.extraRemove}
+                      >
+                        <Text style={styles.extraRemoveGlyph}>×</Text>
+                      </Pressable>
+                    </View>
+
+                    {rowCountable && (
+                      <View style={styles.quantityCard}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.quantityLabel}>
+                            {t('book.quantity.title', { unit: unitLabel(t, rowUnit, 2) })}
+                          </Text>
+                        </View>
+
+                        <View style={styles.stepper}>
+                          <Pressable
+                            onPress={() => setLineQuantity(index, item.quantity - 1)}
+                            disabled={item.quantity <= 1}
+                            hitSlop={8}
+                            accessibilityLabel={t('book.quantity.fewer')}
+                            style={[
+                              styles.stepperButton,
+                              item.quantity <= 1 && styles.stepperButtonOff,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.stepperGlyph,
+                                item.quantity <= 1 && styles.stepperGlyphOff,
+                              ]}
+                            >
+                              −
+                            </Text>
+                          </Pressable>
+
+                          <Text style={styles.stepperValue}>{item.quantity}</Text>
+
+                          <Pressable
+                            onPress={() => setLineQuantity(index, item.quantity + 1)}
+                            disabled={item.quantity >= MAX_QUANTITY}
+                            hitSlop={8}
+                            accessibilityLabel={t('book.quantity.more')}
+                            style={[
+                              styles.stepperButton,
+                              item.quantity >= MAX_QUANTITY && styles.stepperButtonOff,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.stepperGlyph,
+                                item.quantity >= MAX_QUANTITY && styles.stepperGlyphOff,
+                              ]}
+                            >
+                              +
+                            </Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    )}
+                  </Card>
+                );
+              })}
+
+              {items.length < MAX_ITEMS && (
+                <Pressable onPress={addLine} accessibilityRole="button">
+                  <Text style={styles.addService}>{t('book.extra.add')}</Text>
+                </Pressable>
+              )}
 
               {!!plan && (
                 <Card tone="gold" style={{ gap: 4 }}>
@@ -799,18 +1101,35 @@ export default function BookScreen() {
 
               <View style={{ gap: 9 }}>
                 <SectionLabel>{t('book.window.title')}</SectionLabel>
-                {PICKUP_TIME_SLOTS.map((slot) => (
-                  <OptionRow
-                    key={slot}
-                    title={slot.split(' (')[0]}
-                    subtitle={slot.match(/\((.*)\)/)?.[1]}
-                    selected={timeSlot === slot}
-                    onPress={() => setTimeSlot(slot)}
-                    trailing={
-                      timeSlot === slot ? <Check size={16} color={colors.brandSage} /> : undefined
-                    }
-                  />
-                ))}
+                {PICKUP_TIME_SLOTS.map((slot) => {
+                  const state = slotState[slot];
+                  const window = slot.match(/\((.*)\)/)?.[1];
+
+                  return (
+                    <OptionRow
+                      key={slot}
+                      title={slot.split(' (')[0]}
+                      subtitle={
+                        state?.full
+                          ? t('book.window.full')
+                          : state && state.remaining <= 3
+                            ? t('book.window.remaining', { count: state.remaining })
+                            : window
+                      }
+                      // A full window cannot be chosen. Left visible rather than
+                      // hidden: "that one is full" is information, and a list
+                      // that silently shortens looks like a bug.
+                      disabled={state?.full}
+                      selected={timeSlot === slot}
+                      onPress={() => {
+                        if (!state?.full) setTimeSlot(slot);
+                      }}
+                      trailing={
+                        timeSlot === slot ? <Check size={16} color={colors.brandSage} /> : undefined
+                      }
+                    />
+                  );
+                })}
               </View>
             </View>
           )}
@@ -933,7 +1252,7 @@ export default function BookScreen() {
                     {SCENTS.map((option) => (
                       <OptionRow
                         key={option.id}
-                        title={option.label}
+                        title={c(`pay.${option.id}.label`, option.label)}
                         subtitle={
                           option.surcharge > 0
                             ? `+ ${formatCedis(option.surcharge, locale)}`
@@ -966,7 +1285,7 @@ export default function BookScreen() {
                               starch === option.id && styles.starchLabelActive,
                             ]}
                           >
-                            {option.label}
+                            {c(`pay.${option.id}.label`, option.label)}
                           </Text>
                           {option.surcharge > 0 && (
                             <Text
@@ -987,7 +1306,9 @@ export default function BookScreen() {
                 <Card tone="sunken" style={{ gap: 4 }}>
                   <Text style={styles.planTitle}>{t('book.finish.noneTitle')}</Text>
                   <Text style={styles.planBody}>
-                    {t('book.finish.noneBody', { service: service.shortName })}
+                    {t('book.finish.noneBody', {
+                      service: c(`service.${service.id}.short`, service.shortName),
+                    })}
                   </Text>
                 </Card>
               )}
@@ -1107,7 +1428,7 @@ export default function BookScreen() {
                   return (
                     <OptionRow
                       key={option.id}
-                      title={option.label}
+                      title={c(`pay.${option.id}.label`, option.label)}
                       subtitle={
                         option.id === 'Wallet'
                           ? walletShort
@@ -1117,7 +1438,7 @@ export default function BookScreen() {
                             : t('book.pay.walletBalance', {
                                 amount: formatCedis(walletBalance, locale),
                               })
-                          : option.blurb
+                          : c(`pay.${option.id}.blurb`, option.blurb)
                       }
                       icon={<Icon name={option.iconName} size={15} color={colors.brandSage} />}
                       selected={method === option.id}
@@ -1231,19 +1552,19 @@ export default function BookScreen() {
       {/* ---------------------------------------------------------- pickers */}
       <ScrollSheet
         visible={servicePickerOpen}
-        onClose={() => setServicePickerOpen(false)}
+        onClose={() => setServicePickerFor(null)}
         title={t('book.picker.service')}
       >
         {BOOKABLE_SERVICES.map((option) => (
           <OptionRow
             key={option.id}
             title={option.name}
-            subtitle={`${option.priceInfo} · ${option.description}`}
+            subtitle={`${servicePriceLabel(t, c, locale, option)} · ${c(`service.${option.id}.desc`, option.description)}`}
             icon={<Icon name={option.iconName} size={15} color={colors.brandSage} />}
-            selected={option.id === serviceId}
+            selected={option.name === items[servicePickerFor ?? 0]?.serviceType}
             onPress={() => {
-              setServiceId(option.id);
-              setServicePickerOpen(false);
+              setLineService(servicePickerFor ?? 0, option.name);
+              setServicePickerFor(null);
             }}
           />
         ))}
@@ -1411,6 +1732,53 @@ const styles = StyleSheet.create({
   selectedServiceName: { fontSize: 14, fontWeight: '800', color: colors.textCharcoal },
   selectedServiceBody: { fontSize: 11, color: colors.textSlate, marginTop: 4, lineHeight: 15.5 },
   helper: { fontSize: 11, color: colors.textMuted, lineHeight: 15.5 },
+
+  extraHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  extraName: { fontSize: 13, fontWeight: '800', color: colors.textCharcoal },
+  extraChange: { fontSize: 11, color: colors.brandSage, marginTop: 2, fontWeight: '700' },
+  extraRemove: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.bgLinen,
+  },
+  extraRemoveGlyph: { fontSize: 17, lineHeight: 20, color: colors.textSlate, fontWeight: '700' },
+  addService: {
+    fontSize: 12.5,
+    fontWeight: '800',
+    color: colors.brandSage,
+    paddingVertical: 6,
+  },
+
+  quantityCard: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  quantityLabel: { fontSize: 12.5, fontWeight: '800', color: colors.textCharcoal },
+  quantityHint: { fontSize: 11, color: colors.textSlate, marginTop: 2 },
+  stepper: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  // 40pt, so each control clears the minimum touch target on its own without
+  // relying on the `hitSlop` — a stepper is tapped repeatedly and in a hurry.
+  stepperButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.bgLinen,
+    borderWidth: 1,
+    borderColor: colors.borderSoft,
+  },
+  stepperButtonOff: { opacity: 0.4 },
+  stepperGlyph: { fontSize: 20, fontWeight: '700', color: colors.textCharcoal, lineHeight: 24 },
+  stepperGlyphOff: { color: colors.textMuted },
+  stepperValue: {
+    minWidth: 34,
+    textAlign: 'center',
+    fontSize: 16,
+    fontWeight: '800',
+    color: colors.textCharcoal,
+    fontVariant: ['tabular-nums'],
+  },
   planTitle: { fontSize: 12.5, fontWeight: '800', color: colors.textCharcoal },
   planBody: { fontSize: 11, color: colors.textSlate, lineHeight: 15.5 },
 

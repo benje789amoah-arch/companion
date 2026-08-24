@@ -256,6 +256,9 @@ rider app over the LAN.
 | `GET/POST /messages` | One conversation per job, all three surfaces. `?orderId=` is any party to that job; without it, the whole board's traffic, supervisor only and paged (`?limit=`, default 500) |
 | `GET/POST /notifications`, `POST /notifications/:id/read` | Rider alerts |
 | `GET/PUT /accounts`, `PUT /accounts/addresses` | Customer accounts and the saved address book. `GET` is the desk's directory; `PUT` writes the caller's own record |
+| `POST /bookings/:id/refund` | Returns a settled bill to the patron's wallet. Supervisor only, whole-bill, idempotent on the booking's own reference |
+| `POST /bookings/:id/rating` | Rates the courier on a delivered order. The customer's alone; one per order, revisable |
+| `GET /bookings/availability?date=` | How full each collection window is that day. Open, like the booking form it serves |
 | `GET /transactions` | Payment ledger, scoped by the token: a customer's own statement, or the whole ledger for the desk. Read-only — every row is written server-side by a wallet movement |
 | `GET /jobs` | Canonical records, for debugging. Supervisor only |
 | `POST /reset` | Empty the ledger back to a fresh install. Supervisor only, and refused outright in production |
@@ -628,6 +631,30 @@ is what is actually open.
   a fifth written is a worse promise than one not offered. The machinery that
   carried them is unchanged, so adding a language back is a dictionary file, a
   line in `LOCALES` and a label.
+- **Neither translation has been read by a native speaker.** The app reads in
+  English, Spanish and French — 539 keys of the app's own copy plus 109 strings
+  of catalogue (service descriptions, plan benefits, testimonials), all three at
+  100%. Both the Spanish and the French were drafted rather than reviewed and
+  want a speaker's pass before release.
+
+  Three things stay English in every language, and each for the same reason —
+  they are identifiers rather than copy. **Service names** are the wire value a
+  booking stores in `serviceType`, matched by `serviceByName` on the server.
+  **Plan names** are the commercial terms quoted back on membership records.
+  **Testimonial names** are people. The descriptions, taglines, benefits and
+  roles around all three are translated.
+
+  `npm run i18n --workspace @freshfold/client` reports both dictionaries; add
+  `-- es` for one language's outstanding app keys.
+- **Quantity and the service lines cannot be edited after booking.**
+  `applyBookingPatch` does not reprice — `amount` is written once by
+  `POST /bookings` and moved only by the payment route — so accepting a new
+  quantity there would leave a job saying "four loads" beside a total quoted for
+  one. Correcting either means cancelling and rebooking, which is already what
+  correcting the service means.
+- **A large manifest is a long list.** Bags now follow the real count, so a
+  40-unit order gives the courier 40 rows to scan in `QRScanner`. Each row names
+  the service it belongs to, but they are not grouped or paged.
 - **`read` on a notification is one shared flag**, not per-recipient state, so
   the desk and the customer clearing the same notice clear it for both.
 - **The in-memory rate limiters are per-instance.** Two servers behind a load

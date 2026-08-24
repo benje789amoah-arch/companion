@@ -343,6 +343,37 @@ export default function AdminDashboard({
    * not look like one, which is the reasoning in `ClientPortal`'s payment path
    * too.
    */
+  /**
+   * Returns a settled bill to the customer's wallet.
+   *
+   * Confirmed first, and deliberately: this is the one desk action that moves
+   * money *outward*, it is idempotent rather than reversible — a refund cannot
+   * be un-refunded from here — and the amount is worth reading back before it
+   * goes. The other payment controls are recoverable in a click.
+   */
+  const handleRefundBooking = async (bookingId: string) => {
+    const target = activeBookings.find((b) => b.id === bookingId);
+    if (!target) return;
+
+    const owed = formatCedis(displayAmount(target));
+    const confirmed = window.confirm(
+      `Refund ${owed} to ${target.name}'s FreshFold wallet?\n\n` +
+        `Order ${bookingId} will be marked Refunded. This cannot be undone from the desk.`
+    );
+    if (!confirmed) return;
+
+    try {
+      const refunded = await store.refundBooking(bookingId);
+      onUpdateBookings(activeBookings.map((b) => (b.id === bookingId ? refunded : b)));
+      triggerFlashNotification(`${bookingId} refunded — ${owed} returned to the patron's wallet`);
+      bumpAudit();
+    } catch (e) {
+      triggerFlashNotification(
+        e instanceof Error ? e.message : `Could not reach the server. ${bookingId} is unchanged.`
+      );
+    }
+  };
+
   const handleTogglePaymentStatus = async (bookingId: string) => {
     const target = activeBookings.find((b) => b.id === bookingId);
     if (!target) return;
@@ -844,6 +875,7 @@ export default function AdminDashboard({
               receiptFor={receiptModalBooking}
               onOpenReceipt={setReceiptModalBooking}
               onTogglePayment={handleTogglePaymentStatus}
+              onRefund={handleRefundBooking}
             />
           )}
 

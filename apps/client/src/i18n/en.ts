@@ -146,11 +146,22 @@ export const en = {
 
   // ------------------------------------------------------------------ home
   //
-  // The chrome of the home screen only. Everything the tab shows that comes out
-  // of `src/data/catalogue.ts` — the eleven services, the four steps, the
-  // reasons, the segments, the testimonials — is translated there by id, not
-  // here, because those are records with an id and a picture attached rather
-  // than loose strings.
+  // The chrome of the home screen only.
+  //
+  // What the tab shows out of `src/data/catalogue.ts` — the eleven services, the
+  // four steps, the reasons, the segments, the testimonials — is **not** here and
+  // is **not** translated anywhere. This comment used to say it was "translated
+  // there by id", which was never true: that file holds plain English literals
+  // and imports nothing from this layer. So a customer reading in Spanish gets a
+  // Spanish app with English service names on it.
+  //
+  // 74 display strings across `catalogue.ts` and `packages/core/src/services.ts`
+  // — service short names and descriptions, category labels, plan taglines and
+  // benefits, testimonials. Translating them means routing each render site
+  // through `t()` and adding the keys here, which is a piece of work in its own
+  // right rather than something to fold into an unrelated change. The service
+  // *names* stay English regardless: they are the wire value a booking stores in
+  // `serviceType`, so only their display can move.
   'home.greeting.morning': 'Good morning',
   'home.greeting.afternoon': 'Good afternoon',
   'home.greeting.evening': 'Good evening',
@@ -213,9 +224,9 @@ export const en = {
   // ------------------------------------------------------------------ book
   //
   // The five-step booking flow. The service names, the time slots, the scents,
-  // the starch levels, the add-ons and the payment methods are all catalogue
-  // records with ids, so they are translated in `src/data/catalogue.ts` and not
-  // here — what is here is the form around them.
+  // the starch levels, the add-ons and the payment methods are catalogue and core
+  // records rather than loose strings, and none of them is translated — they read
+  // in English in every language. What is here is the form around them.
   //
   // Three of this screen's labels are borrowed rather than duplicated: the
   // address and city fields reuse `address.*` because they are the same two
@@ -243,6 +254,62 @@ export const en = {
   'book.service.helper':
     'Tap to change. Every service is quoted before you confirm, and the courier is complimentary on all of them.',
   'book.picker.service': 'Choose a service',
+  /**
+   * The price advert on a service card: `From ₵30 / load`.
+   *
+   * Built here rather than by core's `priceLabel`, which is shared with the
+   * English-only desk console and rider app. `{unit}` arrives already translated
+   * from the `unit.*` block, so a Spanish card reads `Desde ₵30 / carga`.
+   */
+  'service.priceFrom': 'From {amount} / {unit}',
+  'book.extra.add': '+ Add another service',
+  'book.extra.change': 'Change service',
+  'book.extra.remove': 'Remove this service',
+
+  /**
+   * How many of the service's unit.
+   *
+   * `{unit}` is a translated word from the `unit.*` block below, not the raw
+   * English from `ServiceDefinition` — a Spanish reader asked "How many loads?"
+   * with `loads` left in English is being asked half a question.
+   *
+   * Phrased so the unit can be any gender. English can say "How many X?" freely;
+   * Spanish and French cannot agree `Cuántas`/`Combien` with a word they are
+   * handed at runtime, so both use a `de`-construction instead. That is why this
+   * is a whole sentence per language rather than a shared frame.
+   */
+  'book.quantity.title': 'How many {unit}?',
+  'book.quantity.each': '{amount} per {unit}',
+  /**
+   * Screen-reader labels for the two stepper buttons.
+   *
+   * Deliberately without the unit in them. Both other languages would need to
+   * agree an article with it — `una carga`, `un juego` — and a label that reads
+   * "Increase quantity" is no worse to hear than one that names the unit.
+   */
+  'book.quantity.fewer': 'Decrease quantity',
+  'book.quantity.more': 'Increase quantity',
+
+  // ------------------------------------------------------------------ units
+  //
+  // What one of a service buys, as a word the customer reads. The ids are the
+  // `unit` field on `ServiceDefinition` in `@freshfold/core`, which is dispatch
+  // data and stays English; these are its translations.
+  //
+  // Two keys each rather than a plural rule, like every other counted phrase
+  // here — see the note at the top of the file.
+  'unit.load.one': 'load',
+  'unit.load.many': 'loads',
+  'unit.set.one': 'set',
+  'unit.set.many': 'sets',
+  'unit.ride.one': 'ride',
+  'unit.ride.many': 'rides',
+  'unit.space.one': 'space',
+  'unit.space.many': 'spaces',
+  'unit.unit.one': 'unit',
+  'unit.unit.many': 'units',
+  'unit.order.one': 'order',
+  'unit.order.many': 'orders',
 
   'book.plan.coveredTitle': 'This pickup is included in your membership',
   'book.plan.title': 'Booked under your membership',
@@ -266,6 +333,8 @@ export const en = {
   'book.date.placeholder': 'YYYY-MM-DD',
   'book.date.hint': 'Delivery is scheduled for the following day.',
   'book.window.title': 'Collection window',
+  'book.window.full': 'Full — choose another window',
+  'book.window.remaining': 'Only {count} left in this window',
 
   'book.address.saved': 'Use a saved address',
   'book.picker.addresses': 'Saved addresses',
@@ -556,6 +625,7 @@ export const en = {
 
   'order.row.booked': 'Booked',
   'order.row.plan': 'Plan',
+  'order.row.quantity': 'Quantity',
   'order.row.care': 'Care notes',
   'order.row.courierNote': 'Courier note',
   'order.row.courier': 'Courier',
@@ -577,6 +647,11 @@ export const en = {
   'order.receipt.reference': 'Reference',
 
   'order.again': 'Book this again',
+  'order.rate.title': 'How did it go?',
+  'order.rate.prompt': 'Rate {name} — it only takes a tap, and the desk reads every one.',
+  'order.rate.thanks': 'Thank you. Your rating is with the desk.',
+  /** Screen-reader label on each star. */
+  'order.rate.star': '{count} out of 5',
 
   // --------------------------------------------------------------- scanner
   //
@@ -683,9 +758,9 @@ export const en = {
   //
   // The wallet tab: the balance, the loyalty tier, the subscription and the
   // statement. The tier names and their benefits, the rewards and the plans are
-  // catalogue and core records with ids, so they are translated by id and not
-  // here — as are the words the server writes into a transaction's description,
-  // method and status, which arrive on the wire in English.
+  // catalogue and core records rather than loose strings, and are not translated
+  // — as are the words the server writes into a transaction's description, method
+  // and status, which arrive on the wire in English.
   //
   // Two of this screen's strings are borrowed from the booking flow rather than
   // written again: `book.pay.gateway` frames a message Paystack wrote, and

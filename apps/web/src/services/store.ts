@@ -515,6 +515,30 @@ export async function reverseCashPayment(id: string): Promise<Booking> {
   return reversed;
 }
 
+/**
+ * Refunds a settled booking to the customer's wallet. Supervisor only.
+ *
+ * Not queued, like the reversal above and for the same reason: money is moving
+ * and somebody is standing at the desk waiting to hear whether it did. The
+ * server may refuse — an unsettled booking, or a guest with no wallet — and a
+ * queued write would swallow that.
+ *
+ * The account is re-pulled afterwards because the balance on screen has just
+ * changed for whoever is signed in; without it the desk's own wallet figure
+ * would sit stale until the next poll.
+ */
+export async function refundBooking(id: string): Promise<Booking> {
+  await drain();
+
+  const refunded = await api.refundBooking(id, bookingAuth(id));
+
+  mirror.bookings = mirror.bookings.map((booking) => (booking.id === id ? refunded : booking));
+  writeLocal(KEYS.bookings, mirror.bookings);
+  notify();
+
+  return refunded;
+}
+
 export function patchBooking(id: string, patch: Partial<Booking>): void {
   mirror.bookings = mirror.bookings.map((booking) =>
     booking.id === id ? { ...booking, ...patch } : booking

@@ -120,7 +120,7 @@ export default function WalletScreen() {
     online,
     probed,
   } = useClient();
-  const { t, locale } = useT();
+  const { t, locale, c } = useT();
 
   const [topUpOpen, setTopUpOpen] = useState(false);
   const [amount, setAmount] = useState(TOP_UPS[1]);
@@ -396,7 +396,9 @@ export default function WalletScreen() {
             </View>
 
             <Text style={[styles.tierName, { color: tier.textColor }]}>{tier.name}</Text>
-            <Text style={[styles.tierDesc, { color: tier.textColor }]}>{tier.description}</Text>
+            <Text style={[styles.tierDesc, { color: tier.textColor }]}>
+              {c(`tier.${tier.id}.desc`, tier.description)}
+            </Text>
 
             <View style={styles.tierPoints}>
               <Text style={[styles.tierPointsValue, { color: tier.textColor }]}>
@@ -426,10 +428,12 @@ export default function WalletScreen() {
 
           <Card style={{ gap: 9, marginTop: 12 }}>
             <SectionLabel>{t('wallet.tier.benefits')}</SectionLabel>
-            {tier.benefits.map((benefit) => (
+            {tier.benefits.map((benefit, at) => (
               <View key={benefit} style={styles.benefitRow}>
                 <Gift size={13} color={colors.brandGold} />
-                <Text style={styles.benefitText}>{benefit}</Text>
+                <Text style={styles.benefitText}>
+                  {c(`tier.${tier.id}.benefit.${at}`, benefit)}
+                </Text>
               </View>
             ))}
             {tier.discountRate > 0 && (

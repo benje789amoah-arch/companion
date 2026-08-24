@@ -265,6 +265,64 @@ export function createClient(options: ClientOptions) {
         headers: authHeaders(auth),
       }),
 
+    /**
+     * Rates the courier who carried a delivered order.
+     *
+     * The customer's alone — a courier or a supervisor calling this gets 403.
+     * One rating per order, revisable: sending it again overwrites rather than
+     * stacks. Returns the courier's recomputed average.
+     *
+     * Throws `ApiError` 409 `{ reason: 'not-delivered' }` before the work is
+     * done, and `{ reason: 'no-courier' }` for an order nobody is recorded
+     * against.
+     */
+    rateBooking: (
+      id: string,
+      rating: { stars: number; comment?: string },
+      auth: BookingAuth
+    ) =>
+      request<{
+        jobId: string;
+        stars: number;
+        comment: string;
+        riderRating: number;
+        riderRatingCount: number;
+      }>(`/bookings/${encodeURIComponent(id)}/rating`, {
+        ...json('POST', rating),
+        headers: authHeaders(auth),
+      }),
+
+    /**
+     * How full each collection window is on a day.
+     *
+     * Open, with no session — the booking form is a stranger filling in a form,
+     * and this says only how busy a day is. The booking route enforces the same
+     * ceiling regardless, so a form working from a stale answer is refused
+     * rather than overbooking.
+     */
+    slotAvailability: (date: string) =>
+      request<{
+        date: string;
+        capacity: number;
+        slots: { slot: string; booked: number; remaining: number; full: boolean }[];
+      }>(`/bookings/availability?date=${encodeURIComponent(date)}`),
+
+    /**
+     * Refunds a settled booking to the customer's wallet. Supervisor only.
+     *
+     * The act `reverseCashPayment` refuses and points at. Whole-bill only, and
+     * idempotent on the booking's own reference — clicking twice refunds once.
+     *
+     * Throws `ApiError` 409 `{ reason: 'not-settled' }` for a booking that was
+     * never paid, and `{ reason: 'no-account' }` for a guest booking with no
+     * wallet behind it.
+     */
+    refundBooking: (id: string, auth: BookingAuth) =>
+      request<Booking>(`/bookings/${encodeURIComponent(id)}/refund`, {
+        ...json('POST', {}),
+        headers: authHeaders(auth),
+      }),
+
     updateBooking: (id: string, patch: Partial<Booking>, auth: BookingAuth) =>
       request<Booking>(`/bookings/${encodeURIComponent(id)}`, {
         ...json('PATCH', patch),

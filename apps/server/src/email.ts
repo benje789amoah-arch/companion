@@ -27,6 +27,8 @@
  * DNS.
  */
 
+import { describeItems } from '@freshfold/core';
+
 const BREVO_ENDPOINT = 'https://api.brevo.com/v3/smtp/email';
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
 
@@ -320,7 +322,9 @@ export function bookingSetupMail(
 
   const lines: [string, string][] = [
     ['Booking', booking.id],
-    ['Service', booking.serviceType],
+    // Every service on the order. `describeItems` falls back to the single
+    // service name, so a one-service booking reads exactly as it always did.
+    ['Service', describeItems(booking) || booking.serviceType],
     ['Pickup', `${booking.pickupDate}, ${booking.pickupTime}`],
     ['Address', booking.address],
   ];

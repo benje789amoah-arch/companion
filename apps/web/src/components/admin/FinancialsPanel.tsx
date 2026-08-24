@@ -14,7 +14,7 @@
 import { useMemo } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Printer, Receipt, Wallet, X } from 'lucide-react';
-import { decodeFinish, priceBreakdown } from '@freshfold/core';
+import { decodeFinish, priceBreakdown, describeItems } from '@freshfold/core';
 import type { Booking } from '../../types';
 import { Badge, Button, EmptyState, Panel, TableHead, formatCedis } from './ui';
 import { displayAmount } from '../../services/amount';
@@ -29,6 +29,7 @@ export default function FinancialsPanel({
   receiptFor,
   onOpenReceipt,
   onTogglePayment,
+  onRefund,
 }: {
   bookings: Booking[];
   totalRevenue: number;
@@ -36,6 +37,8 @@ export default function FinancialsPanel({
   receiptFor: Booking | null;
   onOpenReceipt: (booking: Booking | null) => void;
   onTogglePayment: (bookingId: string) => Promise<void>;
+  /** Returns a settled bill to the patron's wallet. Supervisor only. */
+  onRefund: (bookingId: string) => Promise<void>;
 }) {
   const ordered = useMemo(() => {
     // Unpaid first, then by amount descending — the biggest debt at the top.
@@ -85,10 +88,10 @@ export default function FinancialsPanel({
             <div className="divide-y divide-admin-line">
               {ordered.map((b) => {
                 const paid = b.paymentStatus === 'Paid';
+                const refunded = b.paymentStatus === 'Refunded';
                 // Only a cash collection is the desk's to take back. A wallet
                 // debit or a Paystack charge moved real money and needs a
-                // refund, which the server enforces — so don't offer a button
-                // that can only 409.
+                // refund, which the button beside it now performs.
                 const reversible = b.paymentMethod === 'Cash';
                 return (
                   <div key={b.id} className={`px-5 py-3 hover:bg-admin-hover ${COLS}`}>
@@ -108,7 +111,7 @@ export default function FinancialsPanel({
                     </div>
 
                     <span className="mt-0.5 block truncate text-[12px] text-admin-fg-2 md:mt-0">
-                      {b.serviceType} · {b.suburb}
+                      {describeItems(b) || b.serviceType} · {b.suburb}
                     </span>
 
                     <span className="mt-1 block font-mono text-[13px] tabular-nums text-admin-fg md:mt-0 md:text-right">
@@ -116,8 +119,11 @@ export default function FinancialsPanel({
                     </span>
 
                     <div className="mt-1.5 md:mt-0">
-                      <Badge tone={paid ? 'ok' : 'warn'} dot>
-                        {paid ? 'Paid' : 'Unpaid'}
+                      {/* Three states, not two: a refunded booking is neither
+                          owed nor collected, and showing it as "Unpaid" would
+                          put it back on the desk's list of things to chase. */}
+                      <Badge tone={refunded ? 'neutral' : paid ? 'ok' : 'warn'} dot>
+                        {refunded ? 'Refunded' : paid ? 'Paid' : 'Unpaid'}
                       </Badge>
                     </div>
 
@@ -131,12 +137,29 @@ export default function FinancialsPanel({
                           paid
                             ? reversible
                               ? 'Undo the cash collection recorded on this order'
-                              : `Paid by ${b.paymentMethod ?? 'gateway'} — that needs a refund, not a reversal`
+                              : `Paid by ${b.paymentMethod ?? 'gateway'} — use Refund instead`
                             : 'Record that a courier collected this bill in cash'
                         }
                       >
                         {paid ? 'Revert' : 'Settle'}
                       </Button>
+
+                      {/*
+                        Offered only on a settled booking, which is the only
+                        thing there is to refund — and never on a cash one,
+                        where Revert beside it is the honest act: no money left
+                        the building, so none needs returning to a wallet.
+                      */}
+                      {paid && !reversible && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => void onRefund(b.id)}
+                          title={`Return ${formatCedis(displayAmount(b))} to ${b.name}'s FreshFold wallet`}
+                        >
+                          Refund
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="ghost"
@@ -189,7 +212,7 @@ export default function FinancialsPanel({
               <div className="space-y-3 px-4 py-4 text-[12px]">
                 <ReceiptRow label="Order" value={receiptFor.id} mono />
                 <ReceiptRow label="Customer" value={receiptFor.name} />
-                <ReceiptRow label="Service" value={receiptFor.serviceType} />
+                <ReceiptRow label="Service" value={describeItems(receiptFor) || receiptFor.serviceType} />
                 <ReceiptRow
                   label="Pickup"
                   value={`${receiptFor.address}, ${receiptFor.suburb}`}
@@ -203,11 +226,17 @@ export default function FinancialsPanel({
                 */}
                 {(() => {
                   const finish = decodeFinish(receiptFor.specialInstructions);
+                  // The lines matter here as much as the finish: a receipt
+                  // that itemises one load against a total charged for three
+                  // does not add up, and the difference lands in the reduction
+                  // row as though a discount had been applied.
                   const lines = priceBreakdown({
                     serviceType: receiptFor.serviceType,
                     scent: finish.scent,
                     starch: finish.starch,
                     addonIds: receiptFor.specialtyAddons,
+                    items: receiptFor.items,
+                    quantity: receiptFor.quantity,
                   });
                   const total = displayAmount(receiptFor);
                   // Below list price means an included pickup, the member rate

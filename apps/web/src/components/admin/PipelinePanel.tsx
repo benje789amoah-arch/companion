@@ -17,6 +17,7 @@
  * a scroll position nobody can hold.
  */
 
+import { describeItems } from '@freshfold/core';
 import { useMemo, useState, type ComponentType, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
@@ -217,7 +218,12 @@ export default function PipelinePanel({
                         </Detail>
 
                         <Detail icon={Sparkles} label="Service">
-                          <span className="block text-admin-fg">{b.serviceType}</span>
+                          {/* Every service and its count. Four loads is a
+                              different vehicle from one, and an order carrying
+                              two services is a different job from one. */}
+                          <span className="block text-admin-fg">
+                            {describeItems(b) || b.serviceType}
+                          </span>
                           {b.specialtyAddons?.length ? (
                             <span className="block text-admin-fg-2">
                               {b.specialtyAddons.join(', ')}
@@ -230,9 +236,14 @@ export default function PipelinePanel({
                             <>
                               <span className="block text-admin-fg">
                                 {b.rider.name?.trim() || 'Name not yet set'}
+                                {/* Dark until this session, because nothing ever
+                                    wrote the number it is guarded on. The count
+                                    beside it is what separates 5.0 from one
+                                    rating from 4.6 from ninety. */}
                                 {b.rider.rating > 0 && (
                                   <span className="ml-1.5 font-mono text-admin-fg-3">
                                     {b.rider.rating.toFixed(1)}★
+                                    {!!b.rider.ratingCount && ` (${b.rider.ratingCount})`}
                                   </span>
                                 )}
                               </span>
