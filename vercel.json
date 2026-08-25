@@ -16,16 +16,6 @@
   ],
   "headers": [
     {
-      "_comment": [
-        "Everything except /api. Two reasons, and the second one is the load-bearing",
-        "one: /api is proxied to the dispatch server, which sets its own headers, and",
-        "a browser given two Content-Security-Policy headers enforces BOTH. The",
-        "password-reset page at /api/auth/reset is server-rendered with an inline",
-        "script carrying a per-response nonce — a second policy here that does not",
-        "know that nonce would block it, and the reset form would silently stop",
-        "working in production only.",
-        "Keep this list in step with apps/server/src/headers.ts."
-      ],
       "source": "/((?!api/).*)",
       "headers": [
         {

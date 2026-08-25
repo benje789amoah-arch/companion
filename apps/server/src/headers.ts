@@ -30,6 +30,15 @@ import type { RequestHandler, Response } from 'express';
  * `vercel.json`, which has to be kept in step; the CSP there is the one that
  * governs the dashboard. This branch still matters because `index.ts` also
  * serves the built site when the whole thing runs as one process.
+ *
+ * Why that file matches `/((?!api/).*)` rather than everything: a browser given
+ * two Content-Security-Policy headers enforces both. `/api` is proxied here,
+ * and the reset form this server renders carries a per-response nonce — a
+ * second policy from Vercel that does not know the nonce would block the inline
+ * script, and the form would stop working in production only. The exclusion
+ * cannot be explained in `vercel.json` itself: Vercel rejects any key it does
+ * not recognise inside a `headers` entry, `_comment` included, so the reason
+ * lives here.
  */
 
 /**
