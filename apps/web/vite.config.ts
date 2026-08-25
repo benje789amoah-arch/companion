@@ -54,8 +54,8 @@ export default defineConfig(({ mode }) => {
            * The lazy imports in `App.tsx` split our own screens out of the first
            * load, but they are not enough on their own: a module reachable from
            * two different dynamic imports gets hoisted to their common ancestor,
-           * which is the entry. Leaflet and the Google Maps bindings are needed
-           * by both the booking form and the client portal, so both ended up
+           * which is the entry. The Google Maps bindings are needed
+           * by both the booking form and the client portal, so they ended up
            * back in the chunk every marketing visitor downloads.
            *
            * Naming them here pins each to its own file, fetched when something
@@ -70,7 +70,7 @@ export default defineConfig(({ mode }) => {
           manualChunks: {
             react: ['react', 'react-dom'],
             motion: ['motion'],
-            maps: ['leaflet', '@vis.gl/react-google-maps'],
+            maps: ['@vis.gl/react-google-maps'],
           },
         },
       },

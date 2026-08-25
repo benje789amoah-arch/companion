@@ -19,8 +19,8 @@ import { Sparkles, ArrowUp, Check } from 'lucide-react';
  * All of these are already conditional — the portal renders behind `#portal`,
  * the desk behind `#admin`, the booking form behind a button — but a static
  * import puts them in the entry chunk regardless, so every visitor to the
- * marketing page was downloading the supervisor dashboard, the client portal,
- * Leaflet and the Google Maps bindings before the hero rendered. That was the
+ * marketing page was downloading the supervisor dashboard, the client portal
+ * and the Google Maps bindings before the hero rendered. That was the
  * bulk of a 1.5 MB single chunk.
  *
  * `lazy` makes the conditional render the thing that fetches them. A visitor who
