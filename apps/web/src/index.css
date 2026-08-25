@@ -1,4 +1,9 @@
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+/* The webfonts are loaded from index.html, not with an `@import` here.
+   An `@import` is only discovered once this file has been fetched and parsed,
+   so it serialises HTML -> this stylesheet -> Google's stylesheet -> the font
+   files. The <link rel="preconnect"> and <link rel="stylesheet"> in index.html
+   start that work while the HTML is still parsing instead. Keep the family
+   list there in step with --font-serif / --font-sans / --font-mono below. */
 
 @import "tailwindcss";
 
