@@ -24,7 +24,15 @@ services:
     # @freshfold/core resolves. The build bundles with esbuild but leaves
     # express/cors/dotenv/postgres/@google/genai external, so node_modules has
     # to survive into the runtime — Render keeps it, so this works.
-    buildCommand: npm install && npm run build --workspace @freshfold/server
+    #
+    # `--include=dev` because NODE_ENV below is set during the build as well as
+    # at runtime, and npm reads a production NODE_ENV as "omit devDependencies".
+    # The build opens with `tsc --noEmit`, which needs @types/express and
+    # @types/cors, and both are devDependencies of @freshfold/server. Without
+    # this the compile fails with TS7016 on every file that imports express —
+    # and it fails only here: a local build has no NODE_ENV set, so npm installs
+    # the types and the same commit compiles clean on a laptop.
+    buildCommand: npm install --include=dev && npm run build --workspace @freshfold/server
     startCommand: npm run start --workspace @freshfold/server
 
     # Answers 503 when Postgres is unreachable rather than a cheerful 200, so a
