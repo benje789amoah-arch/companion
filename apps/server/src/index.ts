@@ -52,6 +52,17 @@ const PORT = Number(process.env.PORT || 4000);
 const app = express();
 
 /**
+ * Express announces itself on every response otherwise.
+ *
+ * `X-Powered-By: Express` hands a reader of the headers the one detail worth
+ * having before trying anything — which stack to look advisories up against.
+ * It costs us nothing to withhold. Unlike everything in `./headers`, this one
+ * is removed by not setting it rather than by setting something else, so it
+ * belongs here next to the app rather than in that middleware.
+ */
+app.disable('x-powered-by');
+
+/**
  * Whether `X-Forwarded-For` may be believed.
  *
  * `req.ip` is what the directions proxy rate-limits on, and behind a reverse
