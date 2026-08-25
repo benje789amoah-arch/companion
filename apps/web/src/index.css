@@ -65,6 +65,30 @@
   --color-admin-info: #7DA6E8;
 }
 
+@layer base {
+  /*
+   * The page's ground colour, set here rather than left to React.
+   *
+   * Every dark surface on this site is painted by a component, including the
+   * fixed backdrop behind the hero — a `motion` element that starts at
+   * `opacity: 0` and fades in on mount. Until that runs, `html` and `body` had
+   * no background of their own and the browser default showed through: a white
+   * page. On a fast desktop that is a flash nobody sees. On a phone it is not
+   * necessarily brief — a slower CPU, a slow network, or a tab the browser
+   * froze and restored without ever running `requestAnimationFrame` can leave
+   * it there for the whole visit.
+   *
+   * Setting it here costs nothing and removes the failure mode: the worst case
+   * becomes an empty dark page rather than an empty white one, and the hero
+   * fades in over the colour it was always going to land on.
+   */
+  html,
+  body {
+    background-color: var(--color-brand-charcoal);
+    color: var(--color-brand-text-light);
+  }
+}
+
 @layer utilities {
   .glass-card {
     background: rgba(22, 22, 22, 0.85);
