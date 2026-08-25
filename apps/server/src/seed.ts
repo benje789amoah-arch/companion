@@ -176,9 +176,10 @@ const SUPERVISORS = [
   { id: 'FF-S-001', name: 'Concierge Desk Supervisor', email: 'supervisor@freshfold.com' },
 ];
 
-export function seedRiders(): StoredRider[] {
-  return ROSTER.map(({ id, employeeId, phone, pin, vehicle, vehiclePlate }) => {
-    const { salt, hash } = hashPassword(pin);
+export async function seedRiders(): Promise<StoredRider[]> {
+  return Promise.all(
+    ROSTER.map(async ({ id, employeeId, phone, pin, vehicle, vehiclePlate }) => {
+    const { salt, hash } = await hashPassword(pin);
     return {
       id,
       employeeId,
@@ -211,13 +212,15 @@ export function seedRiders(): StoredRider[] {
       pinSalt: salt,
       pinHash: hash,
     };
-  });
+    })
+  );
 }
 
-export function seedSupervisors(): StoredSupervisor[] {
+export async function seedSupervisors(): Promise<StoredSupervisor[]> {
   const password = supervisorPassword();
-  return SUPERVISORS.map((supervisor) => {
-    const { salt, hash } = hashPassword(password);
+  return Promise.all(
+    SUPERVISORS.map(async (supervisor) => {
+    const { salt, hash } = await hashPassword(password);
     return {
       ...supervisor,
       createdAt: new Date().toISOString(),
@@ -225,12 +228,14 @@ export function seedSupervisors(): StoredSupervisor[] {
       passwordSalt: salt,
       passwordHash: hash,
     };
-  });
+    })
+  );
 }
 
-export function seedAccounts(): StoredAccount[] {
-  return SIGN_IN_ACCOUNTS.map((account) => {
-    const { salt, hash } = hashPassword(DEV_PASSWORD);
+export async function seedAccounts(): Promise<StoredAccount[]> {
+  return Promise.all(
+    SIGN_IN_ACCOUNTS.map(async (account) => {
+    const { salt, hash } = await hashPassword(DEV_PASSWORD);
     return {
       ...account,
       points: 0,
@@ -243,7 +248,8 @@ export function seedAccounts(): StoredAccount[] {
       // nobody owns is not a door.
       emailVerified: true,
     };
-  });
+    })
+  );
 }
 
 /**
@@ -270,7 +276,7 @@ export async function ensureSeeded(): Promise<{
     const inserted = { riders: 0, supervisors: 0, accounts: 0 };
 
     if ((await t.supervisors.list()).length === 0) {
-      for (const supervisor of seedSupervisors()) await t.supervisors.insert(supervisor);
+      for (const supervisor of await seedSupervisors()) await t.supervisors.insert(supervisor);
       inserted.supervisors = SUPERVISORS.length;
     }
 
@@ -279,12 +285,12 @@ export async function ensureSeeded(): Promise<{
     if (IS_PRODUCTION) return inserted;
 
     if ((await t.riders.count()) === 0) {
-      for (const rider of seedRiders()) await t.riders.insert(rider);
+      for (const rider of await seedRiders()) await t.riders.insert(rider);
       inserted.riders = ROSTER.length;
     }
 
     if ((await t.accounts.list()).length === 0) {
-      for (const account of seedAccounts()) await t.accounts.insert(account);
+      for (const account of await seedAccounts()) await t.accounts.insert(account);
       inserted.accounts = SIGN_IN_ACCOUNTS.length;
     }
 

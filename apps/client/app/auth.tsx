@@ -30,6 +30,7 @@ import {
   PHONE_LENGTH_MESSAGE,
   isCompletePhone,
   limitPhoneInput,
+  passwordProblem,
 } from '@freshfold/core';
 import { KeyboardAvoider } from '../src/components/KeyboardAvoider';
 import { Button, Card, Field, Segmented } from '../src/components/ui';
@@ -151,8 +152,12 @@ export default function AuthScreen() {
           setError(PHONE_LENGTH_MESSAGE);
           return;
         }
-        if (password.length < 6) {
-          setError('Use at least six characters for your password.');
+        // The shared rule rather than this screen's own idea of it: the
+        // website asked for five and this asked for six, and the server
+        // decided both.
+        const weak = passwordProblem(password);
+        if (weak) {
+          setError(weak);
           return;
         }
         if (password !== confirm) {

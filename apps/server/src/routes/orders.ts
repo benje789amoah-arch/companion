@@ -5,12 +5,13 @@
 
 import { Router } from 'express';
 import {
-  DEFAULT_RIDER_JOB_LIMIT,
-  REFERRAL_REWARD,
   applyStatus,
+  DEFAULT_RIDER_JOB_LIMIT,
+  imageProblem,
   isTerminal,
   onShift,
   orderToJob,
+  REFERRAL_REWARD,
   roundCedis,
   toBookingStatus,
   withinJobLimit,
@@ -652,6 +653,28 @@ ordersRouter.patch(
     if (!patch?.status) {
       res.status(400).json({ error: 'A status is required.' });
       return;
+    }
+
+    /**
+     * The two blobs, before anything is locked or written.
+     *
+     * Refused out here rather than inside the transaction: this is a property
+     * of the request, not of the job, and there is no reason to take a row lock
+     * to find out that a photograph is four megabytes.
+     *
+     * `imageProblem` checks the type, the decoded size and the leading bytes —
+     * so the field takes an image rather than anything wearing an image's
+     * prefix. See `@freshfold/core`'s `uploads` module.
+     */
+    for (const [field, kind] of [
+      ['photo', 'photo'],
+      ['signature', 'signature'],
+    ] as const) {
+      const problem = imageProblem(patch[field], kind);
+      if (problem) {
+        res.status(413).json({ error: problem, reason: `${field}-rejected` });
+        return;
+      }
     }
 
     // Pinned outside the transaction callback: narrowing on a property does

@@ -15,6 +15,7 @@ import { developmentCredentials, ensureSeeded, SeedError } from './seed';
 import { startHubCycle } from './hub';
 import { startRecurringCycle } from './recurring-cycle';
 import { guard } from './helpers';
+import { securityHeaders } from './headers';
 import { requireSupervisor } from './auth';
 import { adminRouter } from './routes/admin';
 import { authRouter } from './routes/auth';
@@ -67,6 +68,29 @@ if (process.env.TRUST_PROXY) {
 }
 
 /**
+ * Response headers, before anything that can answer a request.
+ *
+ * `servesWebsite` matches the static-file branch at the bottom of this file: in
+ * the deployed shape Vercel serves the site and this process answers only
+ * `/api`, so the policy stays tight and `vercel.json` carries the wider one for
+ * the pages that need Google Maps. Running as a single process, this serves
+ * both and the policy has to cover both.
+ *
+ * `https` follows `TRUST_PROXY`, which is set exactly when something in front
+ * is terminating TLS. HSTS on a plaintext response is ignored anyway; the point
+ * of the condition is not to send it in development, where it would pin a
+ * developer's `localhost` to https for a year.
+ */
+const servesWebsite = process.env.NODE_ENV === 'production';
+
+app.use(
+  securityHeaders({
+    servesWebsite,
+    https: Boolean(process.env.TRUST_PROXY),
+  })
+);
+
+/**
  * The Paystack webhook, and only it, is read as raw bytes.
  *
  * Its signature is an HMAC over exactly what Paystack sent, so the body cannot
@@ -77,9 +101,24 @@ if (process.env.TRUST_PROXY) {
  */
 app.use('/api/paystack/webhook', express.raw({ type: '*/*', limit: '1mb' }));
 
-// Bodies carry base64 proof-of-service photos and signature PNGs, which blow
-// past Express's 100kb default.
-app.use(express.json({ limit: '12mb' }));
+/**
+ * Bodies carry base64 proof-of-service photos and signature PNGs, which blow
+ * past Express's 100kb default.
+ *
+ * Six rather than the twelve this used to be. The number was picked to let the
+ * blobs through at a time when nothing bounded them; they are bounded now — 2 MB
+ * for a photograph and 512 KB for a signature, decoded, checked in
+ * `@freshfold/core`'s `uploads` module — so the largest legitimate request is
+ * one of each, about 3.4 MB once base64 has added its third. Six leaves
+ * comfortable headroom and still halves what a single request can spend before
+ * any route has looked at it.
+ *
+ * This is the outer bound rather than the real control: it is enforced by
+ * body-parser before any handler runs, and it cannot tell a large photograph
+ * from a large anything else. The per-field checks are what say no to the
+ * things that are the wrong shape.
+ */
+app.use(express.json({ limit: '6mb' }));
 
 /**
  * CORS.

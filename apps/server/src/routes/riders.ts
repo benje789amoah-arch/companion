@@ -21,7 +21,7 @@ import {
   revokeSession,
 } from '../auth';
 import { deskActor, recordAudit } from '../audit';
-import { hashPassword, sanitizeRider, verifySecret } from '../passwords';
+import { hashPassword, needsRehash, sanitizeRider, verifySecret } from '../passwords';
 import { credentialLimit } from '../rateLimit';
 import { store, type StoredRider } from '../store';
 import { guard, notFound } from '../helpers';
@@ -150,8 +150,15 @@ ridersRouter.post(
     const rider = await store.riders.findByIdentifier(identifier);
 
     // One message for "no such courier" and "wrong PIN" alike, so the response
-    // cannot be used to work out which employee IDs exist.
-    if (!rider || !verifySecret(pin, { salt: rider.pinSalt, hash: rider.pinHash })) {
+    // cannot be used to work out which employee IDs exist. Checked even when
+    // there is no courier, so the two take the same time as well as saying the
+    // same thing — see the note on the customer sign-in.
+    const pinMatches = await verifySecret(pin, {
+      salt: rider?.pinSalt,
+      hash: rider?.pinHash,
+    });
+
+    if (!rider || !pinMatches) {
       res.status(401).json({ error: 'That employee ID and PIN do not match.' });
       return;
     }
@@ -169,6 +176,16 @@ ridersRouter.post(
         .status(403)
         .json({ error: 'That temporary PIN has expired. Ask your supervisor for a new one.' });
       return;
+    }
+
+    if (needsRehash(rider.pinHash)) {
+      // See the note on the customer sign-in: the only moment the PIN is in
+      // hand to re-derive from. Not awaited, not fatal.
+      void hashPassword(pin)
+        .then((upgraded) =>
+          store.riders.update(rider.id, { pinSalt: upgraded.salt, pinHash: upgraded.hash })
+        )
+        .catch((error: unknown) => console.error('[riders] pin re-hash failed:', error));
     }
 
     const session = await createSession('rider', rider.id);
@@ -213,12 +230,12 @@ ridersRouter.post(
     }
 
     const rider = req.rider!;
-    if (!verifySecret(currentPin, { salt: rider.pinSalt, hash: rider.pinHash })) {
+    if (!(await verifySecret(currentPin, { salt: rider.pinSalt, hash: rider.pinHash }))) {
       res.status(401).json({ error: 'That is not your current PIN.' });
       return;
     }
 
-    const { salt, hash } = hashPassword(newPin);
+    const { salt, hash } = await hashPassword(newPin);
 
     await store.riders.update(rider.id, {
       pinSalt: salt,
@@ -230,7 +247,28 @@ ridersRouter.post(
       pinExpiresAt: null,
     });
 
-    res.json({ ok: true });
+    /**
+     * Everything signed in on the old PIN is signed out.
+     *
+     * `POST /auth/reset` has done this for customers since it was written, and
+     * says why: whoever knew the old credential may still be holding a bearer
+     * token, and leaving those alive means the reset changed the lock while the
+     * other key still turned it. That is the case a reset exists for.
+     *
+     * A courier changing their PIN is the same act for the same reason — they
+     * saw somebody watching them key it in — and this did not do it. The PIN
+     * changed, the courier believed the old one was now useless, and a phone
+     * holding a week-old token carried on regardless. A changed credential that
+     * creates a false belief about access is worse than one nobody changed.
+     *
+     * Their own session goes with the rest, so a fresh one is minted and
+     * returned: the courier is not signed out of the phone in their hand
+     * mid-shift for having done the right thing.
+     */
+    await store.sessions.revokeAllFor('rider', rider.id);
+    const session = await createSession('rider', rider.id);
+
+    res.json({ ok: true, token: session.token });
   })
 );
 
@@ -301,7 +339,7 @@ ridersRouter.post(
 
     const wantedPhone = phoneDigits(phone);
     const temporaryPin = String(Math.floor(1000 + Math.random() * 9000));
-    const { salt, hash } = hashPassword(temporaryPin);
+    const { salt, hash } = await hashPassword(temporaryPin);
     const pinExpiresAt = new Date(Date.now() + PROVISIONAL_PIN_TTL_MS).toISOString();
 
     /**

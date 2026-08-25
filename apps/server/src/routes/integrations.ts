@@ -6,6 +6,14 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { Router } from 'express';
 import { GoogleGenAI } from '@google/genai';
+import {
+  PAYMENT_PURPOSES,
+  buildPaymentMetadata,
+  isPaymentPurpose,
+  paymentPurpose,
+  type PaymentDisplayFields,
+  type PaymentPurpose,
+} from '@freshfold/core';
 import { guard } from '../helpers';
 import { rateLimit } from '../rateLimit';
 import { topUp } from '../wallet';
@@ -141,6 +149,134 @@ interface PaystackBody<T> {
 }
 
 /**
+ * The purposes, and the two the settlement routes name individually.
+ *
+ * `PAYMENT_PURPOSES` lives in `@freshfold/core` beside the payload the clients
+ * build, so the value a checkout declares and the value this server gates on
+ * are one definition rather than two that agree today. The two routes that
+ * spend a reference — `/accounts/wallet` and `/bookings/:id/payment` — import
+ * these constants rather than spelling out string literals of their own, which
+ * is what let their gates drift into being mutually satisfiable.
+ */
+export const TOPUP_PURPOSE: PaymentPurpose = 'wallet_topup';
+export const BOOKING_PURPOSE: PaymentPurpose = 'booking';
+
+/**
+ * Where Paystack is allowed to send the customer when the payment is done.
+ *
+ * `callback_url` was passed to Paystack exactly as it arrived, on an endpoint
+ * that is deliberately unauthenticated. So anybody could mint a checkout
+ * pointing anywhere: send a customer a link on `checkout.paystack.co` — a real
+ * gateway, a real payment, a correct padlock — and have the browser land on
+ * their own page the instant the money went through. That is the highest-trust
+ * moment in the whole flow and the best possible place to ask someone to
+ * "re-enter your card to confirm".
+ *
+ * It cannot simply be dropped. Both Expo apps pass a deep link back into
+ * themselves, because Paystack following `APP_URL` would drop a phone on a web
+ * page that is not the app; and the website passes its own origin, because in
+ * development `APP_URL` is the API's own host and not where the site is served
+ * from. So the fix is an allow-list rather than a removal.
+ *
+ * Two kinds of destination are allowed, and nothing else:
+ *
+ *  - **An http(s) origin we already trust.** `CORS_ORIGINS` is exactly the
+ *    right list and already has to be maintained: an origin trusted enough to
+ *    call this API is trusted enough to be returned to. `APP_URL`'s own origin
+ *    is always allowed, so a correct deployment needs no new configuration.
+ *  - **One of our apps' own URL schemes.** `freshfoldclient://…` for the
+ *    customer app. `APP_LINK_SCHEMES` overrides the default when a build uses
+ *    another one.
+ *
+ * Everything else is refused, which includes `javascript:` and `data:` — they
+ * would have to be named in an allow-list to pass, and they never will be.
+ */
+const DEFAULT_APP_SCHEMES = ['freshfoldclient'];
+
+/** The customer app under Expo Go, which is `exp://host:port/--/path`. */
+const DEV_APP_SCHEMES = ['exp'];
+
+export interface CallbackPolicy {
+  /** Allowed http(s) origins, lowercased, e.g. `https://freshfold.example`. */
+  origins: string[];
+  /** Allowed custom URL schemes, without the colon. */
+  schemes: string[];
+  /**
+   * Whether any http(s) origin is acceptable.
+   *
+   * True only outside production with no `CORS_ORIGINS` set — the same posture
+   * the CORS middleware itself takes in `index.ts`, and for the same reason: a
+   * phone on the LAN, a Vite dev server and an Expo web build are three origins
+   * nobody wants to enumerate to run the thing locally. In production this is
+   * always false.
+   */
+  anyOrigin: boolean;
+}
+
+/** Reads the policy out of the environment. */
+export function callbackPolicy(): CallbackPolicy {
+  const production = process.env.NODE_ENV === 'production';
+
+  const configured = (process.env.CORS_ORIGINS ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  const origins = new Set<string>();
+  for (const origin of configured) {
+    try {
+      origins.add(new URL(origin).origin.toLowerCase());
+    } catch {
+      // A malformed entry is the operator's typo. Skipped rather than fatal:
+      // the rest of the list is still good, and CORS itself ignores it too.
+    }
+  }
+
+  if (process.env.APP_URL) {
+    try {
+      origins.add(new URL(process.env.APP_URL).origin.toLowerCase());
+    } catch {
+      /* same */
+    }
+  }
+
+  const schemes = (process.env.APP_LINK_SCHEMES ?? '')
+    .split(',')
+    .map((scheme) => scheme.trim().replace(/:$/, '').toLowerCase())
+    .filter(Boolean);
+
+  return {
+    origins: [...origins],
+    schemes: schemes.length > 0 ? schemes : [...DEFAULT_APP_SCHEMES, ...(production ? [] : DEV_APP_SCHEMES)],
+    anyOrigin: !production && configured.length === 0,
+  };
+}
+
+/**
+ * Whether Paystack may return the customer to this URL.
+ *
+ * Pure, and takes the policy rather than reading the environment, so the checks
+ * can state a policy and assert against it rather than mutating `process.env`.
+ */
+export function isAllowedCallback(raw: string, policy: CallbackPolicy): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    // Not a URL at all — which includes a bare path. Paystack needs an absolute
+    // destination, so there is nothing sensible to resolve it against.
+    return false;
+  }
+
+  if (url.protocol === 'http:' || url.protocol === 'https:') {
+    if (policy.anyOrigin) return true;
+    return policy.origins.includes(url.origin.toLowerCase());
+  }
+
+  return policy.schemes.includes(url.protocol.replace(/:$/, '').toLowerCase());
+}
+
+/**
  * Opens a checkout.
  *
  * Left open, because the customer paying for a booking on the website may well
@@ -151,6 +287,31 @@ interface PaystackBody<T> {
  * the reference and matches the payer against a session.
  *
  * The window is what stops it being an unbounded way to manufacture that noise.
+ *
+ * ---
+ *
+ * **The metadata is built here, and is not the caller's to write.**
+ *
+ * It used to be: `metadata` was taken from the request body and forwarded to
+ * Paystack verbatim, and Paystack echoed it back on both the webhook and the
+ * verify. Two settlement paths then read that echo as their only evidence of
+ * what the money was for — the wallet refusing anything but
+ * `type: 'wallet_topup'`, the booking refusing anything whose `booking_id` was
+ * not its own. Each was written to stop the *other* path replaying a reference,
+ * and each says so in its own comment.
+ *
+ * Neither stopped one intent carrying both keys, because the caller composed
+ * them. A customer could open a checkout with
+ * `{ type: 'wallet_topup', booking_id: 'FFC-482013' }`, pay ₵200 once, credit
+ * ₵200 to their wallet, and then spend the same reference settling the ₵200
+ * booking — and because `transactions.upsert` conflicts on the reference, the
+ * second claim overwrote the ledger row left by the first. One payment, two
+ * settlements, and a statement that showed one movement.
+ *
+ * So the caller now says only what it *wants* — `purpose`, and the booking it
+ * names — and the two authoritative keys are written from that, here, where
+ * they cannot both be set. Anything else the caller sends for the merchant
+ * dashboard's benefit goes under `display`, which nothing gates on.
  */
 paystackRouter.post(
   '/initialize',
@@ -160,10 +321,12 @@ paystackRouter.post(
     message: 'Too many payment attempts. Try again in a minute.',
   }),
   guard(async (req, res) => {
-    const { email, amount, metadata, callback_url } = req.body as {
+    const { email, amount, purpose, bookingId, display, callback_url } = req.body as {
       email?: string;
       amount?: number;
-      metadata?: Record<string, unknown>;
+      purpose?: unknown;
+      bookingId?: unknown;
+      display?: Record<string, unknown>;
       callback_url?: string;
     };
 
@@ -171,6 +334,63 @@ paystackRouter.post(
       res.status(400).json({ error: 'Email and amount (in GHS) are required.' });
       return;
     }
+
+    if (!isPaymentPurpose(purpose)) {
+      res.status(400).json({
+        error: `A payment needs a purpose of ${PAYMENT_PURPOSES.join(' or ')}.`,
+        reason: 'purpose-required',
+      });
+      return;
+    }
+
+    // A booking payment names the booking from the outset. Without it the
+    // settlement route has nothing to match against and would refuse the
+    // payment after it had been collected, which is the worst moment to find out.
+    if (purpose === 'booking' && (typeof bookingId !== 'string' || !bookingId.trim())) {
+      res.status(400).json({
+        error: 'A payment for a booking needs the booking it is paying for.',
+        reason: 'booking-id-required',
+      });
+      return;
+    }
+
+    /**
+     * Where the customer is sent afterwards, checked against the allow-list.
+     *
+     * Refused loudly rather than quietly swapped for `APP_URL`. A rejected
+     * callback is one of two things — an attacker pointing a real checkout at
+     * their own page, or a deployment whose `CORS_ORIGINS` does not list the
+     * site it serves — and silently redirecting a customer on a phone to a web
+     * page fixes neither. See {@link callbackPolicy} for what is allowed.
+     */
+    if (callback_url !== undefined) {
+      if (typeof callback_url !== 'string' || !isAllowedCallback(callback_url, callbackPolicy())) {
+        res.status(400).json({
+          error: 'That is not a return address this server will send a customer to.',
+          reason: 'callback-not-allowed',
+        });
+        return;
+      }
+    }
+
+    /**
+     * The metadata Paystack will echo back, built rather than forwarded.
+     *
+     * `type` is a single field with one value, and `booking_id` is written only
+     * on the branch that set `type` to `booking` — so the two gates downstream
+     * are mutually exclusive by construction rather than by agreement.
+     *
+     * `display` is nested deliberately. The website sends a customer name, a
+     * phone number and a service label so the merchant dashboard is readable,
+     * and none of that should ever sit at the same level as the two keys that
+     * decide where money lands. A caller putting `type` inside `display` is
+     * writing a field nothing reads.
+     */
+    const metadata = buildPaymentMetadata(
+      purpose,
+      typeof bookingId === 'string' ? bookingId : undefined,
+      display as PaymentDisplayFields | undefined
+    );
 
     const secret = process.env.PAYSTACK_SECRET_KEY;
     if (!secret) {
@@ -199,7 +419,9 @@ paystackRouter.post(
           // Paystack bills in the minor unit: 1 GHS = 100 pesewas.
           amount: Math.round(Number(amount) * 100),
           currency: 'GHS',
-          metadata: metadata || {},
+          metadata,
+          // Checked against the allow-list above, so by this line it is either
+          // one of ours or absent.
           callback_url:
             callback_url || (process.env.APP_URL ? `${process.env.APP_URL}#paystack-success` : undefined),
         }),
@@ -429,7 +651,12 @@ paystackRouter.post(
     // A booking's payment is not a wallet credit. Same gate the wallet route
     // applies, for the same reason: without it, paying for a wash would also
     // put its value in the wallet.
-    if (metadata.type !== 'wallet_topup') {
+    //
+    // Read through `paymentPurpose` rather than off the object: it is the same
+    // reader both settlement routes use, and it answers null for anything that
+    // is not a purpose from the shared list — so a stray key on a legacy
+    // payment cannot be accepted here by a spelling that happens to match.
+    if (paymentPurpose(metadata) !== TOPUP_PURPOSE) {
       res.json({ received: true, applied: false, reason: 'not-a-topup' });
       return;
     }

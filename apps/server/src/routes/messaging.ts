@@ -4,6 +4,7 @@
  */
 
 import { Router } from 'express';
+import { messageProblem } from '@freshfold/core';
 import type { Message, MessageSender, Notification } from '@freshfold/core';
 import { requireStaff } from '../auth';
 import {
@@ -119,8 +120,15 @@ messagesRouter.post(
   '/',
   guard(async (req, res) => {
     const incoming = req.body as Partial<Message>;
-    if (!incoming?.text) {
-      res.status(400).json({ error: 'A message needs text.' });
+
+    // Length as well as presence. This was the one text field in the product
+    // with no bound at all, while claim descriptions, rating comments and
+    // invoice lines were all capped — an omission rather than a policy.
+    const text = incoming?.text ?? '';
+    const problem = messageProblem(text);
+    if (problem) {
+      // 413 when there is text and it is too long, 400 when there is none.
+      res.status(text ? 413 : 400).json({ error: problem });
       return;
     }
 
@@ -146,7 +154,7 @@ messagesRouter.post(
       id: incoming.id || `msg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       // Read off the session, never off the body.
       sender: senderFor(access),
-      text: incoming.text,
+      text,
       timestamp: incoming.timestamp || nowLabel(),
       orderId: incoming.orderId,
     };

@@ -990,6 +990,26 @@ function repositories(exec: Executor) {
         `;
         return toSupervisor(rows[0]);
       },
+
+      /**
+       * Replaces the stored credential, keeping everything else.
+       *
+       * Only the transparent re-hash on sign-in calls this: a supervisor whose
+       * password was hashed under the old cost has it upgraded the next time
+       * they use it. There is deliberately no route behind it — a desk password
+       * is set when the account is created, and changing one is a conversation
+       * with whoever holds the database rather than a form.
+       */
+      async setPassword(
+        email: string,
+        credentials: { salt: string; hash: string }
+      ): Promise<void> {
+        await exec`
+          update supervisors
+          set password_salt = ${credentials.salt}, password_hash = ${credentials.hash}
+          where lower(email) = ${email.trim().toLowerCase()}
+        `;
+      },
     },
 
     // -----------------------------------------------------------------------
@@ -1172,11 +1192,18 @@ function repositories(exec: Executor) {
     // Sessions
     // -----------------------------------------------------------------------
     sessions: {
+      /**
+       * Records a session. Takes the digest, never the token.
+       *
+       * The raw token exists in `createSession`, in the response to the sign-in
+       * that minted it, and nowhere else — see the migration that renamed this
+       * column for why.
+       */
       async insert(session: StoredSession): Promise<StoredSession> {
         const rows = await exec<SessionRow[]>`
-          insert into sessions (token, kind, subject, created_at, expires_at)
+          insert into sessions (token_hash, kind, subject, created_at, expires_at)
           values (
-            ${session.token}, ${session.kind}, ${session.subject},
+            ${session.tokenHash}, ${session.kind}, ${session.subject},
             ${session.createdAt}, ${session.expiresAt}
           )
           returning *
@@ -1188,16 +1215,16 @@ function repositories(exec: Executor) {
        * The live session behind a token. Expired ones are deleted on sight and
        * reported as absent, so the sweep costs nothing on its own schedule.
        */
-      async findLive(token: string, kind: SessionKind): Promise<StoredSession | null> {
+      async findLive(tokenHash: string, kind: SessionKind): Promise<StoredSession | null> {
         const rows = await exec<SessionRow[]>`
           select * from sessions
-          where token = ${token} and kind = ${kind} and expires_at > now()
+          where token_hash = ${tokenHash} and kind = ${kind} and expires_at > now()
         `;
         return rows[0] ? toSession(rows[0]) : null;
       },
 
-      async revoke(token: string): Promise<void> {
-        await exec`delete from sessions where token = ${token}`;
+      async revoke(tokenHash: string): Promise<void> {
+        await exec`delete from sessions where token_hash = ${tokenHash}`;
       },
 
       /**

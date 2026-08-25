@@ -30,4 +30,7 @@ export * from './reschedule';
 export * from './operations';
 export * from './tax';
 export * from './promotions';
+export * from './payments';
+export * from './passwords';
+export * from './uploads';
 export * from './recurring';

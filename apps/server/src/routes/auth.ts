@@ -4,13 +4,20 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
-import { Router } from 'express';
-import { PHONE_LENGTH_MESSAGE, isCompletePhone, phoneDigits } from '@freshfold/core';
+import { Router, type RequestHandler } from 'express';
+import {
+  MIN_PASSWORD_LENGTH,
+  PHONE_LENGTH_MESSAGE,
+  isCompletePhone,
+  passwordProblem,
+  phoneDigits,
+  phoneKey,
+} from '@freshfold/core';
 import { bearerToken, createSession, requireAuth, revokeSession } from '../auth';
 import { passwordResetMail, sendMail, verificationMail, type Mail } from '../email';
 import { settleAccountByEmail } from '../membership';
-import { hashPassword, sanitize, verifyPassword } from '../passwords';
-import { credentialLimit } from '../rateLimit';
+import { hashPassword, needsRehash, sanitize, verifyPassword } from '../passwords';
+import { credentialLimit, rateLimit } from '../rateLimit';
 import {
   EMAIL_SHAPE,
   findSetupToken,
@@ -19,6 +26,7 @@ import {
 } from '../setup-links';
 import { store, type StoredAccount } from '../store';
 import { accountBlocked, bookingView, guard } from '../helpers';
+import { cspNonce } from '../headers';
 
 /**
  * Sign-up and sign-in.
@@ -29,8 +37,6 @@ import { accountBlocked, bookingView, guard } from '../helpers';
  * only thing that crosses the wire is the attempt and a yes/no.
  */
 export const authRouter = Router();
-
-const MIN_PASSWORD_LENGTH = 5;
 
 /** How long a confirmation link stays good for. */
 const VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -95,8 +101,76 @@ async function mintVerification(account: StoredAccount): Promise<Mail> {
   return verificationMail(account.email, account.name, link);
 }
 
+/**
+ * The ceiling on creating accounts.
+ *
+ * This route had no limit at all, and the note by `/login` explaining the
+ * omission — "`/register` creates rather than guesses" — was true about
+ * guessing and wrong about cost. Three things a caller got for free here:
+ *
+ *  - **Mail to somebody else's inbox.** Registering an address sends it a
+ *    FreshFold confirmation from a verified sender. Repeat it and FreshFold is
+ *    the one delivering the flood. The 60-second cooldown guards
+ *    `/resend-verification`, which is a different route.
+ *  - **The month's sending quota.** A few thousand of these empties the Brevo
+ *    allowance, after which real confirmations and real reset links stop
+ *    arriving — silently, because the send happens after the response and is
+ *    only logged.
+ *  - **A membership oracle.** The 409 below distinguishes an address that
+ *    exists from one that does not, at whatever rate somebody cares to ask.
+ *    `/login` and `/forgot` both work hard to avoid saying exactly this.
+ *
+ * And a fourth that is not about email: every attempt runs a blocking
+ * `scryptSync` before it looks anything up, so an unbounded register is an
+ * unbounded way to occupy the event loop of a single-process server.
+ *
+ * Three buckets, because there are three things worth counting separately.
+ * `credentialLimit` supplies the first two — one address (stops a flood aimed
+ * at one inbox) and one caller (stops a walk across many). The phone bucket is
+ * the third, and it is here because the 409 fires on *either* identifier: a
+ * caller with a fresh email each time and a target's number in the box is
+ * enumerating phone numbers, and the email bucket never fills.
+ *
+ * An hour rather than the sign-in routes' quarter of one, and three rather than
+ * fifteen: registering is something a person does once. Somebody who mistypes
+ * their address, corrects it, and hits a duplicate-phone conflict has used
+ * three, which is the honest worst case for a real customer and the reason it
+ * is not two.
+ */
+const REGISTER_WINDOW_MS = 60 * 60 * 1000;
+
+const REGISTER_LIMIT_MESSAGE =
+  'Too many sign-up attempts from here. Try again in an hour, or sign in if you already have an account.';
+
+const registerLimit: RequestHandler[] = [
+  ...credentialLimit({
+    perIdentifier: 3,
+    perAddress: 10,
+    windowMs: REGISTER_WINDOW_MS,
+    field: 'email',
+    message: REGISTER_LIMIT_MESSAGE,
+  }),
+  rateLimit({
+    max: 3,
+    windowMs: REGISTER_WINDOW_MS,
+    message: REGISTER_LIMIT_MESSAGE,
+    // Keyed on the comparable part of the number, the same nine digits
+    // `phone_key` is generated from, so `0244 000 000`, `+233244000000` and
+    // `244000000` share one bucket rather than buying three. A body with no
+    // usable number returns null and skips this limiter; the route refuses it a
+    // few lines later for not being a whole number.
+    key: (req) => {
+      const phone = (req.body as { phone?: unknown } | undefined)?.phone;
+      if (typeof phone !== 'string') return null;
+      const key = phoneKey(phone);
+      return key.length === 9 ? `phone:${key}` : null;
+    },
+  }),
+];
+
 authRouter.post(
   '/register',
+  ...registerLimit,
   guard(async (req, res) => {
     const { email, phone, name, password } = req.body as {
       email?: string;
@@ -109,10 +183,13 @@ authRouter.post(
       res.status(400).json({ error: 'Email, phone and password are all required.' });
       return;
     }
-    if (password.length < MIN_PASSWORD_LENGTH) {
-      res
-        .status(400)
-        .json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
+    // Length *and* the common-password list, from `@freshfold/core` so the two
+    // apps refuse the same passwords this does rather than each keeping their
+    // own idea of the rule — which is how the website came to accept five
+    // characters while the customer app insisted on six.
+    const weak = passwordProblem(password);
+    if (weak) {
+      res.status(400).json({ error: weak, reason: 'weak-password' });
       return;
     }
     if (!isCompletePhone(phone)) {
@@ -120,7 +197,7 @@ authRouter.post(
       return;
     }
 
-    const { salt, hash } = hashPassword(password);
+    const { salt, hash } = await hashPassword(password);
 
     const outcome = await store.tx(async (t) => {
       const existing = await t.accounts.findByEmailOrPhone(email, phone);
@@ -431,13 +508,14 @@ authRouter.get(
         .send(
           resetPage(
             null,
-            'That link has expired or has already been used. Ask for a new one from the app.'
+            'That link has expired or has already been used. Ask for a new one from the app.',
+            cspNonce(res)
           )
         );
       return;
     }
 
-    res.type('html').send(resetPage(token, ''));
+    res.type('html').send(resetPage(token, '', cspNonce(res)));
   })
 );
 
@@ -458,15 +536,18 @@ authRouter.post(
       res.status(400).json({ error: 'A reset link and a new password are both required.' });
       return;
     }
-    if (password.length < MIN_PASSWORD_LENGTH) {
-      res
-        .status(400)
-        .json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
+    // Length *and* the common-password list, from `@freshfold/core` so the two
+    // apps refuse the same passwords this does rather than each keeping their
+    // own idea of the rule — which is how the website came to accept five
+    // characters while the customer app insisted on six.
+    const weak = passwordProblem(password);
+    if (weak) {
+      res.status(400).json({ error: weak, reason: 'weak-password' });
       return;
     }
 
     const hash = createHash('sha256').update(token).digest('hex');
-    const { salt, hash: passwordHash } = hashPassword(password);
+    const { salt, hash: passwordHash } = await hashPassword(password);
 
     const account = await store.tx(async (t) => {
       // Re-read inside the transaction: two tabs submitting the same link
@@ -512,7 +593,7 @@ authRouter.post(
  * framework, no assets, nothing to load from a third party into a page that is
  * about to hold somebody's new password.
  */
-function resetPage(token: string | null, message: string): string {
+function resetPage(token: string | null, message: string, nonce: string): string {
   const home = (process.env.APP_URL || '').replace(/\/$/, '');
   const accent = token ? '#7d8b7f' : '#b4472f';
 
@@ -536,7 +617,7 @@ function resetPage(token: string | null, message: string): string {
         Set new password
       </button>
     </form>
-    <script>
+    <script nonce="${nonce}">
       (function () {
         var form = document.getElementById('form');
         var error = document.getElementById('error');
@@ -664,9 +745,20 @@ authRouter.post(
 
     const account = await store.accounts.findByIdentifier(identifier);
 
-    // One message for "no such account" and "wrong password" alike, so this
-    // endpoint can't be used to enumerate who has an account.
-    if (!account || !verifyPassword(password, account)) {
+    /**
+     * One message for "no such account" and "wrong password" alike, so this
+     * endpoint can't be used to enumerate who has an account.
+     *
+     * `verifyPassword` is called even when there is no account, and the missing
+     * `!account ||` short-circuit is the point rather than an omission: it used
+     * to skip the hash entirely, so an unknown address answered in about a
+     * millisecond while a real one paid the full scrypt cost. The message was
+     * identical and the clock was not. `verifyPassword` now burns the same time
+     * against a dummy credential — see the note beside it — so the two branches
+     * cost the same and the wording is doing what it claims.
+     */
+    const credentialsMatch = await verifyPassword(password, account);
+    if (!account || !credentialsMatch) {
       res.status(401).json({ error: 'No matching patron credentials found.' });
       return;
     }
@@ -677,6 +769,21 @@ authRouter.post(
     if (account.blockedAt) {
       accountBlocked(res);
       return;
+    }
+
+    if (needsRehash(account.passwordHash)) {
+      /**
+       * Upgrade the stored hash, if it was made under weaker parameters.
+       *
+       * This is the only moment the plain secret is in hand to re-derive from, so
+       * it is the only moment the cost can be raised without asking anybody to
+       * change anything. Deliberately not awaited and deliberately not fatal — a
+       * failed upgrade must not fail the sign-in that triggered it, and the next
+       * sign-in will try again.
+       */
+      void hashPassword(password)
+        .then((upgraded) => store.accounts.setPassword(account.email, upgraded))
+        .catch((error: unknown) => console.error('[auth] password re-hash failed:', error));
     }
 
     const session = await createSession('customer', account.email);
@@ -784,14 +891,17 @@ authRouter.post(
       res.status(400).json({ error: 'A setup link and a password are both required.' });
       return;
     }
-    if (password.length < MIN_PASSWORD_LENGTH) {
-      res
-        .status(400)
-        .json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
+    // Length *and* the common-password list, from `@freshfold/core` so the two
+    // apps refuse the same passwords this does rather than each keeping their
+    // own idea of the rule — which is how the website came to accept five
+    // characters while the customer app insisted on six.
+    const weak = passwordProblem(password);
+    if (weak) {
+      res.status(400).json({ error: weak, reason: 'weak-password' });
       return;
     }
 
-    const { salt, hash } = hashPassword(password);
+    const { salt, hash } = await hashPassword(password);
 
     const outcome = await store.tx(async (t) => {
       // Spent on the transaction's own connection, not the pool's: the delete

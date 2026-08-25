@@ -5,8 +5,9 @@
 
 import { Router } from 'express';
 import {
-  CLAIM_KINDS,
   canMoveClaim,
+  CLAIM_KINDS,
+  imageProblem,
   isClaimClosed,
   type Claim,
   type ClaimStatus,
@@ -104,6 +105,21 @@ claimsRouter.post(
       description?: string;
       photo?: string;
     };
+
+    /**
+     * Same check the hand-off proof gets, for the same reason: this is the
+     * other field that takes a base64 image from a phone.
+     *
+     * Before the lookup, like the orders route does it. Whether a photograph is
+     * four megabytes is a property of the request rather than of the job, so
+     * there is nothing to learn from the database first — and a body that
+     * cannot be accepted should not cost a round trip to find that out.
+     */
+    const badPhoto = imageProblem(photo, 'photo');
+    if (badPhoto) {
+      res.status(413).json({ error: badPhoto, reason: 'photo-rejected' });
+      return;
+    }
 
     const job = await store.jobs.find(req.params.jobId);
     if (!job) {

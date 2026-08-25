@@ -32,7 +32,7 @@ const PIN_DIGITS = 4;
  */
 export default function ChangePinScreen() {
   const router = useRouter();
-  const { rider, token, applyRider } = useSession();
+  const { rider, token, applyRider, adoptToken } = useSession();
 
   const [currentPin, setCurrentPin] = useState('');
   const [newPin, setNewPin] = useState('');
@@ -62,7 +62,18 @@ export default function ChangePinScreen() {
     setBusy(true);
 
     try {
-      await api.changeRiderPin({ currentPin, newPin }, token);
+      const { token: replacement } = await api.changeRiderPin({ currentPin, newPin }, token);
+
+      /**
+       * Adopt the replacement before anything else uses the old one.
+       *
+       * Changing a PIN revokes every session signed in on it — that is what
+       * makes the change mean something to a courier who was watched keying the
+       * old one in — and this device's session goes with them. The route hands
+       * back a fresh token for exactly this; without adopting it the next
+       * request 401s on the phone of somebody who has just done the right thing.
+       */
+      await adoptToken(replacement);
 
       // The server has cleared the flag; mirror it locally so the gate opens
       // without waiting for the next poll.
@@ -83,7 +94,7 @@ export default function ChangePinScreen() {
     } finally {
       setBusy(false);
     }
-  }, [currentPin, newPin, confirmPin, token, rider, applyRider, router]);
+  }, [currentPin, newPin, confirmPin, token, rider, applyRider, adoptToken, router]);
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>

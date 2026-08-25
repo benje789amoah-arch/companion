@@ -69,6 +69,13 @@ services:
       # The Vercel origin, so the customer app and any Expo web build can call
       # this cross-origin. The website itself does not need to be listed — its
       # /api calls are proxied by Vercel server-side and arrive same-origin.
+      #
+      # It is also the allow-list for where Paystack may return a customer after
+      # checkout, so the public site's origin belongs here even though CORS does
+      # not strictly need it. APP_URL's origin is always allowed on top. A
+      # callback outside both is refused with `callback-not-allowed` rather than
+      # quietly redirected, so a missing entry fails loudly in test rather than
+      # silently in front of a paying customer.
       - key: CORS_ORIGINS
         sync: false
 

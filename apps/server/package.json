@@ -2,7 +2,7 @@
   "name": "@freshfold/server",
   "version": "1.0.0",
   "private": true,
-  "description": "FreshFold dispatch server — the single source of truth shared by the customer website and the rider app.",
+  "description": "FreshFold dispatch server \u2014 the single source of truth shared by the customer website and the rider app.",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
@@ -12,7 +12,8 @@
     "serve": "npm run build && node dist/server.mjs",
     "db:migrate": "tsx src/migrate.ts",
     "import:json": "tsx src/import-json.ts",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "check": "tsx src/schema.check.ts && tsx src/headers.check.ts && tsx src/credentials.check.ts && tsx src/auth.check.ts && tsx src/uploads.check.ts && tsx src/payments.check.ts"
   },
   "dependencies": {
     "@freshfold/core": "*",

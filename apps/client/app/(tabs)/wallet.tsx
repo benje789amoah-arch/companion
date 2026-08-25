@@ -266,8 +266,12 @@ export default function WalletScreen() {
         // `paystack-success` route.
         callback_url: Linking.createURL('paystack-success', { queryParams: { flow: 'wallet' } }),
         // The server refuses to credit a wallet from a reference that was not
-        // marked as a top-up, so a booking payment cannot be replayed here.
-        metadata: { type: 'wallet_topup', customer_name: account?.name ?? 'Patron' },
+        // opened as a top-up, so a booking payment cannot be replayed here.
+        // A top-up names no booking and now cannot: the server writes
+        // `booking_id` only for `purpose: 'booking'`, so this reference can
+        // never also be spent settling an order.
+        purpose: 'wallet_topup',
+        display: { customer_name: account?.name ?? 'Patron' },
       });
     } catch (err) {
       setBusy(false);

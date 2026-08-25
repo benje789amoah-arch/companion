@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Job, Message, Notification, PaymentTransaction } from '@freshfold/core';
+import { hashToken } from './auth';
 import { closeDatabase } from './db';
 import {
   store,
@@ -86,10 +87,23 @@ async function main(): Promise<void> {
   const droppedMessages = (data.messages ?? []).length - keptMessages.length;
   const droppedNotifications = (data.notifications ?? []).length - keptNotifications.length;
 
-  // Expired tokens are not worth carrying over — everyone holding one has to
-  // sign in again either way.
+  /**
+   * Expired tokens are not worth carrying over — everyone holding one has to
+   * sign in again either way.
+   *
+   * The dump predates sessions being stored as digests, so its rows carry the
+   * raw token under `token`. Hashing it here is what keeps a still-valid
+   * session working across the import: it produces exactly the digest the
+   * server computes when that same token next arrives in a header. A dump
+   * written since the change already holds the digest, and is passed through.
+   */
   const now = Date.now();
-  const liveSessions = sessions.filter((s) => Date.parse(s.expiresAt) > now);
+  const liveSessions = sessions
+    .filter((session) => Date.parse(session.expiresAt) > now)
+    .map((session) => {
+      const legacy = (session as StoredSession & { token?: string }).token;
+      return legacy ? { ...session, tokenHash: hashToken(legacy) } : session;
+    });
 
   console.log(`[import] reading ${source}`);
 

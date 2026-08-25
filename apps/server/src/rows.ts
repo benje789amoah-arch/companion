@@ -146,7 +146,14 @@ export interface SupervisorProfile {
 export type SessionKind = 'customer' | 'rider' | 'admin';
 
 export interface StoredSession {
-  token: string;
+  /**
+   * SHA-256 of the bearer token, hex.
+   *
+   * Named for what it holds. The token itself is handed to the client once, by
+   * the sign-in that minted it, and is not recoverable from here — which is the
+   * whole point, and is why this is not called `token`.
+   */
+  tokenHash: string;
   kind: SessionKind;
   /** Email for a customer or supervisor, rider id for a courier. */
   subject: string;
@@ -321,7 +328,7 @@ export interface AuditEventRow {
 }
 
 export interface SessionRow {
-  token: string;
+  token_hash: string;
   kind: SessionKind;
   subject: string;
   created_at: string;
@@ -519,7 +526,7 @@ export function toAuditEvent(row: AuditEventRow): AuditEvent {
 
 export function toSession(row: SessionRow): StoredSession {
   return {
-    token: row.token,
+    tokenHash: row.token_hash,
     kind: row.kind,
     subject: row.subject,
     createdAt: row.created_at,

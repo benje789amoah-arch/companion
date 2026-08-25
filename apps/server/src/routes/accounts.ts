@@ -11,6 +11,7 @@ import {
   isCompletePhone,
   isTerminal,
   normaliseAddresses,
+  paymentPurpose,
   phoneDigits,
   type PaymentTransaction,
   type UserAccount,
@@ -22,7 +23,7 @@ import { cancel, resume, settleAccountByEmail, subscribe } from '../membership';
 import { sanitize } from '../passwords';
 import { store, type StoredAccount } from '../store';
 import { charge, redeem, topUp, type WalletOutcome } from '../wallet';
-import { verifyPaystackTransaction } from './integrations';
+import { TOPUP_PURPOSE, verifyPaystackTransaction } from './integrations';
 import { guard, notFound } from '../helpers';
 
 /**
@@ -526,7 +527,13 @@ accountsRouter.post(
         // A booking's payment is for the booking. Without this, a customer
         // could pay for a wash and then replay the same reference here to put
         // its value in the wallet as well.
-        if (payment.metadata?.type !== 'wallet_topup') {
+        //
+        // The purpose is written by `/paystack/initialize` from a fixed list
+        // and is no longer the caller's to compose — which is what makes this
+        // gate and the booking route's mutually exclusive rather than merely
+        // different. See `@freshfold/core`'s `payments` module for what the two
+        // of them used to allow between them.
+        if (paymentPurpose(payment.metadata) !== TOPUP_PURPOSE) {
           res.status(400).json({
             error: 'That payment was not a wallet top-up.',
             reason: 'not-a-topup',

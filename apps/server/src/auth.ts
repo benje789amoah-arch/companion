@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { Request } from 'express';
 import { guard } from './helpers';
 import {
@@ -27,22 +27,72 @@ import {
  * once rather than duplicated per audience.
  */
 
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** The digest a session is stored and looked up under. */
+export function hashToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+/**
+ * How long a session lives, by who is holding it.
+ *
+ * A week is right for the two credentials that live on a phone. A courier signs
+ * in at the start of a shift and must not be asked again at a doorstep in the
+ * rain; a customer opens the app fortnightly and being signed out each time is
+ * the reason people stop opening an app.
+ *
+ * The desk is not that, and giving it the same week was the default rather than
+ * a decision. Its token reads every customer's address and phone number,
+ * settles any bill, refunds to any wallet and deactivates any courier — it is
+ * the most valuable credential in the system by a distance, and the browser it
+ * sits in is a shared machine on a counter. Twelve hours covers the longest
+ * shift anyone works and expires before the next one starts, which is the
+ * property worth having: a desk left signed in overnight is signed out by
+ * morning without anybody remembering to do it.
+ *
+ * This bounds the damage rather than preventing it — see the note in the web
+ * app's `readAdminToken`, and FF-03 in the security review, for the part that a
+ * shorter clock does not fix.
+ */
+const SESSION_TTL_MS: Record<SessionKind, number> = {
+  customer: 7 * 24 * 60 * 60 * 1000,
+  rider: 7 * 24 * 60 * 60 * 1000,
+  admin: 12 * 60 * 60 * 1000,
+};
+
+/**
+ * What a sign-in gets back: the token to send, and when it stops working.
+ *
+ * Not a `StoredSession`, because a `StoredSession` no longer contains a token —
+ * only its digest. This is the one place the raw value exists on this side of
+ * the wire, and returning a distinct type is what stops a route reaching for a
+ * `.token` that is really a hash.
+ */
+export interface MintedSession {
+  token: string;
+  expiresAt: string;
+}
 
 export async function createSession(
   kind: SessionKind,
   subject: string
-): Promise<StoredSession> {
+): Promise<MintedSession> {
   const now = Date.now();
+
+  // The token goes to the client; only its digest is written down. SHA-256
+  // rather than a KDF: this is 32 bytes of `randomBytes`, so there is no
+  // low-entropy secret to slow an attacker around, and a per-request KDF would
+  // make every authenticated call pay for protection it does not need.
+  const token = randomBytes(32).toString('hex');
+
   const session: StoredSession = {
-    token: randomBytes(32).toString('hex'),
+    tokenHash: hashToken(token),
     kind,
     subject: kind === 'rider' ? subject : subject.toLowerCase(),
     createdAt: new Date(now).toISOString(),
-    expiresAt: new Date(now + SESSION_TTL_MS).toISOString(),
+    expiresAt: new Date(now + SESSION_TTL_MS[kind]).toISOString(),
   };
 
-  const stored = await store.sessions.insert(session);
+  await store.sessions.insert(session);
 
   // Clear expired tokens while we're here — this is the only place sessions
   // accumulate, so it is the natural moment to sweep. Deliberately not awaited
@@ -52,11 +102,11 @@ export async function createSession(
     console.error('[auth] session sweep failed:', error);
   });
 
-  return stored;
+  return { token, expiresAt: session.expiresAt };
 }
 
 export async function revokeSession(token: string): Promise<void> {
-  await store.sessions.revoke(token);
+  await store.sessions.revoke(hashToken(token));
 }
 
 export function bearerToken(req: Request): string | null {
@@ -71,7 +121,7 @@ async function sessionForToken(
   kind: SessionKind
 ): Promise<StoredSession | null> {
   if (!token) return null;
-  return store.sessions.findLive(token, kind);
+  return store.sessions.findLive(hashToken(token), kind);
 }
 
 /**

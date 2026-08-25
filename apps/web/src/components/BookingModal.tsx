@@ -295,11 +295,18 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
           // origin; the server's APP_URL is a single fixed guess that is wrong
           // for everyone not running the site on the machine it names.
           callback_url: `${window.location.origin}/#paystack-success`,
-          metadata: {
-            // What binds this payment to this booking. The server refuses to
-            // settle a bill with a reference that names a different one, so
-            // without this the payment cannot be applied at all.
-            booking_id: bookingId,
+          // What this payment is for. The server writes Paystack's metadata
+          // from these two fields rather than taking an object from here — a
+          // checkout that named itself both a top-up and a booking payment
+          // used to satisfy both settlement routes, so one payment settled the
+          // bill *and* funded the wallet.
+          purpose: 'booking',
+          // What binds this payment to this booking. The server refuses to
+          // settle a bill with a reference that names a different one, so
+          // without this the payment cannot be applied at all.
+          bookingId,
+          // Dashboard-only. Nothing is gated on anything in here.
+          display: {
             customer_name: name || 'Patron',
             phone: phone,
             service: service,

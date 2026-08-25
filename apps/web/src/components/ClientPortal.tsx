@@ -4,6 +4,7 @@ import { Booking, UserAccount } from '../types';
 import * as store from '../services/store';
 import { displayAmount } from '../services/amount';
 import {
+  passwordProblem,
   ADDRESS_LIMIT_MESSAGE,
   ApiError,
   BOOKING_STAGE_SEQUENCE,
@@ -226,8 +227,12 @@ export default function ClientPortal({
         body: JSON.stringify({
           email: userEmail,
           amount: displayAmount(payModalBooking),
-          metadata: {
-            booking_id: payModalBooking.id,
+          // See the note on the booking form's copy of this call: the server
+          // builds Paystack's metadata from `purpose` and `bookingId`, so a
+          // checkout cannot claim to be two kinds of payment at once.
+          purpose: 'booking',
+          bookingId: payModalBooking.id,
+          display: {
             customer_name: currentUser?.name || payModalBooking.name,
           }
         })
@@ -303,8 +308,11 @@ export default function ClientPortal({
         body: JSON.stringify({
           email: userEmail,
           amount: amt,
-          metadata: {
-            type: 'wallet_topup',
+          // A top-up names no booking, and now cannot: the server writes
+          // `booking_id` only for `purpose: 'booking'`, so this reference can
+          // never also be spent settling an order.
+          purpose: 'wallet_topup',
+          display: {
             customer_name: currentUser?.name || 'Patron',
           }
         })
@@ -711,8 +719,12 @@ export default function ClientPortal({
       return;
     }
 
-    if (setupPassword.length < 5) {
-      setSetupError('Password must be at least 5 characters for luxury grade protection.');
+    // The shared rule, so this form refuses exactly what the server refuses.
+    // It used to carry its own copy — five characters, with its own sentence —
+    // while the server said five and the customer app said six.
+    const weak = passwordProblem(setupPassword);
+    if (weak) {
+      setSetupError(weak);
       return;
     }
 

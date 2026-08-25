@@ -49,6 +49,14 @@ interface SessionState {
   signOut: () => Promise<void>;
   /** Locks the console without forgetting who is signed in. */
   lock: () => void;
+  /**
+   * Adopts a token the server has just issued in place of the current one.
+   *
+   * Changing a PIN revokes every session on the old one, including this
+   * device's, so the route hands back a replacement. Without this the courier
+   * would be signed out by the act of securing their own account.
+   */
+  adoptToken: (next: string) => Promise<void>;
   /** Local echo of a profile change the store has just written. */
   applyRider: (rider: RiderState) => void;
 }
@@ -154,6 +162,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     return session.rider;
   }, []);
 
+  const adoptToken = useCallback(async (next: string) => {
+    setToken(next);
+    await AsyncStorage.setItem(KEYS.token, next);
+  }, []);
+
   const signOut = useCallback(async () => {
     const current = token;
 
@@ -210,6 +223,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       promptBiometric,
       signIn,
       signOut,
+      adoptToken,
       lock,
       applyRider,
     }),
@@ -224,6 +238,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       promptBiometric,
       signIn,
       signOut,
+      adoptToken,
       lock,
       applyRider,
     ]

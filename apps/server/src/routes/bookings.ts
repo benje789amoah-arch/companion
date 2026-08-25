@@ -27,6 +27,8 @@ import {
   hubForPickup,
   newJobId,
   normalisePromoCode,
+  paymentBookingId,
+  paymentPurpose,
   phoneDigits,
   pickupPinFor,
   quoteBooking,
@@ -43,7 +45,7 @@ import { consumeIncludedPickup, settleAccountByEmail } from '../membership';
 import { mailBookingConfirmation, mailReschedule } from '../setup-links';
 import { store } from '../store';
 import { charge, refund } from '../wallet';
-import { verifyPaystackTransaction } from './integrations';
+import { BOOKING_PURPOSE, verifyPaystackTransaction } from './integrations';
 import { accountBlocked, bookingView, bookingViews, guard, notFound } from '../helpers';
 
 /**
@@ -1282,18 +1284,44 @@ bookingsRouter.post(
       }
 
       /**
-       * The payment has to be for *this* booking, and for enough.
+       * The payment has to have been opened as a payment for *this* booking,
+       * and for enough.
        *
-       * Without the first check a customer could pay for one ₵30 wash and quote
-       * its reference against every other booking they hold — the ledger's
-       * idempotency would then make each one look settled. Without the second, a
-       * ₵5 payment settles a ₵180 office clean.
+       * Three checks, and the first one is newer than the other two. Without the
+       * booking check a customer could pay for one ₵30 wash and quote its
+       * reference against every other booking they hold — the ledger's
+       * idempotency would then make each one look settled. Without the amount
+       * check, a ₵5 payment settles a ₵180 office clean.
        *
-       * `booking_id` is the metadata both checkout paths already send. A payment
-       * that names no booking is not evidence about one.
+       * Those two were not sufficient together, which is what the purpose check
+       * is for. `metadata` used to be forwarded to Paystack straight from the
+       * checkout request, so a customer composed it: an intent carrying both
+       * `type: 'wallet_topup'` and this booking's `booking_id` satisfied the
+       * wallet route's gate *and* this one. Pay ₵200 once, credit ₵200 to the
+       * wallet, then spend the same reference here — and because
+       * `transactions.upsert` conflicts on the reference, this write overwrote
+       * the top-up's ledger row rather than sitting beside it. The statement
+       * afterwards showed a single ₵200 payment against a ₵200 balance that
+       * nothing explained.
+       *
+       * `/paystack/initialize` now writes the purpose itself, from a fixed list,
+       * and writes `booking_id` only on the branch that set it to `booking`. So
+       * the two purposes are mutually exclusive at the point the intent is
+       * created, and this check is what makes that exclusivity load-bearing here
+       * rather than merely true upstream.
        */
-      const paidFor = (payment.metadata as { booking_id?: unknown } | undefined)?.booking_id;
-      if (typeof paidFor !== 'string' || paidFor !== job.id) {
+      if (paymentPurpose(payment.metadata) !== BOOKING_PURPOSE) {
+        res.status(403).json({
+          error: 'That payment was not opened as a payment for a booking.',
+          reason: 'reference-not-for-booking',
+        });
+        return;
+      }
+
+      // `paymentBookingId` answers null unless the purpose is `booking`, so a
+      // top-up carrying a stray `booking_id` — the shape the old format let a
+      // customer compose — names nothing here even if it reached this line.
+      if (paymentBookingId(payment.metadata) !== job.id) {
         res.status(403).json({
           error: 'That payment was not made for this booking.',
           reason: 'reference-not-for-booking',
@@ -1305,6 +1333,30 @@ bookingsRouter.post(
         res.status(402).json({
           error: `That payment covers ₵${payment.amount.toFixed(2)} of ₵${owed.toFixed(2)}.`,
           reason: 'amount-short',
+        });
+        return;
+      }
+
+      /**
+       * One reference settles one thing.
+       *
+       * Belt to the braces above: even with the purpose written server-side, a
+       * reference that is already in the ledger against something else must not
+       * be re-pointed at this booking. `transactions.upsert` conflicts on
+       * `reference` and updates in place, so without this check a second claim
+       * does not fail loudly — it silently rewrites the row the first claim
+       * left, taking the evidence of the double settlement with it.
+       *
+       * A replay of *this* booking's own payment finds its own row and passes,
+       * which is what keeps the route idempotent for the offline queues.
+       */
+      const claimed = await store.transactions.findByReference(reference.trim());
+      if (claimed && claimed.bookingId !== job.id) {
+        res.status(409).json({
+          error: claimed.bookingId
+            ? 'That payment has already been recorded against another order.'
+            : 'That payment has already been recorded against your wallet.',
+          reason: 'reference-already-claimed',
         });
         return;
       }

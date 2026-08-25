@@ -107,10 +107,19 @@ export function credentialLimit(options: {
   windowMs: number;
   /** Which body field names the account: `identifier`, `email`… */
   field: string;
+  /**
+   * What the caller is told, when "sign-in attempts" is the wrong noun.
+   *
+   * `/auth/register` uses the same two buckets for a reason that is not
+   * guessing — see the note there — and telling somebody creating an account
+   * that they have made too many sign-in attempts is a message about a thing
+   * they were not doing.
+   */
+  message?: string;
 }): RequestHandler[] {
-  const wait = `Too many sign-in attempts. Try again in ${Math.round(
-    options.windowMs / 60_000
-  )} minutes.`;
+  const wait =
+    options.message ??
+    `Too many sign-in attempts. Try again in ${Math.round(options.windowMs / 60_000)} minutes.`;
 
   return [
     rateLimit({

@@ -5,7 +5,7 @@
 
 import { Router } from 'express';
 import { bearerToken, createSession, requireSupervisor, revokeSession } from '../auth';
-import { verifySecret } from '../passwords';
+import { hashPassword, needsRehash, verifySecret } from '../passwords';
 import { credentialLimit } from '../rateLimit';
 import { store, type StoredSupervisor, type SupervisorProfile } from '../store';
 import { guard } from '../helpers';
@@ -56,14 +56,15 @@ adminRouter.post(
     const supervisor = await store.supervisors.findByEmail(email);
 
     // One message whether the address is unknown or the password is wrong, so
-    // the response cannot be used to discover who works here.
-    if (
-      !supervisor ||
-      !verifySecret(password, {
-        salt: supervisor.passwordSalt,
-        hash: supervisor.passwordHash,
-      })
-    ) {
+    // the response cannot be used to discover who works here. Checked even when
+    // there is no supervisor, so the two take the same time as well — see the
+    // note on the customer sign-in.
+    const credentialsMatch = await verifySecret(password, {
+      salt: supervisor?.passwordSalt,
+      hash: supervisor?.passwordHash,
+    });
+
+    if (!supervisor || !credentialsMatch) {
       res.status(401).json({ error: 'Those credentials do not match.' });
       return;
     }
@@ -71,6 +72,14 @@ adminRouter.post(
     if (supervisor.active === false) {
       res.status(403).json({ error: 'This supervisor account has been closed.' });
       return;
+    }
+
+    if (needsRehash(supervisor.passwordHash)) {
+      // See the note on the customer sign-in. This is the most valuable
+      // credential in the system, so it is the one most worth upgrading.
+      void hashPassword(password)
+        .then((upgraded) => store.supervisors.setPassword(supervisor.email, upgraded))
+        .catch((error: unknown) => console.error('[admin] password re-hash failed:', error));
     }
 
     const session = await createSession('admin', supervisor.email);

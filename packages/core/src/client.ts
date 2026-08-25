@@ -4,6 +4,7 @@
  */
 
 import type { ActivePlan } from './membership';
+import type { PaystackInitPayload } from './payments';
 import type { PlaceDetail, PlaceSuggestion } from './places';
 import type { RouteLeg } from './route';
 import type {
@@ -75,6 +76,10 @@ export interface PaystackInitResult {
   access_code: string;
   reference: string;
 }
+
+// What a checkout is opened with — `PaystackInitPayload`, and the purpose it
+// declares — lives in `./payments`, beside the builder the server writes the
+// metadata with and the readers both settlement gates use.
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -1037,9 +1042,17 @@ export function createClient(options: ClientOptions) {
         headers: bearer(token),
       }),
 
-    /** Replaces a temporary PIN with one only the courier knows. */
+    /**
+     * Replaces a temporary PIN with one only the courier knows.
+     *
+     * Answers with a **replacement token**, and the caller has to adopt it.
+     * Changing a PIN revokes every session that was signed in on the old one —
+     * which is the point of changing it, and includes the one making this call.
+     * Keeping the old token would mean the next request 401ing on a phone whose
+     * owner had just done the right thing.
+     */
     changeRiderPin: (payload: { currentPin: string; newPin: string }, token: string) =>
-      request<{ ok: true }>('/riders/change-pin', {
+      request<{ ok: true; token: string }>('/riders/change-pin', {
         ...json('POST', payload),
         headers: bearer(token),
       }),
@@ -1367,12 +1380,8 @@ export function createClient(options: ClientOptions) {
     chat: (history: ChatMessage[]) =>
       request<{ reply: string }>('/chat', json('POST', { history })),
 
-    initializePayment: (payload: {
-      email: string;
-      amount: number;
-      metadata?: Record<string, unknown>;
-      callback_url?: string;
-    }) => request<PaystackInitResult>('/paystack/initialize', json('POST', payload)),
+    initializePayment: (payload: PaystackInitPayload) =>
+      request<PaystackInitResult>('/paystack/initialize', json('POST', payload)),
 
     verifyPayment: (reference: string) =>
       request<{ status: boolean; data: Record<string, unknown> }>(

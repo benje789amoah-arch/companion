@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { randomBytes } from 'node:crypto';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import {
   jobToBooking,
@@ -111,16 +112,54 @@ export function accountBlocked(res: Response): Response {
   return res.status(403).json({ error: ACCOUNT_BLOCKED_MESSAGE, code: ACCOUNT_BLOCKED_CODE });
 }
 
-/** Wraps an async handler so a rejected promise becomes a 500 instead of a hang. */
+/**
+ * Wraps an async handler so a rejected promise becomes a 500 instead of a hang.
+ *
+ * ---
+ *
+ * **What comes back, and what does not.**
+ *
+ * This used to answer with `error.message` verbatim. Because it is the wrapper
+ * on every async route in the product, that made one malformed request against
+ * any of them a way to read the schema: a `postgres.js` error names the table,
+ * the column, the constraint and often the offending value, and a failed
+ * `fetch` names the upstream host. None of that is useful to a caller and all
+ * of it is useful to somebody mapping the place out.
+ *
+ * So a 500 now carries a fixed sentence and a `reference` — eight hex
+ * characters, logged beside the real error. A customer reporting "it said
+ * something went wrong, reference 3f9a1c04" gives the desk something to grep
+ * for, which is more than the raw message ever gave them: `duplicate key value
+ * violates unique constraint "accounts_email_lower_idx"` is not a sentence
+ * anybody reads out over the phone.
+ *
+ * Outside production the message is included as well. Losing it there would
+ * mean every development 500 requiring a trip to the server log, which is the
+ * kind of friction that gets a security control reverted.
+ *
+ * Note what this does *not* touch: the deliberate 4xx bodies every route writes
+ * for itself. `insufficient-funds`, `reference-not-for-booking`,
+ * `ACCOUNT_BLOCKED` and the rest are answers, not leaks, and they are written
+ * by the route rather than caught here.
+ */
 export function guard(
   handler: (req: Request, res: Response, next: NextFunction) => Promise<unknown>
 ): RequestHandler {
   return (req, res, next) => {
     handler(req, res, next).catch((error: unknown) => {
-      console.error('[api] unhandled error:', error);
+      const reference = randomBytes(4).toString('hex');
+
+      // The method and path go in the log line: an id is only useful if the
+      // entry it points at says what was being attempted.
+      console.error(`[api] unhandled error ${reference} on ${req.method} ${req.originalUrl}:`, error);
+
       if (!res.headersSent) {
         res.status(500).json({
-          error: error instanceof Error ? error.message : 'Internal server error',
+          error: 'Something went wrong on our end. Please try again.',
+          reference,
+          ...(process.env.NODE_ENV === 'production'
+            ? {}
+            : { detail: error instanceof Error ? error.message : String(error) }),
         });
       }
     });

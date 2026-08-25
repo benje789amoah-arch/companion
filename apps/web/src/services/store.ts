@@ -1093,13 +1093,53 @@ export function clearCurrentUser(): void {
  * A browser can legitimately be both — a supervisor who is also a customer —
  * so the two tokens live under different keys rather than overwriting each
  * other. `kind` on the server keeps them from being used interchangeably.
+ *
+ * ---
+ *
+ * **Why this one is in `sessionStorage` and the customer's is not.**
+ *
+ * `sessionStorage` is scoped to the tab: it does not survive the tab closing,
+ * and a second tab starts without it. For a customer that would be wrong — the
+ * whole point of staying signed in is not signing in again — but the desk is a
+ * different thing. It is a shared machine on a counter, and this token reads
+ * every customer's address and phone number, settles any bill, refunds to any
+ * wallet and deactivates any courier. Closing the tab should end that, and now
+ * does; the server gives it twelve hours rather than a week on top.
+ *
+ * What this does **not** fix, stated plainly rather than left to be discovered:
+ * `sessionStorage` is still readable by any script running on this origin, so
+ * it is a smaller window rather than a closed door. The control that actually
+ * governs that risk is the Content-Security-Policy — see
+ * `apps/server/src/headers.ts` and the `headers` block in `vercel.json`, which
+ * refuse inline script and every script host but our own.
+ *
+ * Moving this to an `HttpOnly` cookie is the real fix and is deliberately not
+ * done here: the desk token is sent as a bearer to `/api/bookings`,
+ * `/api/accounts` and `/api/messages` as well as to `/api/admin/*`, so a cookie
+ * would have to be accepted across the whole API and would put CSRF on every
+ * write in the product. That is a change worth making on its own, with its own
+ * review, not as a rider on this one.
  */
 export function readAdminToken(): string | null {
-  return localStorage.getItem(KEYS.adminToken);
+  return sessionStorage.getItem(KEYS.adminToken);
 }
 
 export function readAdminSupervisor(): SupervisorProfile | null {
-  return readLocal<SupervisorProfile | null>(KEYS.adminSupervisor, null);
+  try {
+    const raw = sessionStorage.getItem(KEYS.adminSupervisor);
+    return raw ? (JSON.parse(raw) as SupervisorProfile) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The profile beside the token, and in the same tab-scoped place. */
+function writeAdminSupervisor(supervisor: SupervisorProfile): void {
+  try {
+    sessionStorage.setItem(KEYS.adminSupervisor, JSON.stringify(supervisor));
+  } catch {
+    /* see writeLocal */
+  }
 }
 
 export async function adminLogin(
@@ -1109,11 +1149,11 @@ export async function adminLogin(
   const session = await api.adminLogin({ email, password });
 
   try {
-    localStorage.setItem(KEYS.adminToken, session.token);
+    sessionStorage.setItem(KEYS.adminToken, session.token);
   } catch {
     /* see writeLocal */
   }
-  writeLocal(KEYS.adminSupervisor, session.supervisor);
+  writeAdminSupervisor(session.supervisor);
 
   return session.supervisor;
 }
@@ -1130,7 +1170,7 @@ export async function restoreAdminSession(): Promise<SupervisorProfile | null> {
 
   try {
     const supervisor = await api.adminMe(token);
-    writeLocal(KEYS.adminSupervisor, supervisor);
+    writeAdminSupervisor(supervisor);
     return supervisor;
   } catch {
     clearAdminSession();
@@ -1151,6 +1191,13 @@ export async function adminLogout(): Promise<void> {
 }
 
 export function clearAdminSession(): void {
+  sessionStorage.removeItem(KEYS.adminToken);
+  sessionStorage.removeItem(KEYS.adminSupervisor);
+
+  // Sessions written by an earlier build of this app, before the desk moved to
+  // tab-scoped storage. Cleared on the way past so a token cannot outlive the
+  // sign-out that was supposed to end it — a browser that has been open since
+  // before this change still has one sitting there.
   localStorage.removeItem(KEYS.adminToken);
   localStorage.removeItem(KEYS.adminSupervisor);
 }
