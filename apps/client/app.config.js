@@ -91,6 +91,15 @@ module.exports = {
       },
     ],
   ],
+  // The EAS project this app builds under. `eas init` created
+  // @ben-arch/freshfold-client but could not write the id back: it will not
+  // edit a dynamic config it cannot safely parse, and says so rather than
+  // guessing. Pasted by hand instead, which is what that message asks for.
+  extra: {
+    eas: {
+      projectId: '18b10d74-5701-4db1-8dbd-4a2dcc559d63',
+    },
+  },
   experiments: {
     typedRoutes: true,
   },
