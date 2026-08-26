@@ -75,7 +75,9 @@ Render reads [`render.yaml`](render.yaml) from the repo root.
      empty database fails without it**, on purpose: that account can read every
      customer's address and phone number and settle any bill, and it will not be
      created with a default password. Read only while the `supervisors` table is
-     empty, so later deploys ignore it. Nothing else is seeded in production —
+     empty, so later deploys ignore it — including a deploy against a database
+     you already seeded in development, which is a trap of its own and has a
+     section of its own below. Nothing else is seeded in production —
      couriers are hired from the desk and customers register themselves.
    - `BREVO_API_KEY`, `RESEND_API_KEY`, `EMAIL_FROM` — leave these until step 4.
    - `GEMINI_API_KEY`, `PAYSTACK_SECRET_KEY`, `GOOGLE_MAPS_PLATFORM_KEY`.
@@ -103,6 +105,46 @@ Render reads [`render.yaml`](render.yaml) from the repo root.
 
    `{"ok":true,...}` means the process is up *and* Postgres is reachable. A 503
    means the process is up and the database is not — check `DATABASE_URL`.
+
+### If you developed against this same database
+
+`SEED_SUPERVISOR_PASSWORD` is read *only* when the `supervisors` table is empty.
+That check is what makes the variable safe to add to a running deployment — but
+it also means a database that already has a supervisor never reaches the code
+that would use it. Setting it in Render changes nothing, silently.
+
+Which matters, because a supervisor created by a **development** boot was not
+given the password you set here. It was given the fallback in
+[`seed.ts`](apps/server/src/seed.ts), which is the literal word `password`.
+`NODE_ENV` is unset on a laptop, so the guard that refuses a default in
+production does not fire, and the row is created anyway.
+
+Promote that database to production and the desk — every customer's address and
+phone number, settlement on any bill — is live on the public URL with a
+password anyone would guess on the first try. Nothing in the deploy warns you:
+the service is healthy, the variable is set, and the log says nothing.
+
+Check before you trust it:
+
+```sql
+select id, created_at from supervisors;
+```
+
+A `created_at` earlier than your first production deploy means the row came from
+development. Delete it and restart the service — with the table empty, this
+variable set and `NODE_ENV=production`, the boot seeds the account properly:
+
+```sql
+delete from supervisors;
+```
+
+Then confirm both directions: your real password works, *and* `password` is
+refused. Only the second proves the row was replaced rather than left alone.
+
+The general form is worth carrying to anything else seeded this way: a
+credential created in development survives promotion untouched, and the
+emptiness checks that make seeding idempotent are exactly what stop production
+from correcting it.
 
 ### The free tier sleeps
 
