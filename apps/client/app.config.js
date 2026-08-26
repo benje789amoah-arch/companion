@@ -24,6 +24,9 @@ const googleMapsIosKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_IOS_KEY || '';
 module.exports = {
   name: 'FreshFold',
   slug: 'freshfold-client',
+  // The Expo account that owns the EAS project. Named here rather than left to
+  // `eas init`, which cannot safely edit a dynamic config like this one.
+  owner: 'ben-arch',
   version: '1.0.0',
   orientation: 'portrait',
   scheme: 'freshfoldclient',
