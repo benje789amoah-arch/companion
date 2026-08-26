@@ -57,12 +57,13 @@ export default function Footer() {
               <li>
                 <a href="#how-it-works" className="hover:text-brand-sage transition-colors">Operational Timeline</a>
               </li>
-              <li className="pt-1.5 border-t border-white/5">
-                <a href="#admin" className="hover:text-brand-gold font-semibold text-brand-gold/95 transition-all flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 bg-brand-gold rounded-full inline-block animate-pulse"></span>
-                  Supervisor Desk
-                </a>
-              </li>
+              {/*
+                No Supervisor Desk link here on purpose. The desk is staff-only
+                and has no business advertising itself in a customer's footer;
+                `#admin` still opens it for anyone who types it. That is not a
+                security measure — the password is — it just keeps an internal
+                tool out of the shopfront.
+              */}
             </ul>
           </div>
 
