@@ -33,6 +33,30 @@ services:
     # and it fails only here: a local build has no NODE_ENV set, so npm installs
     # the types and the same commit compiles clean on a laptop.
     buildCommand: npm install --include=dev && npm run build --workspace @freshfold/server
+
+    # Pending migrations, applied before the new code starts serving.
+    #
+    # This ran by hand for the first twenty-four migrations, and the gap that
+    # leaves is not theoretical: `owner_email` was added to `store.ts`'s where
+    # clause while the migration adding the column sat untracked on one
+    # machine. Code arriving before its schema does not degrade — `jobs.list`
+    # throws `column "owner_email" does not exist`, which is `GET /api/bookings`,
+    # the desk board and `/auth/resend-setup` all answering 500 at once.
+    #
+    # Pre-deploy is the right hook rather than the build: it runs against the
+    # live database with the service's own environment, and a failure here
+    # aborts the deploy instead of promoting a build that cannot serve. Putting
+    # it in `buildCommand` would run it in an environment that has no
+    # DATABASE_URL, and putting it in `startCommand` would race every restart.
+    #
+    # Safe on every deploy, including the ones with nothing pending: the runner
+    # records each file in `schema_migrations` and skips what it has already
+    # applied, so a deploy that changes no schema logs "up to date" and exits 0.
+    # A migration that fails exits 1, which aborts the deploy — the service
+    # keeps serving the old build rather than starting one whose schema is half
+    # applied. Each file and the row recording it share one transaction.
+    preDeployCommand: npm run db:migrate --workspace @freshfold/server
+
     startCommand: npm run start --workspace @freshfold/server
 
     # Answers 503 when Postgres is unreachable rather than a cheerful 200, so a
