@@ -158,16 +158,43 @@ function postResend(mail: Mail, from: string, signal: AbortSignal): Promise<Resp
 }
 
 /**
+ * Strips one layer of matching surrounding quotes.
+ *
+ * `.env` and a hosting dashboard disagree about what a quoted value means, and
+ * the disagreement is silent. `EMAIL_FROM="FreshFold <hello@example.com>"` is
+ * written that way because the address contains spaces, and dotenv takes the
+ * quotes off on the way in — so locally `process.env.EMAIL_FROM` never has
+ * them. Paste that same line's right-hand side into Render's environment
+ * editor, which stores the field verbatim, and the quotes become part of the
+ * value.
+ *
+ * That is not hypothetical: it is what shipped, and it broke every send in
+ * production while every send on a laptop kept working.
+ */
+function unwrapQuotes(value: string): string {
+  const trimmed = value.trim();
+  const match = /^(["'])([\s\S]*)\1$/.exec(trimmed);
+  return match ? match[2].trim() : trimmed;
+}
+
+/**
  * Splits `Name <addr@host>` into its parts, tolerating a bare address.
  *
  * Brevo rejects a `sender.email` with angle brackets in it, so getting this
  * wrong is a 400 on every send rather than something that degrades quietly.
+ *
+ * The whole value is unwrapped before the split, and the name again after it,
+ * so `"FreshFold <hello@example.com>"` and `"FreshFold" <hello@example.com>`
+ * both land on the same sender. Only the outer layer comes off: a name that is
+ * quoted inside an otherwise unquoted value is still the caller's to keep.
  */
 export function parseAddress(value: string): { name?: string; email: string } {
-  const match = /^\s*(.*?)\s*<\s*([^>]+?)\s*>\s*$/.exec(value);
-  if (!match) return { email: value.trim() };
+  const unwrapped = unwrapQuotes(value);
 
-  const name = match[1].replace(/^"(.*)"$/, '$1').trim();
+  const match = /^\s*(.*?)\s*<\s*([^>]+?)\s*>\s*$/.exec(unwrapped);
+  if (!match) return { email: unwrapped };
+
+  const name = unwrapQuotes(match[1]);
   return name ? { name, email: match[2] } : { email: match[2] };
 }
 

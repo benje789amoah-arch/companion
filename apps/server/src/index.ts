@@ -3,13 +3,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isEmailShaped } from '@freshfold/core';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import express from 'express';
 import { closeDatabase, ping } from './db';
-import { emailProvider } from './email';
+import { emailProvider, parseAddress } from './email';
 import { store } from './store';
 import { developmentCredentials, ensureSeeded, SeedError } from './seed';
 import { startHubCycle } from './hub';
@@ -263,10 +265,37 @@ if (process.env.NODE_ENV === 'production') {
     ? path.resolve(process.env.WEB_DIST)
     : path.resolve(HERE, '..', '..', 'web', 'dist');
 
-  app.use(express.static(distPath));
-  app.get('*', (_req, res) => {
-    res.sendFile(path.join(distPath, 'index.html'));
-  });
+  /**
+   * Only when the build is actually on disk.
+   *
+   * Serving the site from this process is one of two supported shapes, not the
+   * only one. The Render blueprint builds `@freshfold/server` alone and Vercel
+   * serves the website, rewriting `/api/*` back here — so on that deployment
+   * this directory has never existed. Mounting the catch-all regardless meant
+   * every stray request for `/` (a crawler, an uptime probe, somebody opening
+   * the onrender.com URL) resolved to a `sendFile` of a path that is not there
+   * and logged `ENOENT ... apps/web/dist/index.html`.
+   *
+   * Which was noise, but expensive noise: it is indistinguishable at a glance
+   * from a real deployment fault, and it sat in the log next to the email
+   * failure that actually mattered.
+   *
+   * Checked once at boot rather than per request. The bundle cannot appear
+   * while the process is running — nothing writes it but the build, which has
+   * long since finished — and a stat on every 404 would be a syscall bought
+   * with nothing.
+   */
+  if (fs.existsSync(path.join(distPath, 'index.html'))) {
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  } else {
+    console.log(
+      `[web] no built site at ${distPath} — serving the API only. ` +
+        'That is expected when the website is deployed separately (see vercel.json).'
+    );
+  }
 }
 
 /** The database host, with the password stripped, for the startup banner. */
@@ -297,6 +326,30 @@ function describeEmail(): string {
   const from = process.env.EMAIL_FROM;
   if (!from) return `${provider} key is set but EMAIL_FROM is not — nothing will be sent`;
 
+  /**
+   * The address the provider will actually receive, not the string as written.
+   *
+   * Printing the raw value was the gap this closes. `EMAIL_FROM` carrying its
+   * own surrounding quotes — a dashboard storing verbatim what dotenv would
+   * have unwrapped — reads perfectly on this line while `parseAddress` hands
+   * Brevo a `sender.email` of `"FreshFold <hello@example.com>"`, quotes and
+   * angle brackets included, which is refused on every send. The banner said
+   * everything was fine for as long as that was true.
+   *
+   * `parseAddress` now unwraps that case, so anything still failing here is a
+   * value no amount of tidying will rescue, and it is worth being loud about:
+   * this is the last point before the failure becomes invisible.
+   */
+  const sender = parseAddress(from);
+  if (!isEmailShaped(sender.email)) {
+    return (
+      `MISCONFIGURED — EMAIL_FROM is ${JSON.stringify(from)}, which resolves to the sender ` +
+      `address ${JSON.stringify(sender.email)}. That is not an address, and ${provider} will ` +
+      'refuse every send. Expected `Name <addr@host>` or a bare `addr@host`, with no ' +
+      'surrounding quotes.'
+    );
+  }
+
   if (provider === 'resend' && /@resend\.dev\b/i.test(from)) {
     return (
       `${from} via resend — Resend's shared sender, which DELIVERS ONLY TO THE ADDRESS ` +
@@ -304,7 +357,12 @@ function describeEmail(): string {
     );
   }
 
-  return `${from} via ${provider}`;
+  // The resolved sender, not the raw value, for the same reason the check above
+  // works on it: this line is read to confirm the configuration, and it should
+  // show what the provider gets.
+  return sender.name
+    ? `${sender.name} <${sender.email}> via ${provider}`
+    : `${sender.email} via ${provider}`;
 }
 
 /**
