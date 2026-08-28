@@ -6,7 +6,7 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { BOOKING_STAGE_SEQUENCE, toBookingStatus, type OrderStatus } from '@freshfold/core';
-import { colors, radius, tints } from '../theme';
+import { colors, ink, radius, text, tints } from '../theme';
 
 /**
  * What the customer is being told, right now.
@@ -58,18 +58,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: tints.sage20,
     borderRadius: radius.md,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
   },
   pillCancelled: { backgroundColor: tints.error05, borderColor: tints.error20 },
-  dot: { width: 5, height: 5, borderRadius: 3, backgroundColor: colors.brandSage },
+  dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.brandSage },
   dotCancelled: { backgroundColor: colors.statusError },
-  label: { fontSize: 9.5, fontWeight: '700', color: colors.textCharcoal },
-  labelCancelled: { color: colors.statusError },
-  counter: {
-    fontSize: 8.5,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-    color: colors.textSlate,
-  },
+  label: { ...text.caption, fontWeight: '700', color: colors.textCharcoal },
+  labelCancelled: { color: ink.error },
+  counter: { ...text.micro, fontWeight: '800' },
 });

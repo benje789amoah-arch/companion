@@ -10,7 +10,7 @@ import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useApp } from '../src/store/AppStore';
 import { useSession } from '../src/store/SessionStore';
-import { colors, radius, shadow } from '../src/theme';
+import { colors, ink, radius, shadow, text } from '../src/theme';
 
 const SPLASH_MS = 2200;
 
@@ -84,15 +84,15 @@ export default function SplashScreen() {
             },
           ]}
         >
-          <Sparkles size={34} color="#FFFFFF" />
+          <Sparkles size={38} color="#FFFFFF" />
         </Animated.View>
 
-        <Text style={styles.wordmark}>F R E S H F O L D</Text>
-        <Text style={styles.tagline}>Dispatch operations companion</Text>
+        <Text style={styles.wordmark}>FRESHFOLD</Text>
+        <Text style={styles.tagline}>Rider console</Text>
       </View>
 
       <View style={styles.footer}>
-        <Text style={styles.footerText}>Luxury Valet Laundry Service</Text>
+        <Text style={styles.footerText}>Kumasi · Ayeduase–Kotei</Text>
         <View style={styles.dotsRow}>
           {dots.map((dot, i) => (
             <Animated.View key={i} style={[styles.dot, { transform: [{ translateY: dot }] }]} />
@@ -107,8 +107,8 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bgIvory, padding: 40 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14 },
   logo: {
-    width: 68,
-    height: 68,
+    width: 76,
+    height: 76,
     borderRadius: radius.xxl,
     backgroundColor: colors.brandSage,
     alignItems: 'center',
@@ -116,21 +116,14 @@ const styles = StyleSheet.create({
     ...shadow.md,
   },
   wordmark: {
-    fontSize: 20,
-    fontWeight: '800',
-    letterSpacing: 1.5,
-    color: colors.textCharcoal,
-    marginTop: 6,
+    ...text.heading,
+    letterSpacing: 4,
+    marginTop: 8,
   },
-  tagline: {
-    fontSize: 9,
-    letterSpacing: 2,
-    textTransform: 'uppercase',
-    color: colors.brandGold,
-    fontWeight: '700',
-  },
-  footer: { alignItems: 'center', gap: 10, paddingBottom: 12 },
-  footerText: { fontSize: 10.5, color: colors.textSlate },
+  // Gold was the tagline's colour at 2.24:1. Sage, at the ink weight.
+  tagline: { ...text.overline, letterSpacing: 2, color: ink.sage },
+  footer: { alignItems: 'center', gap: 12, paddingBottom: 12 },
+  footerText: text.caption,
   dotsRow: { flexDirection: 'row', gap: 6 },
   dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.brandSage },
 });

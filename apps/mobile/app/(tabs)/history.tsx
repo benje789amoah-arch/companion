@@ -9,7 +9,7 @@ import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Card, EmptyState } from '../../src/components/ui';
 import { useApp } from '../../src/store/AppStore';
-import { colors, formatCedis, radius } from '../../src/theme';
+import { colors, formatCedis, ink, radius, text } from '../../src/theme';
 
 export default function HistoryScreen() {
   const { orders, loadOrderProof } = useApp();
@@ -34,18 +34,20 @@ export default function HistoryScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <Text style={styles.title}>My timeline logs</Text>
+        <Text style={text.heading}>Delivered</Text>
         <Text style={styles.subtitle}>
-          Review historical valet completions and proof documents.
+          {completed.length === 0
+            ? 'Jobs you have finished will be listed here.'
+            : `${completed.length} ${completed.length === 1 ? 'job' : 'jobs'}, with the proof you captured at the door.`}
         </Text>
       </View>
 
       <ScrollView contentContainerStyle={styles.list} showsVerticalScrollIndicator={false}>
         {completed.length === 0 ? (
           <EmptyState
-            icon={<HistoryIcon size={34} color={colors.brandStone} />}
-            title="No history"
-            body="Your completed deliveries will appear here."
+            icon={<HistoryIcon size={42} color={colors.brandStone} />}
+            title="Nothing delivered yet"
+            body="Once you hand a job over, it is listed here with its signature and photo."
           />
         ) : (
           completed.map((order) => (
@@ -69,19 +71,19 @@ export default function HistoryScreen() {
 
                 <View style={styles.proofRow}>
                   <View style={{ flex: 1, gap: 4 }}>
-                    <Text style={styles.proofLabel}>Verification signature</Text>
+                    <Text style={styles.proofLabel}>Signature</Text>
                     <View style={styles.secureRow}>
-                      <ShieldCheck size={13} color={colors.statusSuccess} />
+                      <ShieldCheck size={18} color={ink.success} />
                       <Text style={styles.secureLabel}>
-                        {order.deliverySignature ? 'Secure sign' : 'Not captured'}
+                        {order.deliverySignature ? 'Captured' : 'Not captured'}
                       </Text>
                     </View>
-                    <Text style={styles.payout}>Payout {formatCedis(order.price)}</Text>
+                    <Text style={styles.payout}>{formatCedis(order.price)}</Text>
                   </View>
 
                   {!!order.deliveryPhoto && (
                     <View style={{ gap: 4 }}>
-                      <Text style={styles.proofLabel}>Condition proof</Text>
+                      <Text style={styles.proofLabel}>Photo</Text>
                       <Image source={{ uri: order.deliveryPhoto }} style={styles.proofImage} />
                     </View>
                   )}
@@ -97,13 +99,12 @@ export default function HistoryScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bgIvory },
-  header: { paddingHorizontal: 18, paddingTop: 12, gap: 3 },
-  title: { fontSize: 19, fontWeight: '800', color: colors.textCharcoal },
-  subtitle: { fontSize: 10.5, color: colors.textSlate },
+  header: { paddingHorizontal: 18, paddingTop: 12 },
+  subtitle: { ...text.caption, marginTop: 4 },
 
   list: { padding: 18, gap: 14, paddingBottom: 40 },
   timelineRow: { flexDirection: 'row', gap: 12 },
-  timelineRail: { width: 12, alignItems: 'center', paddingTop: 6 },
+  timelineRail: { width: 12, alignItems: 'center', paddingTop: 8 },
   timelineDot: {
     width: 11,
     height: 11,
@@ -121,9 +122,9 @@ const styles = StyleSheet.create({
 
   card: { flex: 1, gap: 8 },
   cardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  customer: { flex: 1, fontSize: 12.5, fontWeight: '800', color: colors.textCharcoal },
-  deadline: { fontSize: 9, color: colors.textSlate },
-  address: { fontSize: 11, color: colors.textSlate },
+  customer: { ...text.strong, flex: 1 },
+  deadline: text.micro,
+  address: text.caption,
 
   proofRow: {
     flexDirection: 'row',
@@ -132,19 +133,14 @@ const styles = StyleSheet.create({
     borderTopColor: colors.borderSoft,
     paddingTop: 10,
   },
-  proofLabel: {
-    fontSize: 8,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-    color: colors.textSlate,
-  },
-  secureRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  secureLabel: { fontSize: 10.5, fontWeight: '700', color: colors.statusSuccess },
-  payout: { fontSize: 10.5, color: colors.textCharcoal, marginTop: 2 },
+  proofLabel: text.overline,
+  secureRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  secureLabel: { ...text.bodyStrong, color: ink.success },
+  // Money, in the brand's colour for it — as an ink, not the 2.24:1 fill.
+  payout: { ...text.strong, color: ink.gold, marginTop: 2 },
   proofImage: {
-    width: 62,
-    height: 44,
+    width: 84,
+    height: 60,
     borderRadius: radius.sm,
     borderWidth: 1,
     borderColor: colors.borderSoft,

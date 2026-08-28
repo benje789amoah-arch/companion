@@ -6,14 +6,14 @@
 import { useRouter } from 'expo-router';
 import { Activity, CheckCircle2, CloudOff, Layers2, MapPin } from 'lucide-react-native';
 import React, { useMemo, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import CustomerStage from '../../src/components/CustomerStage';
 import ProfileGate from '../../src/components/ProfileGate';
-import { Badge, Card, ConnectionPill, EmptyState } from '../../src/components/ui';
+import { Badge, Button, Card, Chip, ConnectionPill, EmptyState, Input } from '../../src/components/ui';
 import { usePullToRefresh } from '../../src/hooks/usePullToRefresh';
 import { useApp } from '../../src/store/AppStore';
-import { colors, formatCedis, humanizeStatus, radius, shadow } from '../../src/theme';
+import { colors, formatCedis, humanizeStatus, ink, radius, text, tints, touch } from '../../src/theme';
 import { Order } from '../../src/types';
 
 type Filter = 'all' | 'mine' | 'available' | 'completed';
@@ -74,23 +74,22 @@ export default function AssignmentsScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <View style={styles.titleRow}>
-          <Text style={styles.title}>My active jobs</Text>
+          <Text style={text.heading}>Jobs</Text>
           <ConnectionPill online={connected} />
         </View>
         <Text style={styles.subtitle}>
           {connected
-            ? 'Manage, dispatch and review active laundry contracts.'
+            ? 'Take one that is going spare, or open one you are already holding.'
             : 'Showing the last board this device cached — new requests will not arrive until dispatch is reachable.'}
         </Text>
       </View>
 
       <View style={styles.controls}>
-        <TextInput
+        <Input
           value={query}
           onChangeText={setQuery}
           placeholder="Search customers or codes…"
-          placeholderTextColor={colors.textSlate}
-          style={styles.search}
+          accessibilityLabel="Search jobs"
         />
 
         <ScrollView
@@ -98,20 +97,14 @@ export default function AssignmentsScreen() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.filterRow}
         >
-          {FILTERS.map((item) => {
-            const active = filter === item.id;
-            return (
-              <Pressable
-                key={item.id}
-                onPress={() => setFilter(item.id)}
-                style={[styles.filterChip, active && styles.filterChipActive]}
-              >
-                <Text style={[styles.filterLabel, active && styles.filterLabelActive]}>
-                  {item.label}
-                </Text>
-              </Pressable>
-            );
-          })}
+          {FILTERS.map((item) => (
+            <Chip
+              key={item.id}
+              label={item.label}
+              selected={filter === item.id}
+              onPress={() => setFilter(item.id)}
+            />
+          ))}
         </ScrollView>
       </View>
 
@@ -127,9 +120,9 @@ export default function AssignmentsScreen() {
           <EmptyState
             icon={
               connected ? (
-                <Activity size={34} color={colors.brandStone} />
+                <Activity size={42} color={colors.brandStone} />
               ) : (
-                <CloudOff size={34} color={colors.statusWarning} />
+                <CloudOff size={42} color={ink.warning} />
               )
             }
             title={connected ? 'No assignments' : 'Not connected to dispatch'}
@@ -164,21 +157,24 @@ export default function AssignmentsScreen() {
 
               <View style={styles.detailBlock}>
                 <View style={styles.detailRow}>
-                  <MapPin size={13} color={colors.brandSage} />
+                  <MapPin size={18} color={ink.sage} />
                   <Text style={styles.detailText} numberOfLines={1}>
                     Pickup: {order.pickupAddress}
                   </Text>
                   <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Show ${order.orderNumber} on the map`}
+                    hitSlop={touch.slop}
                     onPress={() => router.push({ pathname: '/(tabs)/map', params: { focus: order.id } })}
                     style={({ pressed }) => [styles.pinChip, pressed && { opacity: 0.8 }]}
                   >
-                    <MapPin size={10} color={colors.brandSage} />
-                    <Text style={styles.pinChipLabel}>Pin</Text>
+                    <MapPin size={16} color={ink.sage} />
+                    <Text style={styles.pinChipLabel}>Map</Text>
                   </Pressable>
                 </View>
 
                 <View style={styles.detailRow}>
-                  <Layers2 size={13} color={colors.brandSage} />
+                  <Layers2 size={18} color={ink.sage} />
                   <Text style={styles.detailText} numberOfLines={1}>
                     {order.laundryType} ({order.bagCount} bags)
                   </Text>
@@ -201,30 +197,20 @@ export default function AssignmentsScreen() {
                     rider can take, and one they already hold is theirs to
                     drive whatever stage it has reached. */}
                 {order.status !== 'delivered' && !order.riderId ? (
-                  <Pressable
-                    accessibilityRole="button"
+                  <Button
+                    label="Accept"
+                    size="compact"
                     disabled={!profileComplete}
                     onPress={() => {
                       acceptOrder(order.id);
                       router.push('/(tabs)');
                     }}
-                    style={({ pressed }) => [
-                      styles.actionChip,
-                      !profileComplete && styles.actionChipDisabled,
-                      pressed && profileComplete && { opacity: 0.85 },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.actionChipLabel,
-                        !profileComplete && styles.actionChipLabelDisabled,
-                      ]}
-                    >
-                      Accept payout
-                    </Text>
-                  </Pressable>
+                  />
                 ) : mine.has(order.id) ? (
-                  <Pressable
+                  <Button
+                    label="Open"
+                    variant="gold"
+                    size="compact"
                     onPress={() => {
                       // Put the sheet on *this* job before leaving, or the home
                       // screen would open on whichever one it was already
@@ -232,18 +218,11 @@ export default function AssignmentsScreen() {
                       focusOrder(order.id);
                       router.push('/(tabs)');
                     }}
-                    style={({ pressed }) => [
-                      styles.actionChip,
-                      styles.actionChipGold,
-                      pressed && { opacity: 0.85 },
-                    ]}
-                  >
-                    <Text style={styles.actionChipLabel}>Open workflow</Text>
-                  </Pressable>
+                  />
                 ) : order.status !== 'delivered' ? null : (
                   <View style={styles.completeRow}>
-                    <CheckCircle2 size={14} color={colors.statusSuccess} />
-                    <Text style={styles.completeLabel}>Complete</Text>
+                    <CheckCircle2 size={18} color={ink.success} />
+                    <Text style={styles.completeLabel}>Delivered</Text>
                   </View>
                 )}
               </View>
@@ -257,95 +236,46 @@ export default function AssignmentsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bgIvory },
-  header: { paddingHorizontal: 18, paddingTop: 12, gap: 3 },
-  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 9 },
-  title: { fontSize: 19, fontWeight: '800', color: colors.textCharcoal },
-  subtitle: { fontSize: 10.5, color: colors.textSlate },
+  header: { paddingHorizontal: 18, paddingTop: 12 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  subtitle: { ...text.caption, marginTop: 4 },
 
-  controls: { paddingHorizontal: 18, paddingTop: 14, gap: 10 },
-  search: {
-    borderWidth: 1,
-    borderColor: colors.borderSoft,
-    borderRadius: radius.lg,
-    backgroundColor: colors.cardPure,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    fontSize: 12.5,
-    color: colors.textCharcoal,
-    ...shadow.xs,
-  },
-  filterRow: { gap: 7, paddingBottom: 2 },
-  filterChip: {
-    borderWidth: 1,
-    borderColor: colors.borderSoft,
-    backgroundColor: colors.cardPure,
-    borderRadius: radius.pill,
-    paddingHorizontal: 13,
-    paddingVertical: 7,
-  },
-  filterChipActive: { backgroundColor: colors.brandSage, borderColor: colors.brandSage },
-  filterLabel: { fontSize: 10.5, fontWeight: '700', color: colors.textSlate },
-  filterLabelActive: { color: '#FFFFFF' },
+  controls: { paddingHorizontal: 18, paddingTop: 16, gap: 12 },
+  filterRow: { gap: 8, paddingBottom: 2 },
 
-  list: { padding: 18, gap: 12, paddingBottom: 40 },
-  card: { gap: 12 },
+  list: { padding: 18, gap: 14, paddingBottom: 40 },
+  card: { gap: 14 },
   cardHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
   cardTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  customer: { fontSize: 13, fontWeight: '800', color: colors.textCharcoal, flexShrink: 1 },
-  orderNumber: { fontSize: 9.5, fontWeight: '700', color: colors.brandGold, marginTop: 3 },
+  customer: { ...text.strong, flexShrink: 1 },
+  orderNumber: { ...text.caption, fontWeight: '700', color: ink.gold, marginTop: 3 },
 
-  detailBlock: { gap: 6 },
-  detailRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  detailText: { flex: 1, fontSize: 11, color: colors.textCharcoal },
+  detailBlock: { gap: 8 },
+  detailRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  detailText: { ...text.body, flex: 1 },
   pinChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
-    backgroundColor: 'rgba(111, 122, 99, 0.15)',
+    gap: 5,
+    minHeight: touch.min,
+    backgroundColor: tints.sage15,
     borderRadius: radius.pill,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    paddingHorizontal: 12,
   },
-  pinChipLabel: { fontSize: 9, fontWeight: '800', color: colors.brandSage },
-  coords: {
-    fontSize: 9.5,
-    color: colors.textSlate,
-    paddingLeft: 19,
-    ...Platform.select({ ios: { fontFamily: 'Menlo' }, android: { fontFamily: 'monospace' } }),
-  },
+  pinChipLabel: { ...text.caption, fontWeight: '800', color: ink.sage },
+  coords: { ...text.mono, paddingLeft: 26 },
 
   cardFooter: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 12,
     borderTopWidth: 1,
     borderTopColor: colors.borderSoft,
-    paddingTop: 10,
+    paddingTop: 12,
   },
-  payoutLabel: {
-    fontSize: 8,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-    color: colors.textSlate,
-  },
-  payout: { fontSize: 13, fontWeight: '800', color: colors.textCharcoal, marginTop: 2 },
-  actionChip: {
-    backgroundColor: colors.brandSage,
-    borderRadius: radius.md,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  actionChipGold: { backgroundColor: colors.brandGold },
-  actionChipDisabled: { backgroundColor: colors.borderSoft },
-  actionChipLabelDisabled: { color: colors.textSlate },
-  actionChipLabel: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
-  },
-  completeRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  completeLabel: { fontSize: 11, fontWeight: '700', color: colors.statusSuccess },
+  payoutLabel: text.overline,
+  payout: { ...text.title, color: ink.gold, marginTop: 2 },
+  completeRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  completeLabel: { ...text.bodyStrong, color: ink.success },
 });

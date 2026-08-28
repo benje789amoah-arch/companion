@@ -4,13 +4,13 @@
  */
 
 import { useLocalSearchParams } from 'expo-router';
-import { Compass } from 'lucide-react-native';
+import { MapPin } from 'lucide-react-native';
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import LiveMap from '../../src/components/LiveMap';
 import { useApp } from '../../src/store/AppStore';
-import { colors, radius, shadow } from '../../src/theme';
+import { colors, ink, radius, shadow, text } from '../../src/theme';
 
 export default function MapScreen() {
   // Tapping "Pin" on an assignment card routes here with the order to frame.
@@ -47,9 +47,13 @@ export default function MapScreen() {
       />
 
       <SafeAreaView style={[styles.overlay, { pointerEvents: 'box-none' }]} edges={['top']}>
-        <View style={styles.compassChip}>
-          <Compass size={15} color={colors.brandSage} />
-          <Text style={styles.compassLabel}>Compass overlay</Text>
+        {/* Said "Compass overlay", which described the chip rather than the
+            board. A count is something the courier can act on. */}
+        <View style={styles.countChip}>
+          <MapPin size={18} color={ink.sage} />
+          <Text style={styles.countLabel}>
+            {orders.length} {orders.length === 1 ? 'job' : 'jobs'} on the map
+          </Text>
         </View>
       </SafeAreaView>
     </View>
@@ -59,27 +63,21 @@ export default function MapScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bgIvory },
   overlay: { position: 'absolute', top: 0, left: 14, right: 14, alignItems: 'flex-start' },
-  compassChip: {
+  countChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 7,
+    gap: 8,
     backgroundColor: 'rgba(255,255,255,0.95)',
     borderWidth: 1,
     borderColor: colors.borderSoft,
     borderRadius: radius.pill,
-    paddingHorizontal: 13,
-    paddingVertical: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     // Sits below the map's own GPS badge, which starts 12 below the safe-area
     // inset and stands about 38 tall. This chip is already inside a top
     // SafeAreaView, so the inset is not counted twice.
     marginTop: 60,
     ...shadow.md,
   },
-  compassLabel: {
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
-    color: colors.textCharcoal,
-  },
+  countLabel: { ...text.bodyStrong, color: colors.textCharcoal },
 });

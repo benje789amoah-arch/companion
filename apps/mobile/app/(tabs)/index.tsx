@@ -23,7 +23,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -36,10 +36,20 @@ import LiveMap from '../../src/components/LiveMap';
 import NotificationsSheet from '../../src/components/NotificationsSheet';
 import QRScanner from '../../src/components/QRScanner';
 import SignaturePad from '../../src/components/SignaturePad';
-import { Avatar, Badge, Button, ConnectionPill } from '../../src/components/ui';
+import {
+  Avatar,
+  Badge,
+  Button,
+  CodeInput,
+  ConnectionPill,
+  Input,
+  LinkButton,
+  Notice,
+  StatTile,
+} from '../../src/components/ui';
 import { toBookingStatus } from '@freshfold/core';
 import { useApp } from '../../src/store/AppStore';
-import { colors, formatCedis, humanizeStatus, radius, shadow, tints } from '../../src/theme';
+import { colors, formatCedis, humanizeStatus, ink, radius, shadow, text, tints, touch } from '../../src/theme';
 
 type ActiveModal =
   | 'handoff'
@@ -50,11 +60,12 @@ type ActiveModal =
   | 'signature'
   | null;
 
-/** Avatar (32) + vertical padding (5 × 2) + border (1 × 2). */
-const IDENTITY_CHIP_HEIGHT = 44;
+/** Avatar (40) + vertical padding (6 × 2) + border (1 × 2). */
+const IDENTITY_CHIP_HEIGHT = 54;
 
 export default function HomeScreen() {
   const router = useRouter();
+  const { height: windowHeight } = useWindowDimensions();
   const {
     rider,
     orders,
@@ -245,13 +256,13 @@ export default function HomeScreen() {
       {/* Floating identity + alerts */}
       <SafeAreaView style={[styles.topBar, { pointerEvents: 'box-none' }]} edges={['top']}>
         <View style={styles.identityChip}>
-          <Avatar uri={rider.avatar} size={32} />
-          <View style={{ maxWidth: 120 }}>
+          <Avatar uri={rider.avatar} size={40} />
+          <View style={{ maxWidth: 140 }}>
             <Text style={styles.identityName} numberOfLines={1}>
               {rider.name || 'Setup profile'}
             </Text>
             <Text style={styles.identityId} numberOfLines={1}>
-              {rider.employeeId ? `ID: ${rider.employeeId}` : 'No identity'}
+              {rider.employeeId || 'No ID yet'}
             </Text>
           </View>
           <ConnectionPill online={connected} />
@@ -263,7 +274,7 @@ export default function HomeScreen() {
             accessibilityLabel="Open notifications"
             style={({ pressed }) => [styles.circleButton, pressed && styles.pressed]}
           >
-            <Bell size={16} color={colors.textCharcoal} />
+            <Bell size={22} color={colors.textCharcoal} />
             {unreadCount > 0 && (
               <View style={styles.badgeDot}>
                 <Text style={styles.badgeDotText}>{unreadCount}</Text>
@@ -276,7 +287,7 @@ export default function HomeScreen() {
             accessibilityLabel="Open dispatch chat"
             style={({ pressed }) => [styles.circleButton, pressed && styles.pressed]}
           >
-            <MessageSquare size={16} color={colors.textCharcoal} />
+            <MessageSquare size={22} color={colors.textCharcoal} />
           </Pressable>
         </View>
       </SafeAreaView>
@@ -285,18 +296,21 @@ export default function HomeScreen() {
       <View style={styles.sheet}>
         <ScrollView
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ gap: 14 }}
-          style={{ maxHeight: 330 }}
+          contentContainerStyle={{ gap: 16 }}
+          // Was a flat 330. The type is larger now and phones are not one
+          // size: cap the sheet at 44% of the window so the workflow keeps the
+          // room it needs on a small screen and uses it on a large one.
+          style={{ maxHeight: Math.round(windowHeight * 0.44) }}
         >
           <View style={styles.sheetHeader}>
             <View style={{ flex: 1 }}>
               <Text style={styles.sheetTitle}>
-                {rider.isOnline ? 'Scooter shift active' : 'Operational offline'}
+                {rider.isOnline ? "You're online" : "You're offline"}
               </Text>
               <Text style={styles.sheetSubtitle}>
                 {rider.isOnline
-                  ? 'Awaiting white-glove orders…'
-                  : 'Go online to receive premium orders'}
+                  ? 'Dispatch can send you jobs and the customer can see you moving.'
+                  : 'Go online to be offered jobs.'}
               </Text>
             </View>
 
@@ -314,20 +328,16 @@ export default function HomeScreen() {
                   { color: rider.isOnline ? colors.statusSuccess : '#FFFFFF' },
                 ]}
               >
-                {rider.isOnline ? '• Online' : 'Go online'}
+                {rider.isOnline ? 'Online' : 'Go online'}
               </Text>
             </Pressable>
           </View>
 
           {rider.isOnline && (
             <View style={styles.statsRow}>
-              <StatTile label="Complete" value={`${rider.completedCount} jobs`} />
-              <StatTile
-                label="Est. earnings"
-                value={formatCedis(rider.todayEarnings)}
-                accent
-              />
-              <StatTile label="Ridden today" value={`${rider.todayDistance.toFixed(1)} km`} />
+              <StatTile label="Delivered" value={`${rider.completedCount}`} />
+              <StatTile label="Earned" value={formatCedis(rider.todayEarnings)} accent />
+              <StatTile label="Ridden" value={`${rider.todayDistance.toFixed(1)} km`} />
             </View>
           )}
 
@@ -337,7 +347,7 @@ export default function HomeScreen() {
           */}
           {rider.isOnline && myOrders.length > 1 && (
             <View style={styles.stripWrap}>
-              <Text style={styles.stripLabel}>
+              <Text style={text.overline}>
                 {myOrders.length} jobs in hand · tap to switch
               </Text>
               <ScrollView
@@ -389,7 +399,7 @@ export default function HomeScreen() {
             <View style={styles.workflow}>
               <View style={styles.workflowHeader}>
                 <Text style={styles.workflowLabel} numberOfLines={1}>
-                  {myOrders.length > 1 ? activeOrder.orderNumber : 'Active assignment workflow'}
+                  {activeOrder.orderNumber}
                 </Text>
                 <Badge
                   label={humanizeStatus(activeOrder.status)}
@@ -409,7 +419,7 @@ export default function HomeScreen() {
                     pickup.
                   </Text>
                   <Button
-                    label="Start GPS navigation"
+                    label="Start navigation"
                     onPress={() => updateOrderStatus(activeOrder.id, 'navigating_to_pickup')}
                   />
                 </>
@@ -443,10 +453,10 @@ export default function HomeScreen() {
               {/* --- pickup checklist --- */}
               {activeOrder.status === 'arrived_at_pickup' && !handoffCleared && (
                 <>
-                  <StepRow step={1} text="Check the customer's collection code" />
+                  <StepRow step={1} label="Check the customer's collection code" />
                   <Button
-                    label="Verify collection code"
-                    icon={<ScanLine size={15} color="#FFFFFF" />}
+                    label="Check the collection code"
+                    icon={ScanLine}
                     onPress={() => setActiveModal('handoff')}
                   />
                 </>
@@ -454,10 +464,10 @@ export default function HomeScreen() {
 
               {activeOrder.status === 'arrived_at_pickup' && handoffCleared && (
                 <>
-                  <StepRow step={2} text="Scan FreshFold QR codes on the linen bags" />
+                  <StepRow step={2} label="Scan the QR label on each bag" />
                   <Button
-                    label="Open QR bag scanner"
-                    icon={<QrCode size={15} color="#FFFFFF" />}
+                    label="Scan the bag labels"
+                    icon={QrCode}
                     onPress={() => setActiveModal('scanner')}
                   />
                 </>
@@ -465,10 +475,10 @@ export default function HomeScreen() {
 
               {activeOrder.status === 'pickup_scanned' && !activeOrder.pickupPhoto && (
                 <>
-                  <StepRow step={3} text="Take the garment documentation photo" />
+                  <StepRow step={3} label="Photograph the bags" />
                   <Button
-                    label="Document garment state"
-                    icon={<CameraIcon size={15} color="#FFFFFF" />}
+                    label="Photograph the bags"
+                    icon={CameraIcon}
                     onPress={() => setActiveModal('pickup-camera')}
                   />
                 </>
@@ -476,10 +486,10 @@ export default function HomeScreen() {
 
               {activeOrder.status === 'pickup_scanned' && !!activeOrder.pickupPhoto && (
                 <>
-                  <StepRow step={4} text="Capture the digital signature approval" />
+                  <StepRow step={4} label="Get the customer's signature" />
                   <Button
-                    label="Acquire digital signature"
-                    icon={<UserCheck size={15} color="#FFFFFF" />}
+                    label="Get the signature"
+                    icon={UserCheck}
                     onPress={() => setActiveModal('signature')}
                   />
                 </>
@@ -489,10 +499,10 @@ export default function HomeScreen() {
               {activeOrder.status === 'picked_up' && (
                 <>
                   <Text style={styles.workflowBody}>
-                    Garments packed and secured. Proceed to the laundry hub.
+                    Bags are on the bike. Ride to the hub.
                   </Text>
                   <Button
-                    label="Navigate to laundry centre"
+                    label="Navigate to the hub"
                     onPress={() => updateOrderStatus(activeOrder.id, 'navigating_to_laundry')}
                   />
                 </>
@@ -501,10 +511,10 @@ export default function HomeScreen() {
               {activeOrder.status === 'arrived_at_laundry' &&
                 dropoffBagsCheckedFor !== activeOrder.id && (
                   <>
-                    <StepRow step={1} text="Count the bags off against the manifest" />
+                    <StepRow step={1} label="Count the bags off against the manifest" />
                     <Button
-                      label="Verify drop-off barcodes"
-                      icon={<QrCode size={15} color="#FFFFFF" />}
+                      label="Count the bags off"
+                      icon={QrCode}
                       onPress={() => setActiveModal('scanner')}
                     />
                   </>
@@ -513,14 +523,14 @@ export default function HomeScreen() {
               {activeOrder.status === 'arrived_at_laundry' &&
                 dropoffBagsCheckedFor === activeOrder.id && (
                   <>
-                    <StepRow step={2} text="Ask the hub desk for their drop-off code" />
+                    <StepRow step={2} label="Ask the hub desk for their code" />
                     <Text style={styles.formNote}>
-                      It is on the desk’s dispatch screen. This console is never told it —
-                      dispatch checks what you send.
+                      It is on the desk’s screen. This app is never told it — dispatch checks
+                      what you send.
                     </Text>
                     <Button
                       label="Check the bags in"
-                      icon={<ScanLine size={15} color="#FFFFFF" />}
+                      icon={ScanLine}
                       onPress={() => setActiveModal('dropoff')}
                     />
                   </>
@@ -532,16 +542,15 @@ export default function HomeScreen() {
               {(activeOrder.status === 'dropped_off' ||
                 activeOrder.status === 'processing') && (
                 <View style={styles.processingCard}>
-                  <CheckCircle2 size={22} color={colors.statusSuccess} />
+                  <CheckCircle2 size={28} color={ink.success} />
                   <Text style={styles.processingTitle}>
                     {activeOrder.status === 'dropped_off'
                       ? 'Checked in at the hub'
-                      : 'Pressing and folding'}
+                      : 'Being washed'}
                   </Text>
                   <Text style={styles.processingBody}>
-                    FreshFold artisans are caring for the linens now. Dispatch will alert you
-                    when they pass quality check and are ready to ride back — you can close the
-                    app until then.
+                    The hub has the bags. Dispatch will alert you when they are washed and ready
+                    to ride back — you can close the app until then.
                   </Text>
                 </View>
               )}
@@ -549,7 +558,7 @@ export default function HomeScreen() {
               {activeOrder.status === 'ready_for_delivery' && (
                 <>
                   <Text style={styles.workflowBody}>
-                    Clean, folded garments are sealed and ready to deliver.
+                    Washed, folded and bagged. Ready to go back.
                   </Text>
                   <Button
                     label="Navigate to delivery"
@@ -563,8 +572,11 @@ export default function HomeScreen() {
               {activeOrder.status === 'arrived_at_delivery' && !overrideMode && (
                 <>
                   <View style={styles.otpHeader}>
-                    <Text style={styles.workflowBody}>Ask for the customer's delivery code</Text>
-                    <Pressable
+                    <Text style={[styles.workflowBody, { flex: 1 }]}>
+                      Ask the customer for their delivery code
+                    </Text>
+                    <LinkButton
+                      label="Ask in chat"
                       onPress={() => {
                         sendRiderMessage(
                           'Hello, I am outside with your fresh laundry. Please read me the delivery code from your FreshFold app.'
@@ -574,35 +586,27 @@ export default function HomeScreen() {
                         // courier is standing at a door waiting on a reply.
                         router.push('/chat');
                       }}
-                      hitSlop={6}
-                    >
-                      <Text style={styles.otpRequest}>Ask in chat</Text>
-                    </Pressable>
-                  </View>
-
-                  <View style={styles.otpRow}>
-                    <TextInput
-                      value={otpInput}
-                      onChangeText={(text) => {
-                        setOtpInput(text.replace(/\D/g, '').slice(0, 4));
-                        setOtpError('');
-                      }}
-                      placeholder="4-digit code"
-                      placeholderTextColor={colors.textSlate}
-                      keyboardType="number-pad"
-                      maxLength={4}
-                      style={styles.otpInput}
                     />
                   </View>
 
+                  <CodeInput
+                    value={otpInput}
+                    onChange={(next) => {
+                      setOtpInput(next);
+                      setOtpError('');
+                    }}
+                    failed={!!otpError}
+                  />
+
                   <Text style={styles.formNote}>
-                    It is on their order screen. This console is never told it — dispatch checks
+                    It is on their order screen. This app is never told it — dispatch checks
                     what you type.
                   </Text>
 
-                  <Pressable onPress={() => setOverrideMode(true)} hitSlop={6}>
-                    <Text style={styles.otpRequest}>They cannot give me a code</Text>
-                  </Pressable>
+                  <LinkButton
+                    label="They cannot give me a code"
+                    onPress={() => setOverrideMode(true)}
+                  />
                 </>
               )}
 
@@ -610,47 +614,46 @@ export default function HomeScreen() {
               {activeOrder.status === 'arrived_at_delivery' && overrideMode && (
                 <>
                   <Text style={styles.workflowBody}>What happened at the door?</Text>
-                  <TextInput
+                  <Input
                     value={overrideReason}
-                    onChangeText={(text) => {
-                      setOverrideReason(text);
+                    onChangeText={(next) => {
+                      setOverrideReason(next);
                       setOtpError('');
                     }}
                     placeholder="e.g. Nobody answered; left with the hostel porter, Mr Antwi"
-                    placeholderTextColor={colors.textSlate}
                     multiline
-                    style={[styles.otpInput, styles.overrideInput]}
+                    style={styles.overrideInput}
                   />
                   <Text style={styles.formNote}>
-                    This goes to the concierge desk and onto the order permanently, and the
-                    customer is told. Take the photo below whatever you write.
+                    This goes to the dispatch desk and onto the order permanently, and the
+                    customer is told. Take the photo whatever you write.
                   </Text>
 
-                  <Pressable
+                  <LinkButton
+                    label="They can give me the code after all"
                     onPress={() => {
                       setOverrideMode(false);
                       setOverrideReason('');
                       setOtpError('');
                     }}
-                    hitSlop={6}
-                  >
-                    <Text style={styles.otpRequest}>They can give me the code after all</Text>
-                  </Pressable>
+                  />
                 </>
               )}
 
               {activeOrder.status === 'arrived_at_delivery' && !!otpError && (
-                <Text style={styles.otpError}>{otpError}</Text>
+                <Notice icon={CheckCircle2} tone="error">
+                  {otpError}
+                </Notice>
               )}
 
               {activeOrder.status === 'arrived_at_delivery' &&
                 handoverReady &&
                 !activeOrder.deliveryPhoto && (
                   <>
-                    <StepRow step={2} text="Upload the proof-of-delivery photo" />
+                    <StepRow step={2} label="Photograph the delivered bags" />
                     <Button
-                      label="Take receipt photo"
-                      icon={<CameraIcon size={15} color="#FFFFFF" />}
+                      label="Take the photo"
+                      icon={CameraIcon}
                       onPress={() => setActiveModal('delivery-camera')}
                     />
                   </>
@@ -662,15 +665,15 @@ export default function HomeScreen() {
                   <>
                     <StepRow
                       step={3}
-                      text={
+                      label={
                         overrideMode
-                          ? 'Sign it off yourself and complete the drop'
-                          : "Obtain the recipient's signature"
+                          ? 'Sign it off yourself and finish the drop'
+                          : "Get the recipient's signature"
                       }
                     />
                     <Button
                       label={handoverBusy ? 'Confirming with dispatch…' : 'Collect drop signature'}
-                      icon={<UserCheck size={15} color="#FFFFFF" />}
+                      icon={UserCheck}
                       disabled={handoverBusy}
                       onPress={() => setActiveModal('signature')}
                     />
@@ -686,10 +689,10 @@ export default function HomeScreen() {
         <View style={styles.offerCard}>
           <View style={styles.offerHeader}>
             <View style={styles.offerEyebrowRow}>
-              <Sparkles size={12} color={colors.brandGold} />
-              <Text style={styles.offerEyebrow}>Premium incoming job</Text>
+              <Sparkles size={18} color={ink.gold} />
+              <Text style={styles.offerEyebrow}>New job</Text>
             </View>
-            <Text style={styles.offerTimeout}>Tap to respond</Text>
+            
           </View>
 
           <View style={styles.offerTitleRow}>
@@ -700,7 +703,7 @@ export default function HomeScreen() {
           </View>
 
           <View style={styles.offerMetaRow}>
-            <MapPin size={12} color={colors.brandSage} />
+            <MapPin size={18} color={ink.sage} />
             <Text style={styles.offerMeta} numberOfLines={1}>
               {offer.pickupAddress}
             </Text>
@@ -728,7 +731,7 @@ export default function HomeScreen() {
               <Button
                 label="Finish profile first"
                 variant="gold"
-                icon={<IdCard size={15} color="#FFFFFF" />}
+                icon={IdCard}
                 onPress={() => router.push('/(tabs)/profile')}
                 style={{ flex: 1.3 }}
               />
@@ -826,30 +829,14 @@ export default function HomeScreen() {
   );
 }
 
-function StatTile({
-  label,
-  value,
-  accent,
-}: {
-  label: string;
-  value: string;
-  accent?: boolean;
-}) {
-  return (
-    <View style={styles.statTile}>
-      <Text style={styles.statLabel}>{label}</Text>
-      <Text style={[styles.statValue, accent && { color: colors.brandGold }]}>{value}</Text>
-    </View>
-  );
-}
-
-function StepRow({ step, text }: { step: number; text: string }) {
+// `text` is the theme's type scale in this file, so the prop is `label`.
+function StepRow({ step, label }: { step: number; label: string }) {
   return (
     <View style={styles.stepRow}>
       <View style={styles.stepBubble}>
         <Text style={styles.stepNumber}>{step}</Text>
       </View>
-      <Text style={styles.stepText}>{text}</Text>
+      <Text style={styles.stepText}>{label}</Text>
     </View>
   );
 }
@@ -869,25 +856,25 @@ const styles = StyleSheet.create({
   identityChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 9,
+    gap: 10,
     backgroundColor: 'rgba(255,255,255,0.95)',
     borderWidth: 1,
     borderColor: colors.borderSoft,
     borderRadius: radius.pill,
-    paddingLeft: 5,
-    // Tighter than the 14 it was: the connection pill now sits on this edge and
-    // carries its own padding.
-    paddingRight: 6,
-    paddingVertical: 5,
+    paddingLeft: 6,
+    // Tighter than the left: the connection pill sits on this edge and carries
+    // its own padding.
+    paddingRight: 8,
+    paddingVertical: 6,
     ...shadow.md,
   },
-  identityName: { fontSize: 10.5, fontWeight: '800', color: colors.textCharcoal },
-  identityId: { fontSize: 8, color: colors.textSlate, marginTop: 1 },
-  topActions: { flexDirection: 'row', gap: 8, marginTop: 4 },
+  identityName: { ...text.caption, fontWeight: '800', color: colors.textCharcoal },
+  identityId: { ...text.micro, marginTop: 1 },
+  topActions: { flexDirection: 'row', gap: 10, marginTop: 4 },
   circleButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: touch.min,
+    height: touch.min,
+    borderRadius: touch.min / 2,
     backgroundColor: 'rgba(255,255,255,0.95)',
     borderWidth: 1,
     borderColor: colors.borderSoft,
@@ -898,17 +885,17 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.8, transform: [{ scale: 0.96 }] },
   badgeDot: {
     position: 'absolute',
-    top: -3,
-    right: -3,
-    minWidth: 16,
-    height: 16,
-    paddingHorizontal: 3,
-    borderRadius: 8,
+    top: -2,
+    right: -2,
+    minWidth: 20,
+    height: 20,
+    paddingHorizontal: 4,
+    borderRadius: 10,
     backgroundColor: colors.statusError,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  badgeDotText: { color: '#FFFFFF', fontSize: 8, fontWeight: '800' },
+  badgeDotText: { ...text.micro, color: '#FFFFFF', fontWeight: '800' },
 
   sheet: {
     backgroundColor: colors.cardPure,
@@ -921,67 +908,44 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     ...shadow.lg,
   },
-  sheetHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  sheetTitle: { fontSize: 14, fontWeight: '800', color: colors.textCharcoal },
-  sheetSubtitle: { fontSize: 10, color: colors.textSlate, marginTop: 2 },
+  sheetHeader: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  sheetTitle: text.title,
+  sheetSubtitle: { ...text.caption, marginTop: 3 },
   onlinePill: {
+    minHeight: touch.min,
+    justifyContent: 'center',
     borderRadius: radius.pill,
     borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingHorizontal: 18,
   },
   onlinePillOn: { backgroundColor: tints.success10, borderColor: tints.success30 },
   onlinePillOff: { backgroundColor: colors.textCharcoal, borderColor: colors.textCharcoal },
   onlinePillLabel: {
-    fontSize: 10.5,
+    ...text.bodyStrong,
     fontWeight: '800',
-    letterSpacing: 0.6,
-    textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
 
-  statsRow: { flexDirection: 'row', gap: 8 },
-  statTile: {
-    flex: 1,
-    backgroundColor: colors.bgIvory,
-    borderWidth: 1,
-    borderColor: colors.borderSoft,
-    borderRadius: radius.lg,
-    paddingVertical: 10,
-    paddingHorizontal: 8,
-    alignItems: 'center',
-  },
-  statLabel: {
-    fontSize: 8,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-    color: colors.textSlate,
-  },
-  statValue: { fontSize: 13, fontWeight: '800', color: colors.textCharcoal, marginTop: 4 },
+  statsRow: { flexDirection: 'row', gap: 10 },
 
   stripWrap: {
-    gap: 7,
+    gap: 10,
     borderTopWidth: 1,
     borderTopColor: colors.borderSoft,
-    paddingTop: 14,
-  },
-  stripLabel: {
-    fontSize: 9,
-    fontWeight: '700',
-    letterSpacing: 0.6,
-    textTransform: 'uppercase',
-    color: colors.textSlate,
+    paddingTop: 16,
   },
   // Cancels the sheet's own 18 of padding so the chips bleed to the screen
   // edges as they scroll — a half-visible chip reads as "more this way"
   // rather than as a clipping mistake — and puts it back inside the content.
   stripScroll: { marginHorizontal: -18 },
-  strip: { gap: 8, paddingHorizontal: 18 },
+  strip: { gap: 10, paddingHorizontal: 18 },
   jobChip: {
-    minWidth: 116,
+    minWidth: 140,
+    minHeight: touch.min,
+    justifyContent: 'center',
     gap: 3,
     paddingVertical: 8,
-    paddingHorizontal: 11,
+    paddingHorizontal: 14,
     borderRadius: radius.md,
     borderWidth: 1,
     borderColor: colors.borderSoft,
@@ -991,105 +955,79 @@ const styles = StyleSheet.create({
     borderColor: colors.brandSage,
     backgroundColor: tints.sage15,
   },
-  jobChipTop: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  jobChipTop: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   /** Marks the job the courier is actually riding for. */
   ridingDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
     backgroundColor: colors.brandGold,
   },
   jobChipRef: {
+    ...text.caption,
     flexShrink: 1,
-    fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 0.3,
     color: colors.textSlate,
   },
   jobChipRefOn: { color: colors.textCharcoal },
-  jobChipStage: { fontSize: 9, fontWeight: '600', color: colors.textSlate },
-  jobChipStageOn: { color: colors.brandSage },
+  jobChipStage: { ...text.micro, fontWeight: '600' },
+  jobChipStageOn: { color: ink.sage },
+
   workflow: {
-    gap: 10,
+    gap: 14,
     borderTopWidth: 1,
     borderTopColor: colors.borderSoft,
-    paddingTop: 14,
+    paddingTop: 16,
   },
   workflowHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 8,
+    gap: 10,
   },
-  workflowLabel: {
-    fontSize: 9,
-    fontWeight: '700',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    color: colors.textSlate,
-  },
-  workflowBody: { fontSize: 11.5, color: colors.textCharcoal, lineHeight: 16 },
-  workflowMuted: { fontSize: 11, color: colors.textSlate },
+  workflowLabel: { ...text.overline, color: colors.textCharcoal },
+  workflowBody: text.body,
+  workflowMuted: { ...text.body, color: colors.textSlate },
   strong: { fontWeight: '700' },
 
   stepRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 12,
     backgroundColor: colors.bgLinen,
     borderRadius: radius.lg,
-    padding: 9,
+    padding: 12,
   },
   stepBubble: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     backgroundColor: colors.brandSage,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  stepNumber: { color: '#FFFFFF', fontSize: 10, fontWeight: '800' },
-  stepText: { flex: 1, fontSize: 10.5, color: colors.textCharcoal },
+  stepNumber: { ...text.caption, color: '#FFFFFF', fontWeight: '800' },
+  stepText: { ...text.body, flex: 1 },
 
   processingCard: {
     alignItems: 'center',
-    gap: 4,
+    gap: 6,
     backgroundColor: colors.bgLinen,
     borderWidth: 1,
     borderColor: colors.brandStone,
     borderRadius: radius.lg,
-    padding: 14,
+    padding: 18,
   },
-  processingTitle: { fontSize: 12, fontWeight: '700', color: colors.textCharcoal },
-  processingBody: { fontSize: 10, color: colors.textSlate, textAlign: 'center' },
+  processingTitle: { ...text.strong, marginTop: 4 },
+  processingBody: { ...text.caption, textAlign: 'center' },
 
-  otpHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  otpRequest: { fontSize: 9.5, fontWeight: '700', color: colors.brandGold },
-  otpRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
-  otpInput: {
-    flex: 1.4,
-    borderWidth: 1,
-    borderColor: colors.borderSoft,
-    borderRadius: radius.md,
-    backgroundColor: colors.bgIvory,
-    paddingVertical: 11,
-    textAlign: 'center',
-    letterSpacing: 5,
-    fontWeight: '700',
-    color: colors.textCharcoal,
-  },
-  otpError: { fontSize: 9.5, fontWeight: '700', color: colors.statusError },
+  otpHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   overrideInput: {
-    flex: undefined,
-    minHeight: 68,
-    textAlign: 'left',
-    letterSpacing: 0,
-    fontWeight: '500',
-    fontSize: 11.5,
-    paddingHorizontal: 11,
+    minHeight: 88,
     textAlignVertical: 'top',
+    backgroundColor: colors.bgIvory,
   },
-  formNote: { fontSize: 9.5, color: colors.textSlate, lineHeight: 13.5 },
+  formNote: text.caption,
 
   offerCard: {
     position: 'absolute',
@@ -1098,10 +1036,10 @@ const styles = StyleSheet.create({
     bottom: 24,
     backgroundColor: colors.cardPure,
     borderRadius: radius.xxl,
-    borderWidth: 1,
+    borderWidth: 2,
     borderColor: colors.brandGold,
-    padding: 16,
-    gap: 6,
+    padding: 18,
+    gap: 8,
     ...shadow.lg,
   },
   offerHeader: {
@@ -1110,29 +1048,24 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     borderBottomWidth: 1,
     borderBottomColor: colors.borderSoft,
-    paddingBottom: 8,
+    paddingBottom: 10,
   },
-  offerEyebrowRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  offerEyebrow: {
-    fontSize: 9,
-    fontWeight: '800',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    color: colors.brandGold,
-  },
-  offerTimeout: { fontSize: 9, color: colors.textSlate },
+  offerEyebrowRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  // Gold is the offer's border and its mark; the words are the readable ink.
+  offerEyebrow: { ...text.overline, color: ink.gold },
   offerTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 10,
     marginTop: 4,
   },
-  offerName: { flex: 1, fontSize: 14, fontWeight: '800', color: colors.textCharcoal },
-  offerPrice: { fontSize: 13, fontWeight: '800', color: colors.brandSage },
-  offerMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-  offerMeta: { flex: 1, fontSize: 10.5, color: colors.textSlate },
-  offerSubMeta: { fontSize: 9.5, color: colors.textSlate },
-  offerActions: { flexDirection: 'row', gap: 10, marginTop: 8 },
+  offerName: { ...text.title, flex: 1 },
+  offerPrice: { ...text.title, color: ink.gold },
+  offerMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  offerMeta: { ...text.body, flex: 1 },
+  offerSubMeta: text.caption,
+  offerActions: { flexDirection: 'row', gap: 12, marginTop: 10 },
 
   modalScrim: { flex: 1, backgroundColor: tints.scrim, justifyContent: 'flex-end' },
   modalAvoider: { justifyContent: 'flex-end' },

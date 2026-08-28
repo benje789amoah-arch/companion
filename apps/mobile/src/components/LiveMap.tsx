@@ -5,7 +5,7 @@
 
 import { Activity, Minus, Navigation, Plus } from 'lucide-react-native';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import MapView, { Marker, Polyline, Region } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { routeEtaMinutes } from '@freshfold/core';
@@ -13,7 +13,7 @@ import { MAP_PROVIDER } from '@freshfold/rn-maps';
 import { LAUNDRY_HUB_COORDS } from '../data/initialState';
 import { useRoadRoute } from '../hooks/useRoadRoute';
 import { NavigationTarget } from '../store/AppStore';
-import { colors, formatCedis, radius, shadow, tints } from '../theme';
+import { colors, formatCedis, ink, radius, shadow, text, tints, touch } from '../theme';
 import { Coords, Order, RiderState } from '../types';
 import MapFallback from './MapFallback';
 import { Badge, Button, Divider } from './ui';
@@ -420,9 +420,11 @@ function NativeLiveMap({
               <Text style={styles.detailOrderNumber}>{selectedOrder.orderNumber}</Text>
             </View>
             <Pressable
+              accessibilityRole="button"
               onPress={() => setSelectedOrder(null)}
-              hitSlop={10}
+              hitSlop={touch.slop}
               accessibilityLabel="Dismiss pin details"
+              style={styles.detailCloseButton}
             >
               <Text style={styles.detailClose}>✕</Text>
             </Pressable>
@@ -447,7 +449,7 @@ function NativeLiveMap({
             <Text style={styles.detailStat}>
               {selectedOrder.bagCount} {selectedOrder.bagCount === 1 ? 'bag' : 'bags'}
             </Text>
-            <Text style={[styles.detailStat, { color: colors.brandSage, fontWeight: '700' }]}>
+            <Text style={[styles.detailStat, { color: ink.sage, fontWeight: '700' }]}>
               {formatCedis(selectedOrder.price)}
             </Text>
           </View>
@@ -536,8 +538,8 @@ const styles = StyleSheet.create({
     transform: [{ rotate: '45deg' }],
   },
   hubLabel: {
-    marginTop: 3,
-    fontSize: 8,
+    marginTop: 4,
+    ...text.micro,
     fontWeight: '700',
     color: colors.textCharcoal,
     backgroundColor: 'rgba(255,255,255,0.95)',
@@ -576,14 +578,14 @@ const styles = StyleSheet.create({
     backgroundColor: colors.brandSage,
   },
   pinLabel: {
-    fontSize: 9,
+    ...text.micro,
     fontWeight: '700',
-    color: colors.brandSage,
-    maxWidth: 90,
+    color: ink.sage,
+    maxWidth: 110,
   },
   pinSubLabel: {
-    marginTop: 2,
-    fontSize: 7.5,
+    marginTop: 3,
+    ...text.micro,
     fontWeight: '600',
     color: colors.textCharcoal,
     backgroundColor: 'rgba(255,255,255,0.92)',
@@ -636,19 +638,13 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     ...shadow.md,
   },
-  gpsTitle: {
-    fontSize: 9,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-    color: colors.textCharcoal,
-  },
-  gpsSub: { fontSize: 8, color: colors.textSlate, marginTop: 1 },
+  gpsTitle: { ...text.overline, color: colors.textCharcoal },
+  gpsSub: { ...text.micro, marginTop: 2 },
   mapControls: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   controlButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: touch.min,
+    height: touch.min,
+    borderRadius: touch.min / 2,
     backgroundColor: 'rgba(255,255,255,0.95)',
     borderWidth: 1,
     borderColor: colors.borderSoft,
@@ -656,7 +652,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     ...shadow.md,
   },
-  controlSmall: { width: 32, height: 32, borderRadius: 16 },
+  controlSmall: { width: touch.min, height: touch.min, borderRadius: touch.min / 2 },
   controlActive: { backgroundColor: colors.brandSage, borderColor: colors.brandSage },
   controlPressed: { opacity: 0.7, transform: [{ scale: 0.95 }] },
 
@@ -674,32 +670,24 @@ const styles = StyleSheet.create({
   },
   detailHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
   detailTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  detailName: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: colors.textCharcoal,
-    flexShrink: 1,
+  detailName: { ...text.strong, flexShrink: 1 },
+  detailOrderNumber: { ...text.caption, fontWeight: '700', color: ink.gold, marginTop: 3 },
+  // The tap target the bare glyph never had.
+  detailCloseButton: {
+    width: touch.min,
+    height: touch.min,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  detailOrderNumber: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: colors.brandGold,
-    marginTop: 2,
-  },
-  detailClose: { fontSize: 14, color: colors.textSlate, paddingHorizontal: 4 },
-  detailAddress: { fontSize: 11.5, fontWeight: '600', color: colors.textCharcoal },
-  detailCoords: {
-    fontSize: 10,
-    color: colors.textSlate,
-    marginTop: 3,
-    ...Platform.select({ ios: { fontFamily: 'Menlo' }, android: { fontFamily: 'monospace' } }),
-  },
+  detailClose: { ...text.title, color: colors.textSlate },
+  detailAddress: { ...text.body, fontWeight: '600' },
+  detailCoords: { ...text.mono, marginTop: 4 },
   detailStatsRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     marginTop: 8,
   },
-  detailStat: { fontSize: 11, color: colors.textCharcoal },
+  detailStat: text.body,
 
   navCard: {
     position: 'absolute',
@@ -718,21 +706,21 @@ const styles = StyleSheet.create({
     ...shadow.md,
   },
   navIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: tints.sage10,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  navTitle: { fontSize: 12, fontWeight: '800', color: colors.textCharcoal },
-  navSubtitle: { fontSize: 10, color: colors.textSlate, marginTop: 1 },
+  navTitle: text.strong,
+  navSubtitle: { ...text.caption, marginTop: 2 },
   navMetrics: {
     alignItems: 'flex-end',
     borderLeftWidth: 1,
     borderLeftColor: colors.borderSoft,
     paddingLeft: 10,
   },
-  navDistance: { fontSize: 12, fontWeight: '700', color: colors.brandSage },
-  navEta: { fontSize: 9, color: colors.textSlate },
+  navDistance: { ...text.strong, color: ink.sage },
+  navEta: text.micro,
 });

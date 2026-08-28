@@ -10,16 +10,15 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ApiError } from '@freshfold/core';
 import { KeyboardAvoider } from '../src/components/KeyboardAvoider';
-import { Button } from '../src/components/ui';
+import { Button, CodeInput, Field, Notice } from '../src/components/ui';
 import { api } from '../src/services/api';
 import { useSession } from '../src/store/SessionStore';
-import { colors, radius, shadow, tints } from '../src/theme';
+import { colors, ink, text, tints } from '../src/theme';
 
 const PIN_DIGITS = 4;
 
@@ -101,10 +100,10 @@ export default function ChangePinScreen() {
       <KeyboardAvoider>
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
           <View style={styles.mark}>
-            <KeyRound size={22} color={colors.brandSage} />
+            <KeyRound size={26} color={ink.sage} />
           </View>
 
-          <Text style={styles.heading}>Choose your own PIN</Text>
+          <Text style={text.heading}>Choose your own PIN</Text>
           <Text style={styles.body}>
             You signed in with a temporary PIN from your supervisor. They know it too, so it
             cannot stay. Pick one only you know — you will use it every shift.
@@ -136,12 +135,7 @@ export default function ChangePinScreen() {
               }}
             />
 
-            {!!error && (
-              <View style={styles.errorBox}>
-                <AlertCircle size={14} color={colors.statusError} />
-                <Text style={styles.errorText}>{error}</Text>
-              </View>
-            )}
+            {!!error && <Notice icon={AlertCircle} tone="error">{error}</Notice>}
 
             <Button
               label="Set my PIN"
@@ -155,12 +149,11 @@ export default function ChangePinScreen() {
             />
           </View>
 
-          <View style={styles.assurance}>
-            <ShieldCheck size={14} color={colors.brandSage} />
-            <Text style={styles.assuranceText}>
+          <View style={{ marginTop: 26 }}>
+            <Notice icon={ShieldCheck}>
               Your PIN is hashed on the dispatch server. Nobody at FreshFold can read it back —
               a forgotten PIN is replaced, not recovered.
-            </Text>
+            </Notice>
           </View>
         </ScrollView>
       </KeyboardAvoider>
@@ -178,19 +171,9 @@ function PinField({
   onChange: (next: string) => void;
 }) {
   return (
-    <View style={styles.field}>
-      <Text style={styles.label}>{label}</Text>
-      <TextInput
-        value={value}
-        onChangeText={(text) => onChange(text.replace(/\D/g, '').slice(0, PIN_DIGITS))}
-        placeholder="••••"
-        placeholderTextColor={colors.brandStone}
-        keyboardType="number-pad"
-        secureTextEntry
-        maxLength={PIN_DIGITS}
-        style={styles.input}
-      />
-    </View>
+    <Field label={label}>
+      <CodeInput value={value} onChange={onChange} digits={PIN_DIGITS} secure />
+    </Field>
   );
 }
 
@@ -199,58 +182,15 @@ const styles = StyleSheet.create({
   scroll: { padding: 24, paddingTop: 40, gap: 6 },
 
   mark: {
-    width: 52,
-    height: 52,
+    width: 60,
+    height: 60,
     borderRadius: 20,
     backgroundColor: tints.sage10,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 14,
   },
-  heading: {
-    fontSize: 23,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-    color: colors.textCharcoal,
-  },
-  body: { fontSize: 12.5, color: colors.textSlate, lineHeight: 18, marginTop: 6 },
+  body: { ...text.body, color: colors.textSlate, marginTop: 8 },
 
-  form: { gap: 14, marginTop: 26 },
-  field: { gap: 6 },
-  label: {
-    fontSize: 9.5,
-    fontWeight: '700',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    color: colors.textSlate,
-  },
-  input: {
-    borderWidth: 1.5,
-    borderColor: colors.brandStone,
-    borderRadius: radius.lg,
-    backgroundColor: colors.cardPure,
-    paddingHorizontal: 16,
-    paddingVertical: 13,
-    fontSize: 26,
-    fontWeight: '800',
-    letterSpacing: 12,
-    textAlign: 'center',
-    color: colors.textCharcoal,
-    ...shadow.xs,
-  },
-
-  errorBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: tints.error05,
-    borderWidth: 1,
-    borderColor: tints.error30,
-    borderRadius: radius.md,
-    padding: 11,
-  },
-  errorText: { flex: 1, fontSize: 11, color: colors.statusError, lineHeight: 15 },
-
-  assurance: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, marginTop: 26 },
-  assuranceText: { flex: 1, fontSize: 10, color: colors.textSlate, lineHeight: 14.5 },
+  form: { gap: 18, marginTop: 28 },
 });

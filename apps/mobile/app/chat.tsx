@@ -6,25 +6,19 @@
 import { useRouter } from 'expo-router';
 import { Activity, ArrowLeft, Send } from 'lucide-react-native';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { MessageSender } from '@freshfold/core';
 import { KeyboardAvoider } from '../src/components/KeyboardAvoider';
+import { Chip, Input } from '../src/components/ui';
 import { useApp } from '../src/store/AppStore';
-import { colors, radius, shadow } from '../src/theme';
+import { colors, ink, radius, shadow, text, touch } from '../src/theme';
 
 const QUICK_REPLIES = [
-  'I have arrived at the concierge lobby.',
-  'Placing delicate garments in security sleeves.',
-  'GPS recalculation requested.',
-  'Please confirm the building entry buzzer number.',
+  'I am outside.',
+  'Five minutes away.',
+  'Which floor or room?',
+  'No answer at the door — please call me.',
 ];
 
 /** Who a message is from, in the courier's language. */
@@ -78,21 +72,27 @@ export default function ChatScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.backButton}>
-          <ArrowLeft size={17} color={colors.textCharcoal} />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+          onPress={() => router.back()}
+          hitSlop={touch.slop}
+          style={styles.backButton}
+        >
+          <ArrowLeft size={22} color={colors.textCharcoal} />
         </Pressable>
 
         <View style={styles.headerCenter}>
           <Text style={styles.headerTitle}>
-            {activeOrder ? activeOrder.customerName : 'Communication core'}
+            {activeOrder ? activeOrder.customerName : 'Messages'}
           </Text>
           <Text style={styles.headerSubtitle} numberOfLines={1}>
-            {activeOrder ? `${activeOrder.orderNumber} • customer & dispatch` : 'No active job'}
+            {activeOrder ? `${activeOrder.orderNumber} · customer and dispatch` : 'No active job'}
           </Text>
         </View>
 
         <View style={styles.livePill}>
-          <Activity size={14} color={colors.brandSage} />
+          <Activity size={18} color={ink.sage} />
         </View>
       </View>
 
@@ -140,24 +140,17 @@ export default function ChatScreen() {
             style={styles.quickBar}
           >
             {QUICK_REPLIES.map((reply) => (
-              <Pressable
-                key={reply}
-                onPress={() => sendRiderMessage(reply)}
-                style={({ pressed }) => [styles.quickChip, pressed && { opacity: 0.8 }]}
-              >
-                <Text style={styles.quickLabel}>{reply}</Text>
-              </Pressable>
+              <Chip key={reply} label={reply} onPress={() => sendRiderMessage(reply)} />
             ))}
           </ScrollView>
         )}
 
         <View style={styles.composer}>
-          <TextInput
+          <Input
             value={draft}
             onChangeText={setDraft}
             placeholder={orderId ? 'Write a message…' : 'Accept a job to start a thread'}
-            placeholderTextColor={colors.textSlate}
-            style={styles.input}
+            style={{ flex: 1, backgroundColor: colors.bgIvory }}
             editable={!!orderId}
             onSubmitEditing={send}
             returnKeyType="send"
@@ -172,7 +165,7 @@ export default function ChatScreen() {
               pressed && { opacity: 0.85 },
             ]}
           >
-            <Send size={16} color="#FFFFFF" />
+            <Send size={20} color="#FFFFFF" />
           </Pressable>
         </View>
       </KeyboardAvoider>
@@ -194,20 +187,20 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   backButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: touch.min,
+    height: touch.min,
+    borderRadius: touch.min / 2,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.bgLinen,
   },
   headerCenter: { flex: 1, alignItems: 'center' },
-  headerTitle: { fontSize: 12.5, fontWeight: '800', color: colors.textCharcoal },
-  headerSubtitle: { fontSize: 9, color: colors.textSlate, marginTop: 1 },
+  headerTitle: { ...text.strong },
+  headerSubtitle: { ...text.caption, marginTop: 2 },
   livePill: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: 'rgba(111, 122, 99, 0.10)',
     alignItems: 'center',
     justifyContent: 'center',
@@ -216,17 +209,18 @@ const styles = StyleSheet.create({
   thread: { flex: 1 },
   threadContent: { padding: 16, gap: 10, paddingBottom: 8 },
   emptyThread: {
-    fontSize: 11,
+    ...text.body,
     color: colors.textSlate,
     textAlign: 'center',
-    marginTop: 28,
+    marginTop: 32,
+    paddingHorizontal: 12,
   },
   bubble: {
     maxWidth: '82%',
     borderRadius: radius.xl,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    gap: 3,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    gap: 4,
     ...shadow.xs,
   },
   bubbleMine: {
@@ -241,33 +235,19 @@ const styles = StyleSheet.create({
     borderColor: colors.borderSoft,
     borderTopLeftRadius: 4,
   },
-  bubbleMeta: {
-    fontSize: 8,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
-    color: colors.textSlate,
-  },
-  bubbleMetaMine: { color: 'rgba(255,255,255,0.8)' },
-  bubbleText: { fontSize: 11.5, lineHeight: 16, color: colors.textCharcoal },
+  bubbleMeta: text.overline,
+  // On the sage bubble this sits on a 4.53:1 fill, so it is white, not a tint.
+  bubbleMetaMine: { color: '#FFFFFF' },
+  bubbleText: text.body,
   bubbleTextMine: { color: '#FFFFFF' },
 
   quickBar: {
-    maxHeight: 46,
+    maxHeight: 68,
     borderTopWidth: 1,
     borderTopColor: colors.borderSoft,
     backgroundColor: colors.cardPure,
   },
-  quickRow: { gap: 7, paddingHorizontal: 14, paddingVertical: 8, alignItems: 'center' },
-  quickChip: {
-    backgroundColor: colors.bgLinen,
-    borderWidth: 1,
-    borderColor: colors.borderSoft,
-    borderRadius: radius.pill,
-    paddingHorizontal: 11,
-    paddingVertical: 6,
-  },
-  quickLabel: { fontSize: 9.5, fontWeight: '600', color: colors.textCharcoal },
+  quickRow: { gap: 8, paddingHorizontal: 14, paddingVertical: 10, alignItems: 'center' },
 
   composer: {
     flexDirection: 'row',
@@ -278,20 +258,9 @@ const styles = StyleSheet.create({
     borderTopColor: colors.borderSoft,
     padding: 12,
   },
-  input: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: colors.borderSoft,
-    borderRadius: radius.lg,
-    backgroundColor: colors.bgIvory,
-    paddingHorizontal: 13,
-    paddingVertical: 10,
-    fontSize: 12.5,
-    color: colors.textCharcoal,
-  },
   sendButton: {
-    width: 42,
-    height: 42,
+    width: 52,
+    height: 52,
     borderRadius: radius.lg,
     backgroundColor: colors.brandSage,
     alignItems: 'center',

@@ -7,11 +7,11 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { KeyRound, ScanLine, ShieldCheck, TriangleAlert } from 'lucide-react-native';
 import React, { useCallback, useRef, useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { parseHandoffPayload, verifyHandoff } from '@freshfold/core';
-import { colors, radius, tints } from '../theme';
+import { colors, ink, radius, text } from '../theme';
 import { Order } from '../types';
-import { Button, Divider } from './ui';
+import { Button, CodeInput, Divider, Notice, SegmentedControl, SheetHeader } from './ui';
 
 /**
  * Checking the customer's collection code before taking the bags.
@@ -108,37 +108,27 @@ export default function HandoffVerify({ order, onVerified, onCancel }: HandoffVe
 
   return (
     <View style={styles.sheet}>
-      <View style={styles.header}>
-        <ScanLine size={20} color={colors.brandSage} />
-        <View style={{ flex: 1 }}>
-          <Text style={styles.title}>Verify the collection</Text>
-          <Text style={styles.subtitle}>
-            {order.orderNumber} · {order.customerName}
-          </Text>
-        </View>
-      </View>
+      <SheetHeader
+        icon={ScanLine}
+        title="Check the collection code"
+        subtitle={`${order.orderNumber} · ${order.customerName}`}
+      />
 
-      <View style={styles.modeToggle}>
-        <Pressable
-          onPress={enterCameraMode}
-          style={[styles.modeButton, mode === 'camera' && styles.modeButtonActive]}
-        >
-          <Text style={[styles.modeLabel, mode === 'camera' && styles.modeLabelActive]}>
-            Scan QR
-          </Text>
-        </Pressable>
-        <Pressable
-          onPress={() => {
+      <SegmentedControl
+        value={mode}
+        onChange={(next) => {
+          if (next === 'camera') {
+            void enterCameraMode();
+          } else {
             setMode('manual');
             setStatus('Ask the customer to read out their four digits.');
-          }}
-          style={[styles.modeButton, mode === 'manual' && styles.modeButtonActive]}
-        >
-          <Text style={[styles.modeLabel, mode === 'manual' && styles.modeLabelActive]}>
-            Type the code
-          </Text>
-        </Pressable>
-      </View>
+          }
+        }}
+        options={[
+          { id: 'camera' as Mode, label: 'Scan QR' },
+          { id: 'manual' as Mode, label: 'Type the code' },
+        ]}
+      />
 
       {mode === 'camera' ? (
         <View style={styles.viewfinder}>
@@ -151,7 +141,7 @@ export default function HandoffVerify({ order, onVerified, onCancel }: HandoffVe
             />
           ) : (
             <View style={styles.viewfinderPlaceholder}>
-              <ScanLine size={40} color={tints.sage30} />
+              <ScanLine size={48} color={colors.brandStone} />
               <Text style={styles.viewfinderTitle}>Camera not enabled</Text>
               <Text style={styles.viewfinderBody}>
                 Grant access to scan, or switch to typing the code.
@@ -172,43 +162,36 @@ export default function HandoffVerify({ order, onVerified, onCancel }: HandoffVe
         </View>
       ) : (
         <View style={styles.manualPane}>
-          <KeyRound size={17} color={colors.brandSage} />
-          <Text style={styles.manualTitle}>Four digits from the customer</Text>
-          <TextInput
+          <KeyRound size={22} color={ink.sage} />
+          <Text style={text.strong}>Four digits from the customer</Text>
+          <CodeInput
             value={typed}
-            onChangeText={(next) => {
-              setTyped(next.replace(/\D/g, '').slice(0, 4));
+            onChange={(next) => {
+              setTyped(next);
               setFailed(false);
             }}
-            placeholder="0000"
-            placeholderTextColor={colors.brandStone}
-            keyboardType="number-pad"
-            style={[styles.manualInput, failed && styles.manualInputFailed]}
-            maxLength={4}
+            failed={failed}
+            autoFocus
           />
           {failed && (
-            <View style={styles.failRow}>
-              <TriangleAlert size={13} color={colors.statusError} />
-              <Text style={styles.failText}>{status}</Text>
-            </View>
+            <Notice icon={TriangleAlert} tone="error">
+              {status}
+            </Notice>
           )}
           <Button
-            label="Verify code"
+            label="Check the code"
             onPress={submitTyped}
             disabled={typed.length < 4}
-            icon={<ShieldCheck size={15} color="#FFFFFF" />}
+            icon={ShieldCheck}
             style={{ alignSelf: 'stretch' }}
           />
         </View>
       )}
 
-      <View style={styles.notice}>
-        <ShieldCheck size={14} color={colors.brandSage} />
-        <Text style={styles.noticeText}>
-          Do not collect without a matching code. If the customer cannot produce one, call
-          dispatch rather than taking the bags.
-        </Text>
-      </View>
+      <Notice icon={ShieldCheck}>
+        Do not collect without a matching code. If the customer cannot produce one, call
+        dispatch rather than taking the bags.
+      </Notice>
 
       <Divider />
 
@@ -223,23 +206,8 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     padding: 20,
-    gap: 12,
+    gap: 16,
   },
-  header: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  title: { fontSize: 14, fontWeight: '800', color: colors.textCharcoal },
-  subtitle: { fontSize: 10, color: colors.textSlate, marginTop: 2 },
-
-  modeToggle: {
-    flexDirection: 'row',
-    backgroundColor: colors.bgLinen,
-    borderRadius: radius.md,
-    padding: 3,
-    gap: 3,
-  },
-  modeButton: { flex: 1, paddingVertical: 8, borderRadius: radius.sm, alignItems: 'center' },
-  modeButtonActive: { backgroundColor: colors.cardPure },
-  modeLabel: { fontSize: 10.5, fontWeight: '600', color: colors.textSlate },
-  modeLabelActive: { color: colors.textCharcoal },
 
   viewfinder: {
     aspectRatio: 16 / 11,
@@ -258,85 +226,57 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: 18,
-    gap: 4,
+    gap: 6,
   },
-  viewfinderTitle: { color: '#FFFFFF', fontSize: 12, fontWeight: '700', marginTop: 6 },
+  viewfinderTitle: { ...text.strong, color: '#FFFFFF', marginTop: 8 },
   viewfinderBody: {
-    color: colors.textSlate,
-    fontSize: 9.5,
+    ...text.caption,
+    // On the near-black viewfinder, slate is unreadable — this is its own ground.
+    color: 'rgba(255,255,255,0.78)',
     textAlign: 'center',
-    maxWidth: 210,
+    maxWidth: 240,
   },
-  corner: { position: 'absolute', width: 20, height: 20, borderColor: colors.brandGold },
+  corner: { position: 'absolute', width: 24, height: 24, borderColor: colors.brandGold },
   cornerFailed: { borderColor: colors.statusError },
-  cornerTL: { top: 20, left: 20, borderTopWidth: 2, borderLeftWidth: 2, borderTopLeftRadius: 6 },
-  cornerTR: { top: 20, right: 20, borderTopWidth: 2, borderRightWidth: 2, borderTopRightRadius: 6 },
+  cornerTL: { top: 20, left: 20, borderTopWidth: 3, borderLeftWidth: 3, borderTopLeftRadius: 6 },
+  cornerTR: { top: 20, right: 20, borderTopWidth: 3, borderRightWidth: 3, borderTopRightRadius: 6 },
   cornerBL: {
     bottom: 20,
     left: 20,
-    borderBottomWidth: 2,
-    borderLeftWidth: 2,
+    borderBottomWidth: 3,
+    borderLeftWidth: 3,
     borderBottomLeftRadius: 6,
   },
   cornerBR: {
     bottom: 20,
     right: 20,
-    borderBottomWidth: 2,
-    borderRightWidth: 2,
+    borderBottomWidth: 3,
+    borderRightWidth: 3,
     borderBottomRightRadius: 6,
   },
   statusPill: {
     position: 'absolute',
     left: 12,
     right: 12,
-    bottom: 10,
-    backgroundColor: 'rgba(0,0,0,0.62)',
-    borderRadius: radius.sm,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    bottom: 12,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    borderRadius: radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
+    borderColor: 'rgba(255,255,255,0.14)',
   },
-  statusPillFailed: { backgroundColor: 'rgba(184, 92, 92, 0.85)' },
-  statusText: { color: '#FFFFFF', fontSize: 9.5, lineHeight: 13 },
+  statusPillFailed: { backgroundColor: 'rgba(169, 85, 85, 0.92)' },
+  statusText: { ...text.caption, color: '#FFFFFF' },
 
   manualPane: {
     alignItems: 'center',
-    gap: 11,
-    paddingVertical: 20,
-    paddingHorizontal: 16,
+    gap: 14,
+    paddingVertical: 22,
+    paddingHorizontal: 18,
     borderRadius: radius.xl,
     borderWidth: 1,
     borderColor: colors.borderSoft,
     backgroundColor: colors.bgIvory,
   },
-  manualTitle: { fontSize: 11.5, fontWeight: '700', color: colors.textCharcoal },
-  manualInput: {
-    width: 168,
-    textAlign: 'center',
-    fontSize: 32,
-    fontWeight: '800',
-    letterSpacing: 12,
-    color: colors.textCharcoal,
-    paddingVertical: 10,
-    borderRadius: radius.lg,
-    borderWidth: 1.5,
-    borderColor: colors.brandStone,
-    backgroundColor: colors.cardPure,
-    ...Platform.select({ ios: { fontFamily: 'Menlo' }, android: { fontFamily: 'monospace' } }),
-  },
-  manualInputFailed: { borderColor: colors.statusError },
-  failRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 8 },
-  failText: { flex: 1, fontSize: 10, color: colors.statusError, lineHeight: 14 },
-
-  notice: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-    backgroundColor: tints.stone30,
-    borderRadius: radius.md,
-    paddingHorizontal: 11,
-    paddingVertical: 9,
-  },
-  noticeText: { flex: 1, fontSize: 9.5, color: colors.textSlate, lineHeight: 13.5 },
 });

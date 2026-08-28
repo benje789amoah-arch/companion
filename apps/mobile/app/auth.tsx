@@ -12,16 +12,15 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ApiError, PHONE_DIGITS, limitPhoneInput } from '@freshfold/core';
 import { KeyboardAvoider } from '../src/components/KeyboardAvoider';
-import { Button } from '../src/components/ui';
+import { Button, CodeInput, Field, Input, Notice } from '../src/components/ui';
 import { REQUIRED_PROFILE_FIELDS, useApp } from '../src/store/AppStore';
 import { useSession } from '../src/store/SessionStore';
-import { colors, radius, shadow, tints } from '../src/theme';
+import { colors, ink, radius, shadow, text, tints } from '../src/theme';
 
 const PIN_DIGITS = 4;
 
@@ -117,65 +116,47 @@ export default function AuthScreen() {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.intro}>
-            <Text style={styles.eyebrow}>White-glove service</Text>
-            <Text style={styles.heading}>FreshFold rider authentication</Text>
-            <Text style={styles.introBody}>
-              Access the elite dispatch rider companion console with secure biometric
-              encryption.
+            <Text style={styles.eyebrow}>FreshFold Dispatch</Text>
+            <Text style={text.heading}>Sign in</Text>
+            <Text style={[text.body, { color: colors.textSlate }]}>
+              Use the employee ID and PIN dispatch issued you.
             </Text>
           </View>
 
           <View style={styles.form}>
-            {!!authError && (
-              <View style={[styles.toast, styles.toastError]}>
-                <AlertCircle size={14} color={colors.statusError} />
-                <Text style={styles.toastErrorText}>{authError}</Text>
-              </View>
-            )}
+            {!!authError && <Notice icon={AlertCircle} tone="error">{authError}</Notice>}
 
-            <View style={styles.field}>
-              <Text style={styles.label}>Employee ID or phone</Text>
-              <TextInput
+            <Field
+              label="Employee ID or phone"
+              hint={`The ${PHONE_DIGITS}-digit number on your employment record works too.`}
+            >
+              <Input
                 value={identifier}
-                onChangeText={(text) => {
+                onChangeText={(value) => {
                   // One field, two kinds of answer. An employee ID has letters
                   // in it and is left alone; a number is a phone number, and a
                   // phone number is ten digits, so the eleventh never lands.
-                  setIdentifier(/[a-z]/i.test(text) ? text : limitPhoneInput(text));
+                  setIdentifier(/[a-z]/i.test(value) ? value : limitPhoneInput(value));
                   setAuthError('');
                 }}
                 placeholder="e.g. RIDER-204"
-                placeholderTextColor={colors.textSlate}
                 autoCapitalize="characters"
                 autoCorrect={false}
-                style={styles.input}
               />
-              <Text style={styles.hint}>
-                The {PHONE_DIGITS}-digit number on your employment record works too.
-              </Text>
-            </View>
+            </Field>
 
-            <View style={styles.field}>
-              <Text style={styles.label}>Access PIN</Text>
-              <TextInput
+            <Field label="PIN" hint={`${pin.length} of ${PIN_DIGITS} digits`}>
+              <CodeInput
                 value={pin}
-                onChangeText={(text) => {
-                  setPin(text.replace(/\D/g, '').slice(0, PIN_DIGITS));
+                onChange={(next) => {
+                  setPin(next);
                   setAuthError('');
                 }}
-                placeholder="••••"
-                placeholderTextColor={colors.textSlate}
-                keyboardType="number-pad"
-                secureTextEntry
-                maxLength={PIN_DIGITS}
-                style={[styles.input, styles.otpInput]}
+                digits={PIN_DIGITS}
+                secure
                 onSubmitEditing={submit}
-                returnKeyType="go"
               />
-              <Text style={[styles.hint, styles.counter]}>
-                {pin.length}/{PIN_DIGITS} digits
-              </Text>
-            </View>
+            </Field>
 
             <Button
               label="Sign in"
@@ -188,21 +169,26 @@ export default function AuthScreen() {
               <View style={styles.biometric}>
                 <Pressable
                   onPress={authenticateWithBiometrics}
-                  accessibilityLabel="Authenticate with biometrics"
+                  accessibilityRole="button"
+                  accessibilityLabel="Unlock with Face ID"
                   style={({ pressed }) => [styles.faceButton, pressed && { opacity: 0.8 }]}
                 >
-                  <ScanFace size={32} color={colors.brandSage} />
+                  <ScanFace size={34} color={ink.sage} />
                 </Pressable>
-                <Text style={styles.biometricLabel}>Authenticate with Face ID</Text>
+                <Text style={[text.bodyStrong, { color: ink.sage }]}>Unlock with Face ID</Text>
+                <Text style={[text.caption, { textAlign: 'center' }]}>
+                  Reopens a session on a phone that has signed in before.
+                </Text>
               </View>
             )}
           </View>
 
           <View style={styles.legal}>
-            <Text style={styles.legalText}>
-              By continuing, you agree to geolocation tracking during your operational shift.
+            <Text style={[text.caption, { textAlign: 'center' }]}>
+              While you are online, this app shares your location with dispatch and with the
+              customer whose laundry you are carrying.
             </Text>
-            <Text style={styles.legalBrand}>FreshFold Luxury Co. All rights reserved 2026</Text>
+            <Text style={[text.micro, { color: ink.sage }]}>FreshFold · Kumasi</Text>
           </View>
         </ScrollView>
       </KeyboardAvoider>
@@ -210,11 +196,10 @@ export default function AuthScreen() {
       {scanningFace && (
         <View style={styles.scanOverlay}>
           <View style={styles.scanBox}>
-            <ScanFace size={46} color={colors.brandSage} />
+            <ScanFace size={52} color={colors.brandSage} />
           </View>
-          <ActivityIndicator color={colors.brandGold} style={{ marginTop: 18 }} />
-          <Text style={styles.scanTitle}>Verifying identity…</Text>
-          <Text style={styles.scanSub}>Biometric hash encryption</Text>
+          <ActivityIndicator color={colors.brandStone} style={{ marginTop: 20 }} />
+          <Text style={styles.scanTitle}>Checking your face…</Text>
         </View>
       )}
     </SafeAreaView>
@@ -223,74 +208,23 @@ export default function AuthScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bgIvory },
-  scroll: { flexGrow: 1, padding: 28, justifyContent: 'space-between', gap: 28 },
+  scroll: { flexGrow: 1, padding: 24, justifyContent: 'space-between', gap: 32 },
 
-  intro: { gap: 5, marginTop: 12 },
-  eyebrow: {
-    fontSize: 9,
-    fontWeight: '700',
-    letterSpacing: 1.6,
-    textTransform: 'uppercase',
-    color: colors.brandSage,
-  },
-  heading: { fontSize: 24, fontWeight: '800', color: colors.textCharcoal, lineHeight: 30 },
-  introBody: { fontSize: 11.5, color: colors.textSlate, lineHeight: 17 },
+  intro: { gap: 6, marginTop: 16 },
+  eyebrow: { ...text.overline, color: ink.sage },
 
-  form: { gap: 14 },
-  field: { gap: 6 },
-  label: {
-    fontSize: 9.5,
-    fontWeight: '700',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    color: colors.textSlate,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: colors.borderSoft,
-    borderRadius: radius.lg,
-    backgroundColor: colors.cardPure,
-    paddingHorizontal: 14,
-    paddingVertical: 13,
-    fontSize: 13,
-    color: colors.textCharcoal,
-    ...shadow.xs,
-  },
-  otpInput: {
-    textAlign: 'center',
-    letterSpacing: 8,
-    fontWeight: '700',
-    fontSize: 16,
-  },
-  hint: { fontSize: 9.5, color: colors.textSlate },
-  hintCode: { color: colors.brandGold, fontWeight: '700' },
-  counter: { textAlign: 'right' },
-  row: { flexDirection: 'row', gap: 10 },
-
-  toast: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  toastError: { backgroundColor: tints.error05, borderColor: tints.error20 },
-  toastErrorText: { flex: 1, fontSize: 10.5, color: colors.statusError },
-  toastSuccess: { backgroundColor: tints.success10, borderColor: tints.success30 },
-  toastSuccessText: { flex: 1, fontSize: 10.5, color: colors.statusSuccess },
+  form: { gap: 20 },
 
   biometric: {
     alignItems: 'center',
-    gap: 8,
-    paddingTop: 18,
+    gap: 10,
+    paddingTop: 22,
     borderTopWidth: 1,
     borderTopColor: colors.borderSoft,
   },
   faceButton: {
-    width: 68,
-    height: 68,
+    width: 76,
+    height: 76,
     borderRadius: radius.xxl,
     backgroundColor: tints.sage10,
     borderWidth: 2,
@@ -299,11 +233,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     ...shadow.md,
   },
-  biometricLabel: { fontSize: 10, fontWeight: '700', color: colors.brandSage },
 
-  legal: { alignItems: 'center', gap: 4 },
-  legalText: { fontSize: 9, color: colors.textSlate, textAlign: 'center' },
-  legalBrand: { fontSize: 9, fontWeight: '600', color: colors.brandGold },
+  legal: { alignItems: 'center', gap: 8 },
 
   scanOverlay: {
     position: 'absolute',
@@ -316,8 +247,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   scanBox: {
-    width: 106,
-    height: 106,
+    width: 120,
+    height: 120,
     borderRadius: 28,
     borderWidth: 2,
     borderColor: colors.brandSage,
@@ -326,12 +257,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   scanTitle: {
-    marginTop: 16,
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 1.5,
-    textTransform: 'uppercase',
-    color: colors.brandGold,
+    ...text.title,
+    marginTop: 18,
+    // On the deep scrim this sits on white, not on the light-ground inks.
+    color: '#FFFFFF',
   },
-  scanSub: { marginTop: 4, fontSize: 9, color: 'rgba(255,255,255,0.7)' },
 });

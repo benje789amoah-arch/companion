@@ -8,7 +8,7 @@ import React from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NavigationTarget } from '../store/AppStore';
-import { colors, formatCedis, radius, shadow, tints } from '../theme';
+import { colors, formatCedis, ink, radius, shadow, text, tints, touch } from '../theme';
 import { Order, RiderState } from '../types';
 import { Badge, Button } from './ui';
 
@@ -142,14 +142,8 @@ const styles = StyleSheet.create({
     gap: 3,
     ...shadow.xs,
   },
-  noticeTitle: {
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    color: colors.textSlate,
-  },
-  noticeBody: { fontSize: 11, color: colors.textCharcoal },
+  noticeTitle: text.overline,
+  noticeBody: text.body,
 
   riderCard: {
     flexDirection: 'row',
@@ -163,22 +157,16 @@ const styles = StyleSheet.create({
     ...shadow.xs,
   },
   riderIcon: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: colors.brandSage,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  riderLabel: {
-    fontSize: 8.5,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-    color: colors.textSlate,
-  },
-  riderCoords: { fontSize: 11.5, fontWeight: '700', color: colors.textCharcoal, marginTop: 2 },
-  riderSpeed: { fontSize: 11, fontWeight: '700', color: colors.brandSage },
+  riderLabel: text.overline,
+  riderCoords: { ...text.mono, color: colors.textCharcoal, marginTop: 3 },
+  riderSpeed: { ...text.bodyStrong, color: ink.sage },
 
   navCard: {
     backgroundColor: tints.gold05,
@@ -188,14 +176,15 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 2,
   },
-  navTitle: { fontSize: 11.5, fontWeight: '800', color: colors.textCharcoal },
-  navCoords: { fontSize: 10, color: colors.textSlate },
+  navTitle: text.strong,
+  navCoords: text.mono,
 
   pinList: { gap: 8, paddingBottom: 12 },
   pinRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
+    minHeight: touch.min,
     backgroundColor: colors.cardPure,
     borderRadius: radius.lg,
     borderWidth: 1,
@@ -204,8 +193,8 @@ const styles = StyleSheet.create({
   },
   pinRowActive: { borderColor: colors.brandSage },
   pinTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  pinName: { fontSize: 12, fontWeight: '800', color: colors.textCharcoal, flexShrink: 1 },
-  pinAddress: { fontSize: 10.5, color: colors.textSlate, marginTop: 2 },
-  pinMeta: { fontSize: 9.5, color: colors.textSlate, marginTop: 2 },
-  acceptButton: { paddingVertical: 8, paddingHorizontal: 12 },
+  pinName: { ...text.strong, flexShrink: 1 },
+  pinAddress: { ...text.caption, marginTop: 3 },
+  pinMeta: { ...text.caption, marginTop: 3 },
+  acceptButton: { paddingHorizontal: 16 },
 });

@@ -7,8 +7,8 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Camera, Check, ImageIcon, RotateCcw } from 'lucide-react-native';
 import React, { useEffect, useRef, useState } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
-import { colors, radius } from '../theme';
-import { Button, Divider } from './ui';
+import { colors, ink, radius, text } from '../theme';
+import { Button, Divider, SheetHeader } from './ui';
 
 interface CameraCaptureProps {
   onCapture: (photoUri: string) => void;
@@ -82,15 +82,15 @@ export default function CameraCapture({
 
   return (
     <View style={styles.sheet}>
-      <View style={styles.header}>
-        <Camera size={20} color={colors.brandSage} />
-        <View style={{ flex: 1 }}>
-          <Text style={styles.title}>{title}</Text>
-          <Text style={styles.subtitle}>
-            Verify garment placement and state of cleanliness
-          </Text>
-        </View>
-      </View>
+      <SheetHeader
+        icon={Camera}
+        title={title}
+        subtitle={
+          context === 'pickup'
+            ? 'Show the bags as you found them'
+            : 'Show the bags as you handed them over'
+        }
+      />
 
       <View style={styles.viewfinder}>
         {preview || encoded ? (
@@ -112,7 +112,7 @@ export default function CameraCapture({
           </>
         ) : (
           <View style={styles.permissionPane}>
-            <ImageIcon size={34} color="rgba(255,255,255,0.4)" />
+            <ImageIcon size={44} color="rgba(255,255,255,0.55)" />
             <Text style={styles.permissionTitle}>Camera access needed</Text>
             <Text style={styles.permissionBody}>
               {context === 'pickup'
@@ -148,13 +148,13 @@ export default function CameraCapture({
                 setPreview(null);
                 setEncoded(null);
               }}
-              icon={<RotateCcw size={14} color={colors.textCharcoal} />}
+              icon={RotateCcw}
               style={{ flex: 1 }}
             />
             <Button
               label="Submit proof"
               onPress={() => onCapture(encoded)}
-              icon={<Check size={15} color="#FFFFFF" />}
+              icon={Check}
               style={{ flex: 1 }}
             />
           </>
@@ -172,11 +172,8 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     padding: 20,
-    gap: 12,
+    gap: 16,
   },
-  header: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  title: { fontSize: 14, fontWeight: '800', color: colors.textCharcoal },
-  subtitle: { fontSize: 10, color: colors.textSlate, marginTop: 2 },
 
   viewfinder: {
     aspectRatio: 4 / 3,
@@ -188,20 +185,20 @@ const styles = StyleSheet.create({
   },
   shutter: {
     position: 'absolute',
-    bottom: 16,
+    bottom: 18,
     alignSelf: 'center',
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
     borderWidth: 4,
     borderColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
   },
   shutterInner: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     backgroundColor: colors.statusError,
   },
 
@@ -213,17 +210,23 @@ const styles = StyleSheet.create({
     left: 0,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 16,
-    gap: 3,
+    padding: 20,
+    gap: 6,
   },
-  permissionTitle: { color: '#FFFFFF', fontSize: 12, fontWeight: '700', marginTop: 4 },
-  permissionBody: { color: colors.textSlate, fontSize: 9.5, marginBottom: 8 },
-  corner: { position: 'absolute', width: 16, height: 16, borderColor: 'rgba(255,255,255,0.45)' },
+  permissionTitle: { ...text.strong, color: '#FFFFFF', marginTop: 6 },
+  // The viewfinder is its own near-black ground; slate is unreadable on it.
+  permissionBody: {
+    ...text.caption,
+    color: 'rgba(255,255,255,0.78)',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  corner: { position: 'absolute', width: 20, height: 20, borderColor: 'rgba(255,255,255,0.55)' },
   cornerTL: { top: 14, left: 14, borderTopWidth: 2, borderLeftWidth: 2 },
   cornerTR: { top: 14, right: 14, borderTopWidth: 2, borderRightWidth: 2 },
   cornerBL: { bottom: 14, left: 14, borderBottomWidth: 2, borderLeftWidth: 2 },
   cornerBR: { bottom: 14, right: 14, borderBottomWidth: 2, borderRightWidth: 2 },
 
-  error: { fontSize: 10.5, color: colors.statusError, lineHeight: 15 },
-  actions: { flexDirection: 'row', gap: 10 },
+  error: { ...text.body, color: ink.error },
+  actions: { flexDirection: 'row', gap: 12 },
 });

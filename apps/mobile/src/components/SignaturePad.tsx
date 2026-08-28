@@ -7,8 +7,8 @@ import { Check, Pencil, RotateCcw, ShieldCheck } from 'lucide-react-native';
 import React, { useMemo, useRef, useState } from 'react';
 import { PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
-import { colors, radius, tints } from '../theme';
-import { Button, Divider } from './ui';
+import { colors, radius, text } from '../theme';
+import { Button, Divider, LinkButton, Notice, SheetHeader } from './ui';
 
 interface SignaturePadProps {
   onSave: (signatureDataUrl: string) => void;
@@ -105,20 +105,11 @@ export default function SignaturePad({
 
   return (
     <View style={styles.sheet}>
-      <View style={styles.header}>
-        <Pencil size={18} color={colors.brandSage} />
-        <View style={{ flex: 1 }}>
-          <Text style={styles.title}>{title}</Text>
-          <Text style={styles.subtitle}>
-            Please have <Text style={styles.customer}>{customerName}</Text> sign below
-          </Text>
-        </View>
-      </View>
+      <SheetHeader icon={Pencil} title={title} subtitle={`Ask ${customerName} to sign below`} />
 
       <View style={styles.pad} {...panResponder.panHandlers}>
         <View style={[styles.signLine, { pointerEvents: 'none' }]}>
-          <Text style={styles.signHint}>X SIGN HERE</Text>
-          <Text style={styles.signHintRight}>Encrypted signature</Text>
+          <Text style={styles.signHint}>Sign here</Text>
         </View>
 
         <Svg ref={svgRef} style={[StyleSheet.absoluteFill, { pointerEvents: 'none' }]}>
@@ -146,40 +137,32 @@ export default function SignaturePad({
         </Svg>
       </View>
 
-      <View style={styles.notice}>
-        <ShieldCheck size={14} color={colors.brandSage} />
-        <Text style={styles.noticeText}>
-          By signing, the recipient verifies the garment count matches and accepts the
-          conditions of care.
-        </Text>
-      </View>
+      <Notice icon={ShieldCheck}>
+        Signing confirms the bag count is right and the garments were handed over.
+      </Notice>
 
       <Divider />
 
       <View style={styles.actions}>
         <Button
-          label="Clear pad"
+          label="Clear"
           variant="ghost"
           onPress={clear}
           disabled={!hasSigned}
-          icon={<RotateCcw size={14} color={colors.textCharcoal} />}
+          icon={RotateCcw}
           style={{ flex: 1 }}
         />
         <Button
-          label="Confirm slip"
+          label="Save signature"
           onPress={confirm}
           disabled={!hasSigned}
           loading={saving}
-          icon={<Check size={15} color="#FFFFFF" />}
+          icon={Check}
           style={{ flex: 1 }}
         />
       </View>
 
-      {onCancel && (
-        <Pressable onPress={onCancel} hitSlop={8} style={styles.cancel}>
-          <Text style={styles.cancelLabel}>Cancel signature entry</Text>
-        </Pressable>
-      )}
+      {onCancel && <LinkButton label="Cancel" align="center" onPress={onCancel} />}
     </View>
   );
 }
@@ -190,12 +173,8 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     padding: 20,
-    gap: 12,
+    gap: 16,
   },
-  header: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  title: { fontSize: 14, fontWeight: '800', color: colors.textCharcoal },
-  subtitle: { fontSize: 10, color: colors.textSlate, marginTop: 2 },
-  customer: { color: colors.brandSage, fontWeight: '700' },
 
   pad: {
     height: PAD_HEIGHT,
@@ -211,32 +190,13 @@ const styles = StyleSheet.create({
     left: 24,
     right: 24,
     bottom: 34,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
     borderBottomWidth: 1,
     borderBottomColor: colors.brandStone,
-    paddingBottom: 3,
+    paddingBottom: 4,
   },
-  signHint: {
-    fontSize: 9,
-    letterSpacing: 1,
-    color: colors.brandStone,
-    fontWeight: '700',
-  },
-  signHintRight: { fontSize: 8, color: colors.brandStone },
+  // Deliberately stone, not slate: this is the ghost line under a signature,
+  // not text to read — and it sits behind whatever gets drawn over it.
+  signHint: { ...text.caption, letterSpacing: 1, color: colors.brandStone, fontWeight: '700' },
 
-  notice: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: tints.stone30,
-    borderRadius: radius.md,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
-  noticeText: { flex: 1, fontSize: 9.5, color: colors.textSlate, lineHeight: 13 },
-
-  actions: { flexDirection: 'row', gap: 10 },
-  cancel: { alignItems: 'center', paddingVertical: 2 },
-  cancelLabel: { fontSize: 10.5, color: colors.textSlate },
+  actions: { flexDirection: 'row', gap: 12 },
 });

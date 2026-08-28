@@ -7,11 +7,11 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { ClipboardCheck, Layers, QrCode, ShieldCheck } from 'lucide-react-native';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { classifyScan } from '../scan';
-import { colors, radius, tints } from '../theme';
+import { colors, ink, radius, text, tints, touch } from '../theme';
 import { LaundryBag, Order } from '../types';
-import { Button, Divider } from './ui';
+import { Button, Divider, SegmentedControl, SheetHeader } from './ui';
 
 interface QRScannerProps {
   order: Order;
@@ -119,35 +119,27 @@ export default function QRScanner({ order, onScanComplete, onCancel }: QRScanner
 
   return (
     <View style={styles.sheet}>
-      <View style={styles.header}>
-        <QrCode size={20} color={colors.brandSage} />
-        <View style={{ flex: 1 }}>
-          <Text style={styles.title}>FreshFold QR bag verification</Text>
-          <Text style={styles.subtitle}>Order {order.orderNumber}</Text>
-        </View>
-      </View>
+      <SheetHeader
+        icon={QrCode}
+        title="Scan the bag labels"
+        subtitle={`${order.orderNumber} · ${bags.length} bags`}
+      />
 
-      <View style={styles.modeToggle}>
-        <Pressable
-          onPress={() => {
+      <SegmentedControl
+        value={mode}
+        onChange={(next) => {
+          if (next === 'camera') {
+            void enterCameraMode();
+          } else {
             setMode('manual');
             setStatus('Check each bag against the list, then confirm.');
-          }}
-          style={[styles.modeButton, mode === 'manual' && styles.modeButtonActive]}
-        >
-          <Text style={[styles.modeLabel, mode === 'manual' && styles.modeLabelActive]}>
-            Check the list
-          </Text>
-        </Pressable>
-        <Pressable
-          onPress={enterCameraMode}
-          style={[styles.modeButton, mode === 'camera' && styles.modeButtonActive]}
-        >
-          <Text style={[styles.modeLabel, mode === 'camera' && styles.modeLabelActive]}>
-            Scan a label
-          </Text>
-        </Pressable>
-      </View>
+          }
+        }}
+        options={[
+          { id: 'manual' as ScannerMode, label: 'Check the list' },
+          { id: 'camera' as ScannerMode, label: 'Scan a label' },
+        ]}
+      />
 
       {/* Viewfinder */}
       <View style={styles.viewfinder}>
@@ -160,7 +152,7 @@ export default function QRScanner({ order, onScanComplete, onCancel }: QRScanner
           />
         ) : (
           <View style={styles.viewfinderPlaceholder}>
-            <QrCode size={44} color={tints.sage30} />
+            <QrCode size={52} color={colors.brandStone} />
             <Text style={styles.viewfinderTitle}>
               {mode === 'manual' ? 'Checking the manifest' : 'Camera not enabled'}
             </Text>
@@ -187,8 +179,8 @@ export default function QRScanner({ order, onScanComplete, onCancel }: QRScanner
 
       {/* Bag checklist */}
       <View style={styles.checklistHeader}>
-        <Text style={styles.checklistTitle}>
-          Required bag checks ({scannedCount}/{bags.length})
+        <Text style={text.overline}>
+          Bags counted · {scannedCount} of {bags.length}
         </Text>
       </View>
 
@@ -196,10 +188,7 @@ export default function QRScanner({ order, onScanComplete, onCancel }: QRScanner
         {bags.map((bag) => (
           <View key={bag.id} style={[styles.bagRow, bag.scanned && styles.bagRowScanned]}>
             <View style={[styles.bagIcon, bag.scanned && styles.bagIconScanned]}>
-              <Layers
-                size={14}
-                color={bag.scanned ? colors.statusSuccess : colors.textSlate}
-              />
+              <Layers size={20} color={bag.scanned ? ink.success : colors.textSlate} />
             </View>
 
             <View style={{ flex: 1 }}>
@@ -216,7 +205,7 @@ export default function QRScanner({ order, onScanComplete, onCancel }: QRScanner
 
             {bag.scanned ? (
               <View style={styles.verified}>
-                <ClipboardCheck size={13} color={colors.statusSuccess} />
+                <ClipboardCheck size={18} color={ink.success} />
                 <Text style={styles.verifiedLabel}>Verified</Text>
               </View>
             ) : (
@@ -224,6 +213,8 @@ export default function QRScanner({ order, onScanComplete, onCancel }: QRScanner
               // camera would turn scanning into the slower of two options.
               mode === 'manual' && (
                 <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Mark ${bag.type} as counted`}
                   onPress={() => markByHand(bag)}
                   style={({ pressed }) => [styles.scanChip, pressed && { opacity: 0.8 }]}
                 >
@@ -243,7 +234,7 @@ export default function QRScanner({ order, onScanComplete, onCancel }: QRScanner
           label={`Confirm ${bags.length} bags`}
           onPress={() => onScanComplete(bags)}
           disabled={!allScanned}
-          icon={<ShieldCheck size={15} color="#FFFFFF" />}
+          icon={ShieldCheck}
           style={{ flex: 1.4 }}
         />
       </View>
@@ -257,28 +248,8 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     padding: 20,
-    gap: 12,
+    gap: 16,
   },
-  header: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  title: { fontSize: 14, fontWeight: '800', color: colors.textCharcoal },
-  subtitle: { fontSize: 10, color: colors.textSlate, marginTop: 2 },
-
-  modeToggle: {
-    flexDirection: 'row',
-    backgroundColor: colors.bgLinen,
-    borderRadius: radius.md,
-    padding: 3,
-    gap: 3,
-  },
-  modeButton: {
-    flex: 1,
-    paddingVertical: 7,
-    borderRadius: radius.sm,
-    alignItems: 'center',
-  },
-  modeButtonActive: { backgroundColor: colors.cardPure },
-  modeLabel: { fontSize: 10.5, fontWeight: '600', color: colors.textSlate },
-  modeLabelActive: { color: colors.textCharcoal },
 
   viewfinder: {
     aspectRatio: 16 / 10,
@@ -296,76 +267,63 @@ const styles = StyleSheet.create({
     left: 0,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 16,
-    gap: 4,
+    padding: 18,
+    gap: 6,
   },
-  viewfinderTitle: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-    marginTop: 6,
-  },
+  viewfinderTitle: { ...text.strong, color: '#FFFFFF', marginTop: 8 },
   viewfinderBody: {
-    color: colors.textSlate,
-    fontSize: 9.5,
+    ...text.caption,
+    // On the near-black viewfinder, slate is unreadable — this is its own ground.
+    color: 'rgba(255,255,255,0.78)',
     textAlign: 'center',
-    maxWidth: 200,
+    maxWidth: 240,
   },
-  corner: {
-    position: 'absolute',
-    width: 20,
-    height: 20,
-    borderColor: colors.brandGold,
-  },
-  cornerTL: { top: 20, left: 20, borderTopWidth: 2, borderLeftWidth: 2, borderTopLeftRadius: 6 },
-  cornerTR: { top: 20, right: 20, borderTopWidth: 2, borderRightWidth: 2, borderTopRightRadius: 6 },
+  corner: { position: 'absolute', width: 24, height: 24, borderColor: colors.brandGold },
+  cornerFailed: { borderColor: colors.statusError },
+  cornerTL: { top: 20, left: 20, borderTopWidth: 3, borderLeftWidth: 3, borderTopLeftRadius: 6 },
+  cornerTR: { top: 20, right: 20, borderTopWidth: 3, borderRightWidth: 3, borderTopRightRadius: 6 },
   cornerBL: {
     bottom: 20,
     left: 20,
-    borderBottomWidth: 2,
-    borderLeftWidth: 2,
+    borderBottomWidth: 3,
+    borderLeftWidth: 3,
     borderBottomLeftRadius: 6,
   },
   cornerBR: {
     bottom: 20,
     right: 20,
-    borderBottomWidth: 2,
-    borderRightWidth: 2,
+    borderBottomWidth: 3,
+    borderRightWidth: 3,
     borderBottomRightRadius: 6,
   },
   statusPill: {
     position: 'absolute',
     left: 12,
     right: 12,
-    bottom: 10,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    borderRadius: radius.sm,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    bottom: 12,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    borderRadius: radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
+    borderColor: 'rgba(255,255,255,0.14)',
   },
-  statusText: { color: '#FFFFFF', fontSize: 9 },
+  statusPillFailed: { backgroundColor: 'rgba(169, 85, 85, 0.92)' },
+  statusText: { ...text.caption, color: '#FFFFFF' },
 
   checklistHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  checklistTitle: {
-    fontSize: 9.5,
-    fontWeight: '700',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    color: colors.textSlate,
-  },
 
-  bagList: { maxHeight: 150 },
+  bagList: { maxHeight: 200 },
   bagRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    padding: 10,
+    gap: 12,
+    minHeight: touch.min,
+    padding: 12,
     borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: colors.borderSoft,
@@ -376,39 +334,36 @@ const styles = StyleSheet.create({
     backgroundColor: tints.success10,
   },
   bagIcon: {
-    width: 28,
-    height: 28,
+    width: 36,
+    height: 36,
     borderRadius: radius.md,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: tints.stone30,
   },
   bagIconScanned: { backgroundColor: tints.success10 },
-  bagTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  bagType: { fontSize: 11.5, fontWeight: '700', color: colors.textCharcoal, flexShrink: 1 },
+  bagTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  bagType: { ...text.bodyStrong, flexShrink: 1 },
   bagWeight: {
-    fontSize: 9,
-    color: colors.textSlate,
+    ...text.micro,
+    color: colors.textCharcoal,
     backgroundColor: colors.borderSoft,
-    borderRadius: 3,
-    paddingHorizontal: 4,
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
     overflow: 'hidden',
   },
-  bagCode: {
-    fontSize: 9.5,
-    color: colors.textSlate,
-    marginTop: 2,
-    ...Platform.select({ ios: { fontFamily: 'Menlo' }, android: { fontFamily: 'monospace' } }),
-  },
-  verified: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  verifiedLabel: { fontSize: 9.5, fontWeight: '700', color: colors.statusSuccess },
+  bagCode: { ...text.mono, marginTop: 3 },
+  verified: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  verifiedLabel: { ...text.caption, fontWeight: '700', color: ink.success },
   scanChip: {
+    minHeight: touch.min,
+    justifyContent: 'center',
     backgroundColor: colors.brandSage,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 18,
     borderRadius: radius.md,
   },
-  scanChipLabel: { fontSize: 9.5, fontWeight: '700', color: '#FFFFFF' },
+  scanChipLabel: { ...text.bodyStrong, color: '#FFFFFF' },
 
-  actions: { flexDirection: 'row', gap: 10 },
+  actions: { flexDirection: 'row', gap: 12 },
 });

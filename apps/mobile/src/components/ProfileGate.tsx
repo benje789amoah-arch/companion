@@ -8,7 +8,7 @@ import { ChevronRight, IdCard } from 'lucide-react-native';
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useApp } from '../store/AppStore';
-import { colors, radius, tints } from '../theme';
+import { colors, ink, radius, text, tints, touch } from '../theme';
 
 /**
  * Why this rider cannot take work yet, and the way to fix it.
@@ -34,7 +34,7 @@ export default function ProfileGate() {
       style={({ pressed }) => [styles.card, pressed && { opacity: 0.9 }]}
     >
       <View style={styles.icon}>
-        <IdCard size={17} color={colors.statusWarning} />
+        <IdCard size={22} color={ink.warning} />
       </View>
 
       <View style={{ flex: 1 }}>
@@ -45,7 +45,7 @@ export default function ProfileGate() {
         </Text>
       </View>
 
-      <ChevronRight size={16} color={colors.statusWarning} />
+      <ChevronRight size={22} color={ink.warning} />
     </Pressable>
   );
 }
@@ -61,20 +61,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    padding: 13,
+    minHeight: touch.min,
+    padding: 14,
     borderRadius: radius.lg,
     borderWidth: 1,
     borderColor: tints.warning30,
     backgroundColor: tints.warning10,
   },
   icon: {
-    width: 34,
-    height: 34,
+    width: 44,
+    height: 44,
     borderRadius: radius.md,
     backgroundColor: 'rgba(255,255,255,0.75)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  title: { fontSize: 12, fontWeight: '800', color: colors.textCharcoal },
-  body: { fontSize: 10, color: colors.textSlate, marginTop: 2, lineHeight: 14 },
+  title: { ...text.strong, color: colors.textCharcoal },
+  body: { ...text.caption, marginTop: 3 },
 });

@@ -8,7 +8,7 @@ import { History, Home, Layers, Map, User } from 'lucide-react-native';
 import React from 'react';
 import { Platform, View } from 'react-native';
 import { useSession } from '../../src/store/SessionStore';
-import { colors } from '../../src/theme';
+import { colors, ink } from '../../src/theme';
 
 export default function TabsLayout() {
   const { isAuthenticated, rider } = useSession();
@@ -26,16 +26,18 @@ export default function TabsLayout() {
       <Tabs
         screenOptions={{
           headerShown: false,
-          tabBarActiveTintColor: colors.brandSage,
+          tabBarActiveTintColor: ink.sage,
           tabBarInactiveTintColor: colors.textSlate,
           tabBarStyle: {
             backgroundColor: colors.cardPure,
             borderTopColor: colors.borderSoft,
             borderTopWidth: 1,
-            height: Platform.OS === 'ios' ? 84 : 62,
-            paddingTop: 6,
+            height: Platform.OS === 'ios' ? 92 : 72,
+            paddingTop: 8,
           },
-          tabBarLabelStyle: { fontSize: 9, fontWeight: '700' },
+          // 12 is the floor set in `theme.ts`; the tab labels were at 9.
+          tabBarLabelStyle: { fontSize: 12, fontWeight: '700' },
+          tabBarIconStyle: { marginBottom: 2 },
           sceneStyle: { backgroundColor: colors.bgIvory },
         }}
       >
@@ -43,35 +45,35 @@ export default function TabsLayout() {
           name="index"
           options={{
             title: 'Home',
-            tabBarIcon: ({ color }) => <Home size={18} color={color} />,
+            tabBarIcon: ({ color }) => <Home size={24} color={color} />,
           }}
         />
         <Tabs.Screen
           name="assignments"
           options={{
             title: 'Tasks',
-            tabBarIcon: ({ color }) => <Layers size={18} color={color} />,
+            tabBarIcon: ({ color }) => <Layers size={24} color={color} />,
           }}
         />
         <Tabs.Screen
           name="map"
           options={{
             title: 'Map',
-            tabBarIcon: ({ color }) => <Map size={18} color={color} />,
+            tabBarIcon: ({ color }) => <Map size={24} color={color} />,
           }}
         />
         <Tabs.Screen
           name="history"
           options={{
             title: 'History',
-            tabBarIcon: ({ color }) => <History size={18} color={color} />,
+            tabBarIcon: ({ color }) => <History size={24} color={color} />,
           }}
         />
         <Tabs.Screen
           name="profile"
           options={{
             title: 'Profile',
-            tabBarIcon: ({ color }) => <User size={18} color={color} />,
+            tabBarIcon: ({ color }) => <User size={24} color={color} />,
           }}
         />
       </Tabs>
