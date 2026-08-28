@@ -25,12 +25,11 @@
  * them, which is the whole argument.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   CheckCircle2,
   ClipboardList,
   PackageCheck,
-  RefreshCw,
   Shirt,
   Sparkles,
   WashingMachine,
@@ -38,6 +37,9 @@ import {
 import type { JobStatus, Order } from '@freshfold/core';
 import * as store from '../../services/store';
 import CheckInDrawer from './CheckInDrawer';
+import OrderRef from './OrderRef';
+import PaneHeader, { ResourceBanner } from './PaneHeader';
+import type { DeskResource } from './useDeskResource';
 import { Badge, Button, EmptyState, Input, Panel, TableHead } from './ui';
 
 /** The two stages this pane owns, and what confirming one means. */
@@ -113,18 +115,26 @@ function countedBags(order: Order): number {
 }
 
 export default function HubPanel({
+  orders,
+  awaiting,
   onConfirmed,
+  onFailed,
 }: {
   /**
-   * Called after the server accepts a confirmation, with a sentence for the
-   * dashboard's flash strip. The dashboard also uses it to refresh the booking
-   * mirror and the audit trail — this pane does not reach for either.
+   * The board, held by the shell.
+   *
+   * It used to be fetched here, on mount, into this pane's own `loading` and
+   * `error` state — one of six freshness models on the desk. The shell needs the
+   * same list anyway: the rail cannot say how many loads are waiting to be
+   * confirmed without it. One read, two readers.
    */
+  orders: DeskResource<Order[]>;
+  /** The two stages this pane owns, already filtered by the shell. */
+  awaiting: Order[];
+  /** A sentence for the toast, after the server accepts a confirmation. */
   onConfirmed: (message: string) => void;
+  onFailed: (message: string) => void;
 }) {
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   /** The order id currently in flight, so its button can say so. */
   const [confirming, setConfirming] = useState<string | null>(null);
   /** The order whose check-in drawer is open, if any. */
@@ -146,31 +156,7 @@ export default function HubPanel({
   const [machine, setMachine] = useState<Record<string, string>>({});
   const [batch, setBatch] = useState<Record<string, string>>({});
 
-  const load = useCallback(async (): Promise<void> => {
-    const token = store.readAdminToken();
-    if (!token) {
-      setError('This desk is not signed in.');
-      setLoading(false);
-      return;
-    }
-
-    try {
-      const all = await store.api.listOrders(token);
-      // Filtered here rather than server-side: `GET /orders` with a desk token
-      // answers the whole board, which the Pipeline pane also wants, and two
-      // stages' worth of jobs is not a payload worth a second route.
-      setOrders(all.filter((o) => o.status === 'dropped_off' || o.status === 'processing'));
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'The hub board could not be read.');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const loading = orders.loading;
 
   /**
    * Confirms one stage.
@@ -184,7 +170,7 @@ export default function HubPanel({
   const confirm = async (order: Order, to: JobStatus, label: string): Promise<void> => {
     const token = store.readAdminToken();
     if (!token) {
-      setError('This desk is not signed in.');
+      onFailed('This desk is not signed in, so nothing was confirmed.');
       return;
     }
 
@@ -200,13 +186,12 @@ export default function HubPanel({
         },
         { token },
       );
-      await load();
-      // The Pipeline pane reads the booking mirror, not this board, so it needs
-      // the pull to follow the row across.
-      void store.pull();
+      // The shell re-reads the board, the booking mirror and the trail — the
+      // Pipeline pane reads the mirror rather than this board, so the row has to
+      // be pulled across for it to follow.
       onConfirmed(`${order.orderNumber} — ${label.toLowerCase()}, confirmed`);
     } catch (e) {
-      setError(
+      onFailed(
         e instanceof Error
           ? e.message
           : `${order.orderNumber} could not be moved. It is still where it was.`,
@@ -216,19 +201,35 @@ export default function HubPanel({
     }
   };
 
+  const uncounted = awaiting.filter(
+    (order) => (order.bags?.length ?? 0) > 0 && countedBags(order) === 0,
+  ).length;
+
   return (
     <div className="space-y-4">
-      {error && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-admin-danger/25 bg-admin-danger/10 px-4 py-3">
-          <p className="text-[12px] leading-relaxed text-admin-danger">{error}</p>
-          <Button size="sm" icon={RefreshCw} onClick={() => void load()}>
-            Try again
-          </Button>
-        </div>
-      )}
+      <PaneHeader
+        stats={[
+          {
+            label: 'Awaiting wash',
+            value: awaiting.filter((o) => o.status === 'dropped_off').length,
+          },
+          {
+            label: 'Awaiting press',
+            value: awaiting.filter((o) => o.status === 'processing').length,
+          },
+          {
+            label: 'Not yet counted',
+            value: uncounted,
+            tone: uncounted > 0 ? 'warn' : 'ok',
+            hint: 'bags in the building',
+          },
+        ]}
+        freshness={orders}
+        banner={<ResourceBanner error={orders.error} refresh={orders.refresh} />}
+      />
 
       {SECTIONS.map((section) => {
-        const rows = orders.filter((o) => o.status === section.from);
+        const rows = awaiting.filter((o) => o.status === section.from);
 
         return (
           <Panel
@@ -292,8 +293,8 @@ export default function HubPanel({
                 <div className="divide-y divide-admin-line">
                   {rows.map((order) => (
                     <div key={order.id} className={`px-5 py-3 ${ROW_GRID}`}>
-                      <span className="order-1 font-mono text-[12px] font-medium tabular-nums text-admin-accent md:order-none">
-                        {order.orderNumber}
+                      <span className="order-1 text-[12px] font-medium md:order-none">
+                        <OrderRef id={order.orderNumber} />
                       </span>
 
                       <div className="order-3 col-span-2 min-w-0 md:order-none md:col-span-1">
@@ -404,8 +405,9 @@ export default function HubPanel({
           order={checkingIn}
           onClose={() => setCheckingIn(null)}
           onCheckedIn={(message) => {
+            // `onConfirmed` re-reads the board, so the row it came from picks up
+            // the counts that were just typed into it.
             onConfirmed(message);
-            void load();
           }}
         />
       )}

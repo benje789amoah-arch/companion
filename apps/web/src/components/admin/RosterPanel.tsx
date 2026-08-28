@@ -25,9 +25,11 @@ import {
   type RiderShift,
   type RiderState,
 } from '@freshfold/core';
-import * as store from '../services/store';
-import { Badge, Button, EmptyState, Field, Input, Panel } from './admin/ui';
-import { useToast } from './ui/Toast';
+import * as store from '../../services/store';
+import { Badge, Button, EmptyState, Field, Input, Panel } from './ui';
+import PaneHeader, { ResourceBanner } from './PaneHeader';
+import type { DeskResource } from './useDeskResource';
+import { useToast } from '../ui/Toast';
 
 /**
  * The courier roster.
@@ -65,10 +67,20 @@ function shiftLabel(shift: RiderShift): string {
   return sameDay ? `${day}, ${start} — ${end}` : `${day}, ${start} — ${endDay}, ${end}`;
 }
 
-export default function RosterPanel() {
+export default function RosterPanel({ riders }: { riders: DeskResource<RiderState[]> }) {
   const toast = useToast();
-  const [riders, setRiders] = useState<RiderState[]>([]);
-  const [loading, setLoading] = useState(true);
+
+  /**
+   * The roster comes from the shell.
+   *
+   * Two other things need it — the Pipeline's "call the courier" control, which
+   * joins a phone number in by rider id, and the palette's plate search — and
+   * this pane used to fetch its own copy on mount into private `loading` and
+   * `error` state. The rota below is still read here, because nothing outside
+   * this pane asks about shifts.
+   */
+  const list = riders.data;
+  const loading = riders.loading;
   const [error, setError] = useState('');
 
   const [name, setName] = useState('');
@@ -108,14 +120,20 @@ export default function RosterPanel() {
   const [issued, setIssued] = useState<{ rider: RiderState; pin: string } | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const load = useCallback(async () => {
+  /**
+   * The rota, on its own read.
+   *
+   * Separate from the roster because only this pane wants it, and because a
+   * rota that will not load must not take the roster down with it — hiring a
+   * courier is the more urgent of the two jobs here and does not need shifts to
+   * work. `riders.refresh()` and this are called together wherever both could
+   * have changed.
+   */
+  const loadShifts = useCallback(async () => {
     const token = store.readAdminToken();
     if (!token) return;
 
     try {
-      const list = await store.api.listRiders(token);
-      setRiders(list);
-
       /**
        * The rota alongside the roster, from a week back to a fortnight ahead.
        *
@@ -139,14 +157,16 @@ export default function RosterPanel() {
         (byRider[shift.riderId] ??= []).push(shift);
       }
       setShifts(byRider);
-
-      setError('');
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not load the roster.');
-    } finally {
-      setLoading(false);
+      setError(err instanceof ApiError ? err.message : 'The rota could not be read.');
     }
   }, []);
+
+  /** Both halves, for the handlers that could have changed either. */
+  const reload = useCallback(() => {
+    riders.refresh();
+    void loadShifts();
+  }, [riders, loadShifts]);
 
   /**
    * Rosters a block.
@@ -177,7 +197,7 @@ export default function RosterPanel() {
       setShiftStart('');
       setShiftEnd('');
       setShiftNote('');
-      await load();
+      reload();
     } catch (err) {
       // The server's sentence: "that overlaps a shift this courier is already
       // rostered for" is more use than anything this pane could invent.
@@ -193,15 +213,15 @@ export default function RosterPanel() {
 
     try {
       await store.api.deleteShift(shiftId, token);
-      await load();
+      reload();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'That shift could not be removed.');
     }
   };
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadShifts();
+  }, [loadShifts]);
 
   const addCourier = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -244,7 +264,7 @@ export default function RosterPanel() {
       setVehicle('');
       setVehiclePlate('');
       setCopied(false);
-      await load();
+      reload();
     } catch (err) {
       setError(
         err instanceof ApiError ? err.message : 'Could not add that courier.'
@@ -282,7 +302,7 @@ export default function RosterPanel() {
       );
       setReassigning(null);
       setError('');
-      await load();
+      reload();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not reassign that vehicle.');
     } finally {
@@ -299,14 +319,57 @@ export default function RosterPanel() {
 
     try {
       await store.api.setRiderActive(rider.id, active, token);
-      await load();
+      reload();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : `Could not ${verb} that courier.`);
     }
   };
 
+  /**
+   * Who could actually take a job right now.
+   *
+   * `active` says they are on the payroll and `isOnline` says their phone is
+   * unlocked; neither is the question. `onShift` is — somebody who finished at
+   * six and left the app open in a drawer is both active and online, and is not
+   * going to make a collection.
+   */
+  const onShiftNow = list.filter((rider) => onShift(shifts[rider.id] ?? [])).length;
+
+  /**
+   * Rostered but not signed in.
+   *
+   * The one figure here worth acting on: somebody is due on the road and their
+   * phone has not opened the app. Neither half alone says that — a courier
+   * signed in off-shift cannot take a job either, and a courier on shift with a
+   * locked phone is the collection nobody is going to make.
+   */
+  const missing = list.filter(
+    (rider) => onShift(shifts[rider.id] ?? []) && !rider.isOnline,
+  ).length;
+
   return (
-    <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)] xl:items-start">
+    <div className="space-y-4">
+      <PaneHeader
+        stats={[
+          { label: 'On the roster', value: list.length },
+          {
+            label: 'On shift now',
+            value: onShiftNow,
+            tone: onShiftNow > 0 ? 'ok' : 'warn',
+            hint: 'can take a job',
+          },
+          {
+            label: 'Not signed in',
+            value: missing,
+            tone: missing > 0 ? 'warn' : 'ok',
+            hint: 'though on shift',
+          },
+        ]}
+        freshness={riders}
+        banner={<ResourceBanner error={riders.error} refresh={riders.refresh} />}
+      />
+
+      <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)] xl:items-start">
       <div className="space-y-4">
         {/* The temporary PIN, shown exactly once. Gold here is not decoration:
             it is the one block on the desk that will never be readable again. */}
@@ -444,14 +507,14 @@ export default function RosterPanel() {
       <Panel
         title="On the roster"
         description="Removing a courier keeps their delivery history and ends their sessions immediately."
-        actions={<Badge mono>{riders.length}</Badge>}
+        actions={<Badge mono>{list.length}</Badge>}
       >
         {loading ? (
           <div className="flex items-center justify-center gap-2 py-14 text-[12px] text-admin-fg-3">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             Loading the roster…
           </div>
-        ) : riders.length === 0 ? (
+        ) : list.length === 0 ? (
           <EmptyState
             icon={Bike}
             title="Nobody on the roster yet"
@@ -459,7 +522,7 @@ export default function RosterPanel() {
           />
         ) : (
           <div className="divide-y divide-admin-line">
-            {riders.map((rider) => (
+            {list.map((rider) => (
               <div key={rider.id} className="px-5 py-3">
                 <div className="flex flex-wrap items-center gap-3">
                   <div className="min-w-0 flex-1">
@@ -638,6 +701,7 @@ export default function RosterPanel() {
           </div>
         )}
       </Panel>
+      </div>
     </div>
   );
 }

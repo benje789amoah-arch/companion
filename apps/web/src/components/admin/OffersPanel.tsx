@@ -20,10 +20,12 @@
  * between a campaign and a leak.
  */
 
-import { useCallback, useEffect, useState } from 'react';
-import { RefreshCw, Tag, TicketPercent } from 'lucide-react';
+import { useCallback, useState } from 'react';
+import { Tag, TicketPercent } from 'lucide-react';
 import { promoLabel, type PromoCode } from '@freshfold/core';
 import * as store from '../../services/store';
+import PaneHeader, { ResourceBanner } from './PaneHeader';
+import { useDeskResource } from './useDeskResource';
 import { Badge, Button, EmptyState, Field, Input, Panel, formatCedis } from './ui';
 
 /** A blank code, as the form holds it. Strings throughout — these are inputs. */
@@ -41,34 +43,31 @@ const BLANK = {
   active: true,
 };
 
-export default function OffersPanel({ onSaved }: { onSaved: (message: string) => void }) {
-  const [codes, setCodes] = useState<PromoCode[]>([]);
-  const [loading, setLoading] = useState(true);
+export default function OffersPanel({
+  onSaved,
+  onFailed,
+}: {
+  onSaved: (message: string) => void;
+  onFailed: (message: string) => void;
+}) {
+  /**
+   * The codes, read here rather than by the shell.
+   *
+   * The one collection that stays with its pane: nothing outside it asks about
+   * promo codes — there is no rail figure to compute, because an offer sitting
+   * unclaimed is not somebody waiting on a supervisor. It uses the same hook as
+   * everything else, so it is stamped and refreshed the same way.
+   */
+  const readCodes = useCallback((token: string) => store.api.listPromoCodes(token), []);
+  const resource = useDeskResource<PromoCode[]>(readCodes, []);
+  const codes = resource.data;
+  const loading = resource.loading;
+
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState(BLANK);
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(async (): Promise<void> => {
-    const token = store.readAdminToken();
-    if (!token) {
-      setError('This desk is not signed in.');
-      setLoading(false);
-      return;
-    }
-
-    try {
-      setCodes(await store.api.listPromoCodes(token));
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'The codes could not be read.');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const load = () => resource.refresh();
 
   const edit = (promo: PromoCode) =>
     setDraft({
@@ -91,7 +90,9 @@ export default function OffersPanel({ onSaved }: { onSaved: (message: string) =>
   const save = async (): Promise<void> => {
     const token = store.readAdminToken();
     if (!token) {
-      setError('This desk is not signed in.');
+      const sentence = 'This desk is not signed in, so nothing was saved.';
+      setError(sentence);
+      onFailed(sentence);
       return;
     }
 
@@ -127,25 +128,47 @@ export default function OffersPanel({ onSaved }: { onSaved: (message: string) =>
       );
 
       setDraft(BLANK);
-      await load();
+      load();
       onSaved(`${draft.code.toUpperCase()} saved`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'That code could not be saved.');
+      const sentence = e instanceof Error ? e.message : 'That code could not be saved.';
+      setError(sentence);
+      onFailed(sentence);
     } finally {
       setBusy(false);
     }
   };
 
+  const live = codes.filter((promo) => promo.active).length;
+  const claimed = codes.reduce((sum, promo) => sum + (promo.uses ?? 0), 0);
+
+  /**
+   * Codes that could give away an unbounded amount.
+   *
+   * A percentage with no cap is the one configuration on this pane that can
+   * lose real money on a single order, and it is invisible in a list of codes
+   * that otherwise all look alike.
+   */
+  const uncapped = codes.filter(
+    (promo) => promo.active && promo.kind === 'percent' && !promo.maxDiscount,
+  ).length;
+
   return (
     <div className="space-y-4">
-      {error && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-admin-danger/25 bg-admin-danger/10 px-4 py-3">
-          <p className="text-[12px] leading-relaxed text-admin-danger">{error}</p>
-          <Button size="sm" icon={RefreshCw} onClick={() => void load()}>
-            Try again
-          </Button>
-        </div>
-      )}
+      <PaneHeader
+        stats={[
+          { label: 'Live codes', value: live, hint: `of ${codes.length}` },
+          { label: 'Claimed', value: claimed, hint: 'redemptions' },
+          {
+            label: 'Uncapped',
+            value: uncapped,
+            tone: uncapped > 0 ? 'warn' : 'ok',
+            hint: 'percentage, no ceiling',
+          },
+        ]}
+        freshness={resource}
+        banner={<ResourceBanner error={resource.error} refresh={resource.refresh} />}
+      />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
         <Panel
@@ -318,6 +341,16 @@ export default function OffersPanel({ onSaved }: { onSaved: (message: string) =>
               />
               <span className="text-[12px] text-admin-fg-2">Accepting redemptions</span>
             </label>
+
+            {/*
+              Beside the form it is about. Server failures also raise a toast —
+              this is the copy that stays put while the code is corrected.
+            */}
+            {!!error && (
+              <p className="rounded-xl border border-admin-danger/30 bg-admin-danger/10 px-3 py-2 text-[12px] leading-relaxed text-admin-danger">
+                {error}
+              </p>
+            )}
 
             <div className="flex gap-2 pt-1">
               <Button

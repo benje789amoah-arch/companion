@@ -20,6 +20,7 @@
  */
 
 import React from 'react';
+import { AlertTriangle, RefreshCw } from 'lucide-react';
 
 export type Tone = 'neutral' | 'ok' | 'warn' | 'danger' | 'info' | 'accent';
 
@@ -67,7 +68,7 @@ export function Badge({
   );
 }
 
-type ButtonVariant = 'primary' | 'accent' | 'secondary' | 'ghost' | 'danger';
+type ButtonVariant = 'primary' | 'accent' | 'secondary' | 'ghost' | 'danger' | 'destructive';
 
 const BUTTON_VARIANT: Record<ButtonVariant, string> = {
   primary:
@@ -80,25 +81,35 @@ const BUTTON_VARIANT: Record<ButtonVariant, string> = {
     'bg-transparent text-admin-fg-2 hover:text-admin-fg hover:bg-white/[0.06] border-transparent',
   danger:
     'bg-transparent text-admin-danger hover:bg-admin-danger/12 border-transparent hover:border-admin-danger/30',
+  /**
+   * The one filled red on the desk, reserved for the confirming button of a
+   * dialog that is about to do something irreversible. `danger` above is the
+   * quiet ghost that *opens* such a dialog — a row full of solid red buttons
+   * teaches somebody to click through red, which is the opposite of the point.
+   */
+  destructive:
+    'bg-admin-danger text-black hover:brightness-110 border-transparent font-semibold shadow-sm',
 };
 
-export function Button({
-  variant = 'secondary',
-  size = 'md',
-  icon: Icon,
-  children,
-  className = '',
-  ...rest
-}: {
-  variant?: ButtonVariant;
-  size?: 'sm' | 'md';
-  icon?: React.ComponentType<{ className?: string }>;
-} & React.ButtonHTMLAttributes<HTMLButtonElement>) {
+/**
+ * Ref-forwarding, so a dialog can put the keyboard on its Cancel button. A
+ * `useDialog` call site needs a real element to focus and cannot reach through
+ * a plain function component to get one.
+ */
+export const Button = React.forwardRef<
+  HTMLButtonElement,
+  {
+    variant?: ButtonVariant;
+    size?: 'sm' | 'md';
+    icon?: React.ComponentType<{ className?: string }>;
+  } & React.ButtonHTMLAttributes<HTMLButtonElement>
+>(function Button({ variant = 'secondary', size = 'md', icon: Icon, children, className = '', ...rest }, ref) {
   const sizing =
     size === 'sm' ? 'h-7 px-2.5 text-[12px] gap-1.5' : 'h-9 px-3.5 text-[13px] gap-1.5';
   return (
     <button
       type="button"
+      ref={ref}
       {...rest}
       className={`inline-flex items-center justify-center rounded-full border transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-admin-accent/60 ${sizing} ${BUTTON_VARIANT[variant]} ${className}`}
     >
@@ -106,7 +117,7 @@ export function Button({
       {children}
     </button>
   );
-}
+});
 
 /** A titled card. One border, one lift — cards never nest visibly. */
 export function Panel({
@@ -141,60 +152,6 @@ export function Panel({
       )}
       <div className={bodyClassName}>{children}</div>
     </section>
-  );
-}
-
-/**
- * A metric in the top strip.
- *
- * Deliberately one line of label and one of number: these are glanced at, not
- * read, and the previous version's 2xl serif numerals in four different colours
- * took more vertical space than the first three orders underneath them.
- */
-export function Metric({
-  label,
-  value,
-  hint,
-  tone = 'neutral',
-  icon: Icon,
-}: {
-  label: string;
-  value: React.ReactNode;
-  hint?: string;
-  tone?: Tone;
-  icon?: React.ComponentType<{ className?: string }>;
-}) {
-  // Spelled out rather than interpolated — Tailwind scans source text, so a
-  // template-literal class name compiles to nothing.
-  const valueTone: Record<Tone, string> = {
-    neutral: 'text-admin-fg',
-    accent: 'text-admin-accent',
-    ok: 'text-admin-ok',
-    warn: 'text-admin-warn',
-    danger: 'text-admin-danger',
-    info: 'text-admin-info',
-  };
-  return (
-    <div className="admin-card flex min-w-0 items-center gap-3 rounded-2xl border border-admin-line bg-admin-panel px-4 py-3">
-      {Icon && (
-        <span
-          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full border ${TONE_SOFT[tone]}`}
-        >
-          <Icon className="h-4 w-4" />
-        </span>
-      )}
-      <div className="min-w-0">
-        <span className="block truncate text-[11px] font-medium text-admin-fg-3">{label}</span>
-        <div className="flex items-baseline gap-1.5">
-          <span
-            className={`font-mono text-[19px] leading-7 font-semibold tabular-nums ${valueTone[tone]}`}
-          >
-            {value}
-          </span>
-          {hint && <span className="truncate text-[11px] text-admin-fg-3">{hint}</span>}
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -304,4 +261,94 @@ export function TableHead({
 /** Cedi amounts, always two decimals, always tabular. */
 export function formatCedis(amount: number): string {
   return `₵${amount.toFixed(2)}`;
+}
+
+/**
+ * A pane-level failure, stated once.
+ *
+ * Five panes each grew their own red bar with slightly different padding,
+ * wording and retry affordance. They are all reporting the same class of thing
+ * — "we asked the server and it did not answer" — and the whole reason the
+ * resources hold their errors instead of rendering an empty list is so this can
+ * say which of the two happened.
+ *
+ * `onRetry` is optional because not every failure has a retry: a desk with no
+ * token cannot re-read anything, and offering a button that will fail the same
+ * way is worse than not offering one.
+ */
+export function Banner({
+  tone = 'danger',
+  children,
+  onRetry,
+}: {
+  tone?: 'danger' | 'warn';
+  children: React.ReactNode;
+  onRetry?: () => void;
+}) {
+  const skin =
+    tone === 'warn'
+      ? 'border-admin-warn/25 bg-admin-warn/10 text-admin-warn'
+      : 'border-admin-danger/25 bg-admin-danger/10 text-admin-danger';
+
+  return (
+    <div
+      role="alert"
+      className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-3 ${skin}`}
+    >
+      <p className="flex min-w-0 items-start gap-2 text-[12px] leading-relaxed">
+        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <span className="min-w-0">{children}</span>
+      </p>
+      {onRetry && (
+        <Button size="sm" icon={RefreshCw} onClick={onRetry}>
+          Try again
+        </Button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One number in a pane's summary row.
+ *
+ * Replaces `Metric`, a bordered card with an icon roundel. Those were the
+ * shell's global strip — four of them above every pane, including the seven
+ * they said nothing about — and a pane that rendered its own three underneath
+ * produced two rows of boxes before the first row of data. A summary that
+ * belongs to the list underneath it does not need a box of its own; it needs to
+ * be legible in one glance and to take one line.
+ */
+export function Stat({
+  label,
+  value,
+  tone = 'neutral',
+  hint,
+}: {
+  label: string;
+  value: React.ReactNode;
+  tone?: Tone;
+  hint?: string;
+}) {
+  const valueTone: Record<Tone, string> = {
+    neutral: 'text-admin-fg',
+    accent: 'text-admin-accent',
+    ok: 'text-admin-ok',
+    warn: 'text-admin-warn',
+    danger: 'text-admin-danger',
+    info: 'text-admin-info',
+  };
+
+  return (
+    <div className="min-w-0">
+      <span className="block truncate text-[11px] font-medium text-admin-fg-3">{label}</span>
+      <span className="flex items-baseline gap-1.5">
+        <span
+          className={`font-mono text-[17px] leading-6 font-semibold tabular-nums ${valueTone[tone]}`}
+        >
+          {value}
+        </span>
+        {hint && <span className="truncate text-[11px] text-admin-fg-3">{hint}</span>}
+      </span>
+    </div>
+  );
 }

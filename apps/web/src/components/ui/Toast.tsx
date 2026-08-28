@@ -27,6 +27,46 @@ import { AlertTriangle, Check, Info, X } from 'lucide-react';
 
 export type ToastTone = 'ok' | 'bad' | 'note';
 
+/**
+ * Which surface the toast is landing on.
+ *
+ * The site and the supervisor desk are two visual worlds on purpose — the desk
+ * has its own `--color-admin-*` palette rather than the marketing brand's,
+ * because it is an instrument somebody stares at for a whole shift. Before this
+ * the desk rendered *both*: `RosterPanel` called `useToast` and got a
+ * brand-emerald pill, while the dashboard shell had a second, admin-skinned
+ * toast of its own, and the two appeared in different corners of the same
+ * screen for the same class of event.
+ *
+ * One component, two skins, and providers nest: the desk mounts its own
+ * `ToastProvider skin="desk"` inside the site's, so `useToast` resolves to the
+ * nearer one and every call site keeps working untouched.
+ */
+export type ToastSkin = 'site' | 'desk';
+
+const SKINS: Record<ToastSkin, { tone: Record<ToastTone, string>; shell: string; region: string }> = {
+  site: {
+    tone: {
+      ok: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200',
+      bad: 'border-red-500/25 bg-red-500/10 text-red-200',
+      note: 'border-brand-gold/30 bg-brand-gold/10 text-brand-gold-light',
+    },
+    shell:
+      'rounded-md bg-brand-card px-4 py-3 text-[14px] shadow-[0_8px_30px_rgba(0,0,0,0.6)] backdrop-blur-sm',
+    region: 'font-ui bottom-24 left-4 right-4 sm:bottom-5 sm:left-auto sm:right-5',
+  },
+  desk: {
+    tone: {
+      ok: 'border-admin-ok/30 bg-admin-ok/12 text-admin-ok',
+      bad: 'border-admin-danger/30 bg-admin-danger/12 text-admin-danger',
+      note: 'border-admin-accent/30 bg-admin-accent/12 text-admin-accent',
+    },
+    shell:
+      'admin-card rounded-xl bg-admin-panel px-4 py-2.5 text-[13px] shadow-[0_8px_30px_rgba(0,0,0,0.55)]',
+    region: 'font-sans bottom-4 left-4 right-4 sm:bottom-5 sm:left-auto sm:right-5',
+  },
+};
+
 interface Toast {
   id: number;
   tone: ToastTone;
@@ -52,7 +92,14 @@ export function useToast(): (message: string, tone?: ToastTone) => void {
 
 const noop = () => {};
 
-export function ToastProvider({ children }: { children: React.ReactNode }) {
+export function ToastProvider({
+  skin = 'site',
+  children,
+}: {
+  skin?: ToastSkin;
+  children: React.ReactNode;
+}) {
+  const surface = SKINS[skin];
   const [toasts, setToasts] = useState<Toast[]>([]);
   const nextId = useRef(1);
 
@@ -90,20 +137,16 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         // reader — the region has to exist first.
         role="status"
         aria-live="polite"
-        className="pointer-events-none fixed bottom-24 left-4 right-4 z-[var(--z-toast)] flex flex-col items-start gap-2 font-ui sm:bottom-5 sm:left-auto sm:right-5 sm:items-end"
+        className={`pointer-events-none fixed z-[var(--z-toast)] flex flex-col items-start gap-2 sm:items-end ${surface.region}`}
       >
         {toasts.map((toast) => {
-          const skin = {
-            ok: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200',
-            bad: 'border-red-500/25 bg-red-500/10 text-red-200',
-            note: 'border-brand-gold/30 bg-brand-gold/10 text-brand-gold-light',
-          }[toast.tone];
+          const tone = surface.tone[toast.tone];
           const Icon = toast.tone === 'ok' ? Check : toast.tone === 'bad' ? AlertTriangle : Info;
 
           return (
             <div
               key={toast.id}
-              className={`toast-in pointer-events-auto flex max-w-[24rem] items-start gap-2.5 rounded-md border bg-brand-card px-4 py-3 text-[14px] leading-relaxed shadow-[0_8px_30px_rgba(0,0,0,0.6)] backdrop-blur-sm ${skin}`}
+              className={`toast-in pointer-events-auto flex max-w-[24rem] items-start gap-2.5 border leading-relaxed ${surface.shell} ${tone}`}
             >
               <Icon aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
               <span className="min-w-0">{toast.message}</span>

@@ -199,6 +199,24 @@ export function isOnline(): boolean {
   return online;
 }
 
+/**
+ * When the mirror last came back from the server.
+ *
+ * Exposed for the supervisor desk, which puts it on screen. A board that is
+ * read all shift needs to say how old it is — and the desk had no way to know,
+ * so its one refresh control was wired to a function that re-read `localStorage`
+ * and its panes each invented a freshness story of their own.
+ *
+ * Null until the first successful pull, which is not the same as "a moment ago":
+ * a desk opened offline has a mirror full of yesterday's board and must not
+ * imply otherwise.
+ */
+let lastPulled: number | null = null;
+
+export function lastSyncedAt(): Date | null {
+  return lastPulled === null ? null : new Date(lastPulled);
+}
+
 // ---------------------------------------------------------------------------
 // Offline write queue
 // ---------------------------------------------------------------------------
@@ -568,6 +586,45 @@ export async function rescheduleBooking(
   notify();
 
   return moved;
+}
+
+/**
+ * Land a record the server has already accepted.
+ *
+ * The desk's server-first handlers need this and had nothing to call. Their
+ * only option was `writeBookings(next)`, which diffs the array and enqueues a
+ * `booking:patch` for anything that changed — so every payment settled, every
+ * refund and every stage confirmed went to the server twice: once as the
+ * request that made it true, and again as a queued patch echoing the response
+ * back at it.
+ *
+ * This is the other half of the split the desk is built on. `patchBooking`
+ * above is optimistic — change it here, tell the server later, which is right
+ * for something only this browser cares about. This one is for the opposite
+ * case: the server has already said yes, and the mirror is catching up to a
+ * fact rather than proposing one. No queue entry, because there is nothing left
+ * to send.
+ *
+ * A record for an order this browser has never seen is inserted rather than
+ * dropped — the desk holds a supervisor token and may well be told about a job
+ * a courier created since the last pull.
+ */
+export function applyBooking(booking: Booking): void {
+  const known = mirror.bookings.some((existing) => existing.id === booking.id);
+
+  mirror.bookings = known
+    ? mirror.bookings.map((existing) => (existing.id === booking.id ? booking : existing))
+    : [...mirror.bookings, booking];
+
+  writeLocal(KEYS.bookings, mirror.bookings);
+  notify();
+}
+
+/** Drop a record the server has already deleted. No queue entry, same reasoning. */
+export function forgetBooking(id: string): void {
+  mirror.bookings = mirror.bookings.filter((booking) => booking.id !== id);
+  writeLocal(KEYS.bookings, mirror.bookings);
+  notify();
 }
 
 export function patchBooking(id: string, patch: Partial<Booking>): void {
@@ -1236,11 +1293,18 @@ export async function pull(): Promise<void> {
     else await pullAsVisitor();
 
     online = true;
+    lastPulled = Date.now();
     await pullAccount();
   } catch {
     // The server is down or we're offline. The mirror stands.
     online = false;
   }
+
+  // Both outcomes, so a screen showing the sync state learns about the failure
+  // as well as the success. `lastPulled` deliberately keeps its old value on a
+  // failure: the data on screen really did come back at that moment, and what
+  // has changed is only that it is now known to be stale.
+  notify();
 }
 
 /** The desk: the whole board, the patron table and every conversation. */

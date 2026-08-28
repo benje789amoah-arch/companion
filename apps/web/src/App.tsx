@@ -429,7 +429,6 @@ export default function App() {
       {isAdminOpen && isSupervisor === true && (
         <Deferred context="admin-dashboard" label="Loading the board" onDismiss={closeOverlay}>
           <AdminDashboard
-            isOpen={isAdminOpen}
             onClose={closeOverlay}
             onSignOut={() => {
               void store.adminLogout();

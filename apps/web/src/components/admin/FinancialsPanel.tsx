@@ -11,11 +11,14 @@
  * supervisor has no reason to look at.
  */
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Printer, Receipt, Wallet, X } from 'lucide-react';
 import { decodeFinish, priceBreakdown, describeItems } from '@freshfold/core';
 import type { Booking } from '../../types';
+import OrderRef from './OrderRef';
+import PaneHeader, { ResourceBanner } from './PaneHeader';
+import type { DeskResource } from './useDeskResource';
 import { Badge, Button, EmptyState, Panel, TableHead, formatCedis } from './ui';
 import { displayAmount } from '../../services/amount';
 
@@ -24,53 +27,126 @@ const COLS =
 
 export default function FinancialsPanel({
   bookings,
-  totalRevenue,
+  freshness,
+  collected,
   outstanding,
-  receiptFor,
-  onOpenReceipt,
   onTogglePayment,
   onRefund,
 }: {
   bookings: Booking[];
-  totalRevenue: number;
+  /** The mirror these rows come out of. */
+  freshness: Pick<DeskResource<unknown>, 'error' | 'refreshing' | 'fetchedAt' | 'refresh'>;
+  collected: number;
   outstanding: number;
-  receiptFor: Booking | null;
-  onOpenReceipt: (booking: Booking | null) => void;
   onTogglePayment: (bookingId: string) => Promise<void>;
   /** Returns a settled bill to the patron's wallet. Supervisor only. */
   onRefund: (bookingId: string) => Promise<void>;
 }) {
+  /**
+   * The receipt on screen.
+   *
+   * Held here rather than in the shell, where it used to live. Nothing outside
+   * this pane opens a receipt, and a modal whose open/closed state survives a
+   * tab change is a modal that can be reopened by navigating back to a pane you
+   * did not open it from.
+   */
+  const [receiptFor, setReceiptFor] = useState<Booking | null>(null);
+
+  const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('unpaid-first');
+
   const ordered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+
+    const matching = bookings.filter((b) => {
+      const paid = b.paymentStatus === 'Paid';
+      const matchesQuery =
+        !q ||
+        b.id.toLowerCase().includes(q) ||
+        b.name.toLowerCase().includes(q) ||
+        (b.transactionRef?.toLowerCase().includes(q) ?? false);
+
+      const matchesStatus =
+        statusFilter === 'unpaid-first' ||
+        (statusFilter === 'unpaid' && !paid) ||
+        (statusFilter === 'paid' && paid) ||
+        (statusFilter === 'refunded' && b.paymentStatus === 'Refunded');
+
+      return matchesQuery && matchesStatus;
+    });
+
     // Unpaid first, then by amount descending — the biggest debt at the top.
-    return [...bookings].sort((a, b) => {
+    // This pane exists to chase money, so the rows that need action should not
+    // be interleaved with the twenty settled ones nobody has to look at.
+    return matching.sort((a, b) => {
       const aPaid = a.paymentStatus === 'Paid' ? 1 : 0;
       const bPaid = b.paymentStatus === 'Paid' ? 1 : 0;
       if (aPaid !== bPaid) return aPaid - bPaid;
       return displayAmount(b) - displayAmount(a);
     });
-  }, [bookings]);
+  }, [bookings, query, statusFilter]);
+
+  const unpaidCount = bookings.filter((b) => b.paymentStatus !== 'Paid').length;
+  const filtersActive = query.trim() !== '' || statusFilter !== 'unpaid-first';
 
   return (
-    <>
+    <div className="space-y-4">
+      <PaneHeader
+        stats={[
+          { label: 'Collected', value: formatCedis(collected), tone: 'ok' },
+          {
+            label: 'Outstanding',
+            value: formatCedis(outstanding),
+            tone: outstanding > 0 ? 'warn' : 'neutral',
+            hint: `${unpaidCount} unpaid`,
+          },
+          {
+            label: 'Showing',
+            value: ordered.length,
+            tone: filtersActive ? 'accent' : 'neutral',
+            hint: `of ${bookings.length}`,
+          },
+        ]}
+        freshness={freshness}
+        search={{
+          value: query,
+          onChange: setQuery,
+          placeholder: 'Order, customer or transaction reference…',
+        }}
+        filters={[
+          {
+            label: 'Filter by settlement',
+            value: statusFilter,
+            onChange: setStatusFilter,
+            options: [
+              { value: 'unpaid-first', label: 'Unpaid first' },
+              { value: 'unpaid', label: 'Only unpaid' },
+              { value: 'paid', label: 'Only paid' },
+              { value: 'refunded', label: 'Only refunded' },
+            ],
+          },
+        ]}
+        filtersActive={filtersActive}
+        onClearFilters={() => {
+          setQuery('');
+          setStatusFilter('unpaid-first');
+        }}
+        banner={<ResourceBanner error={freshness.error} refresh={freshness.refresh} />}
+      />
+
       <Panel
         title="Settlement"
-        description="Unpaid orders are listed first."
-        actions={
-          <div className="flex items-center gap-2">
-            <Badge tone="ok" mono>
-              Collected {formatCedis(totalRevenue)}
-            </Badge>
-            <Badge tone="warn" mono>
-              Outstanding {formatCedis(outstanding)}
-            </Badge>
-          </div>
-        }
+        description="Unpaid orders are listed first — this pane exists to chase money."
       >
         {ordered.length === 0 ? (
           <EmptyState
             icon={Wallet}
-            title="Nothing to settle"
-            detail="Orders appear here as soon as they are booked."
+            title={bookings.length === 0 ? 'Nothing to settle' : 'No orders match'}
+            detail={
+              bookings.length === 0
+                ? 'Orders appear here as soon as they are booked.'
+                : `${bookings.length} order${bookings.length === 1 ? '' : 's'} on the board, none of them matching.`
+            }
           />
         ) : (
           <>
@@ -95,8 +171,8 @@ export default function FinancialsPanel({
                 const reversible = b.paymentMethod === 'Cash';
                 return (
                   <div key={b.id} className={`px-5 py-3 hover:bg-admin-hover ${COLS}`}>
-                    <span className="font-mono text-[12px] tabular-nums text-admin-accent">
-                      {b.id}
+                    <span className="text-[12px]">
+                      <OrderRef id={b.id} />
                     </span>
 
                     <div className="mt-0.5 min-w-0 md:mt-0">
@@ -166,7 +242,7 @@ export default function FinancialsPanel({
                         icon={Printer}
                         aria-label={`Receipt for ${b.id}`}
                         title="Itemised receipt"
-                        onClick={() => onOpenReceipt(b)}
+                        onClick={() => setReceiptFor(b)}
                       />
                     </div>
                   </div>
@@ -184,7 +260,7 @@ export default function FinancialsPanel({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
-            onClick={() => onOpenReceipt(null)}
+            onClick={() => setReceiptFor(null)}
           >
             <motion.div
               initial={{ scale: 0.97, y: 8 }}
@@ -201,7 +277,7 @@ export default function FinancialsPanel({
                 </div>
                 <button
                   type="button"
-                  onClick={() => onOpenReceipt(null)}
+                  onClick={() => setReceiptFor(null)}
                   aria-label="Close receipt"
                   className="cursor-pointer rounded p-0.5 text-admin-fg-3 hover:text-admin-fg"
                 >
@@ -302,7 +378,7 @@ export default function FinancialsPanel({
           </motion.div>
         )}
       </AnimatePresence>
-    </>
+    </div>
   );
 }
 

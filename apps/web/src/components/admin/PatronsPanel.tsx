@@ -22,9 +22,11 @@
  * quietest control in the row rather than the loudest.
  */
 
-import { useState } from 'react';
-import { Award, Ban, Minus, Plus, Search, Trash2, Undo2, Users, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Award, Ban, Minus, Plus, Trash2, Undo2, Users, X } from 'lucide-react';
 import { ApiError, type UserAccount } from '@freshfold/core';
+import PaneHeader, { ResourceBanner } from './PaneHeader';
+import type { DeskResource } from './useDeskResource';
 import { Badge, Button, EmptyState, Field, Input, Panel, TableHead } from './ui';
 
 /**
@@ -42,33 +44,53 @@ const COLS =
 
 export default function PatronsPanel({
   accounts,
-  query,
-  onQueryChange,
-  selectedEmail,
-  onSelect,
-  amount,
-  onAmountChange,
-  reason,
-  onReasonChange,
+  freshness,
+  focusEmail,
+  onFocusHandled,
   onAdjust,
   onSetBlocked,
   onDelete,
 }: {
   accounts: UserAccount[];
-  query: string;
-  onQueryChange: (value: string) => void;
-  selectedEmail: string | null;
-  onSelect: (email: string | null) => void;
-  amount: string;
-  onAmountChange: (value: string) => void;
-  reason: string;
-  onReasonChange: (value: string) => void;
-  onAdjust: (email: string, action: 'add' | 'subtract') => void;
-  /** Suspends a patron, or lifts it. Rejects if the server refused. */
+  /** The mirror the directory comes out of. */
+  freshness: Pick<DeskResource<unknown>, 'error' | 'refreshing' | 'fetchedAt' | 'refresh'>;
+  /** A patron the palette has been asked to open. */
+  focusEmail: string | null;
+  onFocusHandled: () => void;
+  /**
+   * Applies a signed delta. It used to take `'add' | 'subtract'` and read the
+   * magnitude and the reason out of shell state, which is why the amount and a
+   * prefilled sentence about stain treatment survived a tab change invisibly:
+   * they were never this pane's to hold. They are now, and the handler is told
+   * everything it needs in the call.
+   */
+  onAdjust: (email: string, delta: number, reason: string) => Promise<void>;
+  /**
+   * Suspends a patron, or lifts it.
+   *
+   * Resolves either way — the shell confirms the restore, performs the write and
+   * reports the outcome as a toast, so what this pane awaits is "the attempt is
+   * over", which is what its per-row busy state is for.
+   */
   onSetBlocked: (email: string, blocked: boolean, reason: string) => Promise<void>;
-  /** Erases the account. Rejects if the server refused — a live order does. */
+  /** Erases the account. Same contract: the shell confirms it and reports it. */
   onDelete: (email: string) => Promise<void>;
 }) {
+  const [query, setQuery] = useState('');
+  const [selectedEmail, setSelectedEmail] = useState<string | null>(null);
+
+  /**
+   * The adjuster's own fields.
+   *
+   * Reset whenever the selection moves. An amount and a reason typed for one
+   * patron are not a default for the next one, and the shell used to carry both
+   * across every selection and every tab change — with the reason prefilled to a
+   * specific sentence about stain-treatment compensation, so the path of least
+   * resistance was to file every adjustment under a story that might not be true.
+   */
+  const [amount, setAmount] = useState('');
+  const [reason, setReason] = useState('');
+
   /** The patron whose block form is open, and what has been typed into it. */
   const [blocking, setBlocking] = useState<string | null>(null);
   const [blockReason, setBlockReason] = useState('');
@@ -94,6 +116,36 @@ export default function PatronsPanel({
     }
   };
 
+  // Arriving from the palette: select the patron and put the adjuster on them.
+  useEffect(() => {
+    if (!focusEmail) return;
+    setSelectedEmail(focusEmail);
+    setQuery('');
+    onFocusHandled();
+  }, [focusEmail, onFocusHandled]);
+
+  useEffect(() => {
+    setAmount('');
+    setReason('');
+  }, [selectedEmail]);
+
+  const adjust = async (email: string, direction: 1 | -1) => {
+    const magnitude = parseInt(amount, 10);
+    if (Number.isNaN(magnitude) || magnitude <= 0) {
+      setError('Enter a positive number of points to adjust.');
+      return;
+    }
+    if (!reason.trim()) {
+      setError('Say why. The reason is written into the audit trail.');
+      return;
+    }
+
+    setError('');
+    await onAdjust(email, magnitude * direction, reason.trim());
+    setAmount('');
+    setReason('');
+  };
+
   const openBlockForm = (email: string) => {
     setBlocking(email);
     setBlockReason('');
@@ -113,33 +165,43 @@ export default function PatronsPanel({
     // opens this pane twice. The rest keep the order the server sent them in.
     .sort((a, b) => Number(Boolean(b.blockedAt)) - Number(Boolean(a.blockedAt)));
 
-  const selected = accounts.find((a) => a.email === selectedEmail) ?? null;
+  const selected =
+    accounts.find((a) => a.email.toLowerCase() === selectedEmail?.toLowerCase()) ?? null;
   const blockedCount = accounts.filter((a) => a.blockedAt).length;
 
   return (
+    <div className="space-y-4">
+      <PaneHeader
+        stats={[
+          { label: 'Registered', value: accounts.length, hint: 'accounts' },
+          {
+            label: 'Blocked',
+            value: blockedCount,
+            tone: blockedCount > 0 ? 'warn' : 'ok',
+          },
+          {
+            label: 'Showing',
+            value: filtered.length,
+            tone: query.trim() ? 'accent' : 'neutral',
+          },
+        ]}
+        freshness={freshness}
+        search={{
+          value: query,
+          onChange: setQuery,
+          placeholder: 'Name, email or phone…',
+        }}
+        filtersActive={query.trim() !== ''}
+        onClearFilters={() => setQuery('')}
+        banner={<ResourceBanner error={freshness.error} refresh={freshness.refresh} />}
+      />
+
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_300px] xl:items-start">
       <Panel
         title="Patron directory"
-        description={
-          `${accounts.length} registered account${accounts.length === 1 ? '' : 's'}` +
-          (blockedCount > 0 ? ` · ${blockedCount} blocked` : '')
-        }
-        actions={
-          <Input
-            icon={Search}
-            value={query}
-            onChange={(e) => onQueryChange(e.target.value)}
-            placeholder="Name, email, phone"
-            className="w-full sm:w-56"
-          />
-        }
+        description="Blocked accounts sort to the top — they are the exception, and the reason anybody opens this pane twice."
+        actions={<Badge mono>{filtered.length}</Badge>}
       >
-        {!!error && (
-          <div className="mx-5 mb-3 flex items-start gap-2 rounded-2xl border border-admin-danger/30 bg-admin-danger/10 p-3">
-            <p className="text-[12px] leading-relaxed text-admin-danger">{error}</p>
-          </div>
-        )}
-
         {filtered.length === 0 ? (
           <EmptyState
             icon={Users}
@@ -214,7 +276,7 @@ export default function PatronsPanel({
                         <Button
                           size="sm"
                           icon={Award}
-                          onClick={() => onSelect(isSelected ? null : acc.email)}
+                          onClick={() => setSelectedEmail(isSelected ? null : acc.email)}
                           title={`Award or deduct points for ${acc.name || acc.email}`}
                         >
                           Adjust
@@ -326,7 +388,7 @@ export default function PatronsPanel({
                 </div>
                 <button
                   type="button"
-                  onClick={() => onSelect(null)}
+                  onClick={() => setSelectedEmail(null)}
                   aria-label="Clear selection"
                   className="shrink-0 cursor-pointer rounded p-0.5 text-admin-fg-3 hover:text-admin-fg"
                 >
@@ -346,27 +408,40 @@ export default function PatronsPanel({
                   type="number"
                   min={1}
                   value={amount}
-                  onChange={(e) => onAmountChange(e.target.value)}
+                  placeholder="150"
+                  onChange={(e) => setAmount(e.target.value)}
                 />
               </Field>
 
               <Field label="Reason" hint="Shown in the audit trail.">
                 <Input
                   value={reason}
-                  onChange={(e) => onReasonChange(e.target.value)}
+                  onChange={(e) => setReason(e.target.value)}
                   placeholder="e.g. Stain treatment compensation"
                 />
               </Field>
+
+              {/*
+                Beside the fields it is about. Both messages this can carry are
+                things wrong with what has been typed, and a validation notice at
+                the top of the directory — which is where it used to render —
+                described a form three hundred pixels away.
+              */}
+              {!!error && (
+                <p className="rounded-xl border border-admin-danger/30 bg-admin-danger/10 px-3 py-2 text-[12px] leading-relaxed text-admin-danger">
+                  {error}
+                </p>
+              )}
 
               <div className="grid grid-cols-2 gap-2 pt-1">
                 <Button
                   variant="primary"
                   icon={Plus}
-                  onClick={() => onAdjust(selected.email, 'add')}
+                  onClick={() => void adjust(selected.email, 1)}
                 >
                   Award
                 </Button>
-                <Button icon={Minus} onClick={() => onAdjust(selected.email, 'subtract')}>
+                <Button icon={Minus} onClick={() => void adjust(selected.email, -1)}>
                   Deduct
                 </Button>
               </div>
@@ -378,6 +453,7 @@ export default function PatronsPanel({
           )}
         </Panel>
       </div>
+    </div>
     </div>
   );
 }

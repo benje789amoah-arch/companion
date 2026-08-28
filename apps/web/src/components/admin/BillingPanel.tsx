@@ -20,11 +20,14 @@
  * invoice is a void and a reissue, both of which leave a trail.
  */
 
-import { useCallback, useEffect, useState } from 'react';
-import { FileText, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { useState } from 'react';
+import { FileText, Plus, Trash2 } from 'lucide-react';
 import type { Invoice, InvoiceStatus } from '@freshfold/core';
 import * as store from '../../services/store';
-import { Badge, Button, EmptyState, Field, Input, Metric, Panel, formatCedis, type Tone } from './ui';
+import OrderRef from './OrderRef';
+import PaneHeader, { ResourceBanner } from './PaneHeader';
+import type { DeskResource } from './useDeskResource';
+import { Badge, Button, EmptyState, Field, Input, Panel, formatCedis, type Tone } from './ui';
 
 const TONES: Record<InvoiceStatus, Tone> = {
   draft: 'neutral',
@@ -33,51 +36,39 @@ const TONES: Record<InvoiceStatus, Tone> = {
   void: 'danger',
 };
 
-export default function BillingPanel({ onSaved }: { onSaved: (message: string) => void }) {
-  const [invoices, setInvoices] = useState<Invoice[]>([]);
+export default function BillingPanel({
+  invoices: resource,
+  onSaved,
+  onFailed,
+}: {
+  /** The ledger of invoices, held by the shell for the rail's overdue figure. */
+  invoices: DeskResource<Invoice[]>;
+  onSaved: (message: string) => void;
+  onFailed: (message: string) => void;
+}) {
+  const invoices = resource.data;
+  const loading = resource.loading;
+
   const [open, setOpen] = useState<Invoice | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const [billTo, setBillTo] = useState({ email: '', org: '', name: '', address: '', tin: '' });
   const [line, setLine] = useState({ jobId: '', description: '', quantity: '1', unitPrice: '' });
 
-  const load = useCallback(async (): Promise<void> => {
-    const token = store.readAdminToken();
-    if (!token) {
-      setError('This desk is not signed in.');
-      setLoading(false);
-      return;
-    }
-
-    try {
-      setInvoices(await store.api.listInvoices(token));
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'The invoices could not be read.');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const load = () => resource.refresh();
 
   const withToken = async (work: (token: string) => Promise<void>): Promise<void> => {
     const token = store.readAdminToken();
     if (!token) {
-      setError('This desk is not signed in.');
+      onFailed('This desk is not signed in, so nothing was recorded.');
       return;
     }
 
     setBusy(true);
-    setError(null);
     try {
       await work(token);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'That could not be recorded.');
+      onFailed(e instanceof Error ? e.message : 'That could not be recorded.');
     } finally {
       setBusy(false);
     }
@@ -98,7 +89,7 @@ export default function BillingPanel({ onSaved }: { onSaved: (message: string) =
 
       setBillTo({ email: '', org: '', name: '', address: '', tin: '' });
       setOpen(invoice);
-      await load();
+      load();
       onSaved(`${invoice.number} opened`);
     });
 
@@ -119,7 +110,7 @@ export default function BillingPanel({ onSaved }: { onSaved: (message: string) =
 
       setLine({ jobId: '', description: '', quantity: '1', unitPrice: '' });
       setOpen(updated);
-      await load();
+      load();
     });
 
   const move = (status: InvoiceStatus) =>
@@ -127,7 +118,7 @@ export default function BillingPanel({ onSaved }: { onSaved: (message: string) =
       if (!open) return;
       const updated = await store.api.updateInvoice(open.id, { status }, token);
       setOpen(updated);
-      await load();
+      load();
       onSaved(`${updated.number} ${status}`);
     });
 
@@ -135,29 +126,25 @@ export default function BillingPanel({ onSaved }: { onSaved: (message: string) =
     .filter((invoice) => invoice.status === 'issued')
     .reduce((sum, invoice) => sum + (invoice.total - invoice.paid), 0);
 
+  const drafts = invoices.filter((invoice) => invoice.status === 'draft').length;
+  const issued = invoices.filter((invoice) => invoice.status === 'issued').length;
+
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <Metric label="Invoices" value={String(invoices.length)} />
-        <Metric
-          label="Outstanding"
-          value={formatCedis(outstanding)}
-          tone={outstanding > 0 ? 'warn' : 'ok'}
-        />
-        <Metric
-          label="Drafts"
-          value={String(invoices.filter((invoice) => invoice.status === 'draft').length)}
-        />
-      </div>
-
-      {error && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-admin-danger/25 bg-admin-danger/10 px-4 py-3">
-          <p className="text-[12px] leading-relaxed text-admin-danger">{error}</p>
-          <Button size="sm" icon={RefreshCw} onClick={() => void load()}>
-            Try again
-          </Button>
-        </div>
-      )}
+      <PaneHeader
+        stats={[
+          { label: 'Invoices', value: invoices.length },
+          {
+            label: 'Outstanding',
+            value: formatCedis(outstanding),
+            tone: outstanding > 0 ? 'warn' : 'ok',
+            hint: `${issued} issued`,
+          },
+          { label: 'Drafts', value: drafts, hint: 'not yet sent' },
+        ]}
+        freshness={resource}
+        banner={<ResourceBanner error={resource.error} refresh={resource.refresh} />}
+      />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
         <Panel
@@ -204,6 +191,19 @@ export default function BillingPanel({ onSaved }: { onSaved: (message: string) =
                     <div key={row.id} className="flex items-center gap-3 px-3 py-2">
                       <span className="min-w-0 flex-1 truncate text-[12px] text-admin-fg-2">
                         {row.description}
+                        {/*
+                          The order this line bills for, as somewhere you can go.
+                          It is typed in as free text below, so it is only a
+                          reference when there is one — a line for "March
+                          collections" names no single job and should not
+                          pretend to.
+                        */}
+                        {row.jobId && (
+                          <>
+                            {' · '}
+                            <OrderRef id={row.jobId} className="text-[11px]" />
+                          </>
+                        )}
                       </span>
                       <span className="font-mono text-[11px] text-admin-fg-3">
                         {row.quantity} × {formatCedis(row.unitPrice)}

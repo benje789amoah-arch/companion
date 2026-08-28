@@ -17,8 +17,8 @@
  * a scroll position nobody can hold.
  */
 
-import { describeItems } from '@freshfold/core';
-import { useMemo, useState, type ComponentType, type ReactNode } from 'react';
+import { describeItems, type AuditEvent } from '@freshfold/core';
+import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   ChevronRight,
@@ -34,7 +34,8 @@ import type { Booking, BookingStatus, JobStatus } from '../../types';
 import HandoffCode from '../HandoffCode';
 import LiveDispatchMap from '../LiveDispatchMap';
 import ProofOfService from './ProofOfService';
-import { Badge, Button, EmptyState, TableHead, formatCedis, type Tone } from './ui';
+import { Badge, Button, EmptyState, Panel, TableHead, formatCedis, type Tone } from './ui';
+import { OrderTrail } from './AuditPanel';
 import { displayAmount } from '../../services/amount';
 
 /**
@@ -78,34 +79,75 @@ function stageTone(status: BookingStatus): Tone {
 
 export default function PipelinePanel({
   bookings,
+  totalCount,
   stageSequence,
   riderPhones,
+  auditEvents,
+  focusOrderId,
+  onFocusHandled,
   onUpdateStatus,
   onTogglePayment,
   onDelete,
 }: {
   bookings: Booking[];
+  /** How many orders exist before filtering, so the empty state can tell why. */
+  totalCount: number;
   stageSequence: BookingStatus[];
   riderPhones: Record<string, string>;
-  onUpdateStatus: (bookingId: string, status: BookingStatus) => void;
+  /** The desk's trail, for the recent-activity list in an expansion. */
+  auditEvents: AuditEvent[];
+  /** An order the desk has been asked to show, from a reference elsewhere. */
+  focusOrderId: string | null;
+  onFocusHandled: () => void;
+  onUpdateStatus: (bookingId: string, status: BookingStatus) => void | Promise<void>;
   onTogglePayment: (bookingId: string) => Promise<void>;
-  onDelete: (bookingId: string) => void;
+  onDelete: (bookingId: string) => void | Promise<void>;
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [mapOpenFor, setMapOpenFor] = useState<string | null>(null);
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
+
+  /**
+   * Open the row somebody followed a reference to, and scroll to it.
+   *
+   * The scroll is the half that matters. Expanding a row twelve screens down a
+   * long board looks, from where the reader is sitting, exactly like nothing
+   * having happened — which is how a cross-pane link stops being trusted.
+   */
+  useEffect(() => {
+    if (!focusOrderId) return;
+
+    setExpandedId(focusOrderId);
+
+    // After paint, so the row exists and the expansion has taken its height.
+    const frame = requestAnimationFrame(() => {
+      rowRefs.current
+        .get(focusOrderId)
+        ?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      onFocusHandled();
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [focusOrderId, onFocusHandled]);
 
   if (bookings.length === 0) {
     return (
-      <EmptyState
-        icon={Inbox}
-        title="No orders match these filters"
-        detail="Orders arrive here the moment a customer books on the website or in the app."
-      />
+      <Panel>
+        <EmptyState
+          icon={Inbox}
+          title={totalCount === 0 ? 'No orders on the board' : 'No orders match these filters'}
+          detail={
+            totalCount === 0
+              ? 'Orders arrive here the moment a customer books on the website or in the app.'
+              : `${totalCount} order${totalCount === 1 ? '' : 's'} on the board, none of them matching. Clear the filters to see them.`
+          }
+        />
+      </Panel>
     );
   }
 
   return (
-    <div>
+    <Panel bodyClassName="">
       <TableHead
         className={COLS_MD}
         columns={[
@@ -131,7 +173,14 @@ export default function PipelinePanel({
           const stageIndex = stageSequence.indexOf(b.status);
 
           return (
-            <div key={b.id} className={isExpanded ? 'bg-admin-raised/60' : ''}>
+            <div
+              key={b.id}
+              ref={(node) => {
+                if (node) rowRefs.current.set(b.id, node);
+                else rowRefs.current.delete(b.id);
+              }}
+              className={isExpanded ? 'bg-admin-raised/60' : ''}
+            >
               {/* --- The row itself. Whole row is the disclosure control. --- */}
               <div
                 role="button"
@@ -281,7 +330,12 @@ export default function PipelinePanel({
                               <button
                                 key={stage}
                                 type="button"
-                                onClick={() => onUpdateStatus(b.id, stage)}
+                                onClick={() => void onUpdateStatus(b.id, stage)}
+                                title={
+                                  isCurrent
+                                    ? `${b.id} is at ${stage}`
+                                    : `Move ${b.id} to ${stage} — ${b.name} is told`
+                                }
                                 className={`h-7 rounded-md border px-2 text-[12px] transition-colors cursor-pointer ${
                                   isCurrent
                                     ? 'border-admin-accent bg-admin-accent text-black font-semibold'
@@ -306,6 +360,15 @@ export default function PipelinePanel({
 
                       {/* What the courier captured at each handover. */}
                       <ProofOfService bookingId={b.id} proof={b.proof} />
+
+                      {/*
+                        Who last did something to this order.
+
+                        The trail's commonest question is asked with the order
+                        already on screen, and answering it used to mean opening
+                        Settings and reading a few hundred undifferentiated rows.
+                      */}
+                      <OrderTrail events={auditEvents} orderId={b.id} />
 
                       {/* Actions */}
                       <div className="flex flex-wrap items-center gap-2 border-t border-admin-line pt-3">
@@ -354,7 +417,7 @@ export default function PipelinePanel({
                           variant="danger"
                           icon={Trash2}
                           className="ml-auto"
-                          onClick={() => onDelete(b.id)}
+                          onClick={() => void onDelete(b.id)}
                         >
                           Delete order
                         </Button>
@@ -381,7 +444,7 @@ export default function PipelinePanel({
           );
         })}
       </div>
-    </div>
+    </Panel>
   );
 }
 

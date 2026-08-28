@@ -26,8 +26,8 @@
  * given it.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Check, RefreshCw, ShieldQuestion, Wallet } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { AlertTriangle, Check, ShieldQuestion, Wallet } from 'lucide-react';
 import {
   CLAIM_STATUS_LABELS,
   claimNextStates,
@@ -36,7 +36,10 @@ import {
   type ClaimStatus,
 } from '@freshfold/core';
 import * as store from '../../services/store';
-import { Badge, Button, EmptyState, Field, Input, Metric, Panel, type Tone } from './ui';
+import OrderRef from './OrderRef';
+import PaneHeader, { ResourceBanner } from './PaneHeader';
+import type { DeskResource } from './useDeskResource';
+import { Badge, Button, EmptyState, Field, Input, Panel, type Tone } from './ui';
 
 /** How each state reads as a chip. */
 const TONES: Record<ClaimStatus, Tone> = {
@@ -68,15 +71,26 @@ function when(iso: string): string {
 }
 
 export default function ClaimsPanel({
+  claims: resource,
   onHandled,
+  onFailed,
 }: {
-  /** A sentence for the dashboard's flash strip. */
+  /**
+   * The whole queue, held by the shell.
+   *
+   * `all: true`, always — the shell needs every claim to count the ones still
+   * owed for the rail, and filtering to the unsettled ones is a decision about
+   * what to *show*, which belongs here rather than in a second request. It used
+   * to be a server round-trip: flipping "Show all" re-fetched.
+   */
+  claims: DeskResource<Claim[]>;
+  /** A sentence for the toast. */
   onHandled: (message: string) => void;
+  onFailed: (message: string) => void;
 }) {
-  const [claims, setClaims] = useState<Claim[]>([]);
+  const all = resource.data;
   const [showAll, setShowAll] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
 
   /** The claim whose form is open, and what has been typed into it. */
   const [editing, setEditing] = useState<string | null>(null);
@@ -85,46 +99,45 @@ export default function ClaimsPanel({
   const [retreatment, setRetreatment] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(async (): Promise<void> => {
-    const token = store.readAdminToken();
-    if (!token) {
-      setError('This desk is not signed in.');
-      setLoading(false);
-      return;
-    }
+  const owed = useMemo(() => all.filter(isRemedyOwed).length, [all]);
+  const open = useMemo(() => all.filter((claim) => claim.status === 'open').length, [all]);
 
-    try {
-      setClaims(await store.api.listClaims(token, { all: showAll }));
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'The claims queue could not be read.');
-    } finally {
-      setLoading(false);
-    }
-  }, [showAll]);
+  /**
+   * What a supervisor is still on the hook for.
+   *
+   * `resolved` and `rejected` are the two endings, so anything else is a claim
+   * somebody is still waiting on. Filtered here rather than asked for, so
+   * flipping the toggle is instant and the counts above never disagree with the
+   * list below them.
+   */
+  const claims = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return all.filter((claim) => {
+      const unfinished = claim.status !== 'resolved' && claim.status !== 'rejected';
+      const matchesQuery =
+        !q ||
+        claim.jobId.toLowerCase().includes(q) ||
+        claim.customerEmail.toLowerCase().includes(q) ||
+        claim.kind.toLowerCase().includes(q) ||
+        claim.description.toLowerCase().includes(q);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+      return matchesQuery && (showAll || unfinished);
+    });
+  }, [all, showAll, query]);
 
-  const owed = useMemo(() => claims.filter(isRemedyOwed).length, [claims]);
-  const open = useMemo(
-    () => claims.filter((claim) => claim.status === 'open').length,
-    [claims]
-  );
+  const loading = resource.loading;
 
   const openForm = (claim: Claim) => {
     setEditing(claim.id);
     setResolution(claim.resolution);
     setCompensation(claim.compensation > 0 ? claim.compensation.toFixed(2) : '');
     setRetreatment(claim.retreatment);
-    setError(null);
   };
 
   const move = async (claim: Claim, status: ClaimStatus): Promise<void> => {
     const token = store.readAdminToken();
     if (!token) {
-      setError('This desk is not signed in.');
+      onFailed('This desk is not signed in, so nothing was recorded.');
       return;
     }
 
@@ -145,10 +158,10 @@ export default function ClaimsPanel({
       );
 
       setEditing(null);
-      await load();
+      // The shell re-reads the queue and the trail; this pane holds neither.
       onHandled(`${claim.id} — ${CLAIM_STATUS_LABELS[status].toLowerCase()}`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'That could not be recorded.');
+      onFailed(e instanceof Error ? e.message : 'That could not be recorded.');
     } finally {
       setBusy(false);
     }
@@ -156,25 +169,35 @@ export default function ClaimsPanel({
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <Metric label="Open" value={String(open)} tone={open > 0 ? 'warn' : 'neutral'} />
-        {/*
-          The number this whole pane exists for: people the laundry has agreed
-          owe something and has not yet given it. A single "closed" state would
-          have made this uncountable.
-        */}
-        <Metric label="Remedy owed" value={String(owed)} tone={owed > 0 ? 'danger' : 'ok'} />
-        <Metric label="In view" value={String(claims.length)} />
-      </div>
-
-      {error && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-admin-danger/25 bg-admin-danger/10 px-4 py-3">
-          <p className="text-[12px] leading-relaxed text-admin-danger">{error}</p>
-          <Button size="sm" icon={RefreshCw} onClick={() => void load()}>
-            Try again
+      <PaneHeader
+        stats={[
+          { label: 'Open', value: open, tone: open > 0 ? 'warn' : 'neutral' },
+          /*
+            The number this whole pane exists for: people the laundry has agreed
+            owe something and has not yet given it. A single "closed" state would
+            have made this uncountable.
+          */
+          { label: 'Remedy owed', value: owed, tone: owed > 0 ? 'danger' : 'ok', hint: 'promised, not given' },
+          { label: 'Showing', value: claims.length, tone: 'neutral', hint: `of ${all.length}` },
+        ]}
+        freshness={resource}
+        search={{
+          value: query,
+          onChange: setQuery,
+          placeholder: 'Order, customer, or what went wrong…',
+        }}
+        actions={
+          <Button size="sm" onClick={() => setShowAll((current) => !current)}>
+            {showAll ? 'Only unsettled' : 'Show settled too'}
           </Button>
-        </div>
-      )}
+        }
+        filtersActive={query.trim() !== '' || showAll}
+        onClearFilters={() => {
+          setQuery('');
+          setShowAll(false);
+        }}
+        banner={<ResourceBanner error={resource.error} refresh={resource.refresh} />}
+      />
 
       <Panel
         title={
@@ -187,11 +210,6 @@ export default function ClaimsPanel({
           showAll
             ? 'Everything raised, settled and unsettled.'
             : 'Raised and not yet finished with. A claim leaves this list when it is settled or not upheld.'
-        }
-        actions={
-          <Button size="sm" onClick={() => setShowAll((current) => !current)}>
-            {showAll ? 'Only open' : 'Show all'}
-          </Button>
         }
       >
         {claims.length === 0 ? (
@@ -224,9 +242,7 @@ export default function ClaimsPanel({
                           {CLAIM_STATUS_LABELS[claim.status]}
                         </Badge>
                         <Badge mono>{claim.kind}</Badge>
-                        <span className="font-mono text-[11px] text-admin-fg-3">
-                          {claim.jobId}
-                        </span>
+                        <OrderRef id={claim.jobId} className="text-[11px]" />
                         <span className="text-[11px] text-admin-fg-3">
                           {claim.customerEmail} · {when(claim.createdAt)}
                         </span>

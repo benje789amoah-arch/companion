@@ -37,10 +37,13 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, MessageSquare, RefreshCw, Send } from 'lucide-react';
+import { ChevronRight, MessageSquare, Send } from 'lucide-react';
 import type { Message } from '@freshfold/core';
 import type { Booking } from '../../types';
 import * as store from '../../services/store';
+import OrderRef from './OrderRef';
+import PaneHeader, { ResourceBanner } from './PaneHeader';
+import type { DeskResource } from './useDeskResource';
 import { Badge, Button, EmptyState, Panel, TableHead, type Tone } from './ui';
 
 /**
@@ -140,27 +143,36 @@ export function inboundThreadCount(messages: Message[]): number {
 
 export default function MessagesPanel({
   messages,
-  error,
-  loading,
+  freshness,
   bookings,
-  onRefresh,
   onReplied,
+  onFailed,
 }: {
   /** Every thread the desk can see, in the order the rows were written. */
   messages: Message[];
-  /** Why the inbox could not be read, when that is why it looks empty. */
-  error: string | null;
-  loading: boolean;
+  /**
+   * The mirror this and the ledger both come out of.
+   *
+   * Threads used to be fetched by the shell on every dashboard open, on their
+   * own `listAllMessages` call, held in their own error and loading state. They
+   * are already in the offline mirror that `store.pull()` fills alongside the
+   * bookings and the patron table — so the separate read was a third request for
+   * something two other panes were already holding.
+   */
+  freshness: Pick<DeskResource<unknown>, 'error' | 'refreshing' | 'fetchedAt' | 'refresh'>;
   /** The ledger mirror, for putting a name against a job id. */
   bookings: Booking[];
-  onRefresh: () => void;
   /**
-   * Called once the server has accepted a reply, with a sentence for the flash
-   * strip. The dashboard also uses it to re-read the inbox — this pane keeps no
-   * copy of the thread it just wrote into.
+   * Called once the server has accepted a reply, with a sentence for the toast.
+   * The shell also uses it to re-read the board — this pane keeps no copy of the
+   * thread it just wrote into.
    */
   onReplied: (message: string) => void;
+  onFailed: (message: string) => void;
 }) {
+  const [query, setQuery] = useState('');
+  const [senderFilter, setSenderFilter] = useState('all');
+
   const threads = useMemo(() => groupThreads(messages), [messages]);
 
   /** The thread that is open, by job id — `''` for the orderless group. */
@@ -206,9 +218,13 @@ export default function MessagesPanel({
       setSendError(null);
       onReplied(`${orderId} — replied`);
     } catch (e) {
-      setSendError(
-        e instanceof Error ? e.message : 'The reply was not sent. Nobody has read it.',
-      );
+      const sentence =
+        e instanceof Error ? e.message : 'The reply was not sent. Nobody has read it.';
+      // Both, deliberately. The toast is what a supervisor who has already
+      // looked away will see; the inline error keeps the reason next to the
+      // draft that is still sitting in the box, unsent.
+      setSendError(sentence);
+      onFailed(sentence);
     } finally {
       setSending(false);
     }
@@ -216,16 +232,84 @@ export default function MessagesPanel({
 
   const waiting = threads.filter((thread) => isInbound(thread.last)).length;
 
+  /**
+   * The threads on screen.
+   *
+   * The inbox had no search at all, which on a board where every status change
+   * files a row means scrolling for the one conversation somebody is on the
+   * phone about. Matching runs over the whole thread rather than the last line:
+   * the message you are looking for is usually the one in the middle.
+   */
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return threads.filter((thread) => {
+      const booking = thread.orderId
+        ? bookings.find((b) => b.id === thread.orderId)
+        : undefined;
+
+      const matchesQuery =
+        !q ||
+        (thread.orderId?.toLowerCase().includes(q) ?? false) ||
+        (booking?.name.toLowerCase().includes(q) ?? false) ||
+        (booking?.suburb.toLowerCase().includes(q) ?? false) ||
+        thread.messages.some((message) => message.text.toLowerCase().includes(q));
+
+      const matchesSender =
+        senderFilter === 'all' ||
+        (senderFilter === 'waiting' ? isInbound(thread.last) : thread.last.sender === senderFilter);
+
+      return matchesQuery && matchesSender;
+    });
+  }, [threads, bookings, query, senderFilter]);
+
+  const filtersActive = query.trim() !== '' || senderFilter !== 'all';
+  const loading = !messages.length && !freshness.fetchedAt;
+
   return (
     <div className="space-y-4">
-      {error && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-admin-danger/25 bg-admin-danger/10 px-4 py-3">
-          <p className="text-[12px] leading-relaxed text-admin-danger">{error}</p>
-          <Button size="sm" icon={RefreshCw} onClick={onRefresh}>
-            Try again
-          </Button>
-        </div>
-      )}
+      <PaneHeader
+        stats={[
+          { label: 'Threads', value: threads.length },
+          {
+            label: 'Spoke last',
+            value: waiting,
+            tone: waiting > 0 ? 'warn' : 'ok',
+            hint: 'customer or courier',
+          },
+          {
+            label: 'Showing',
+            value: shown.length,
+            tone: filtersActive ? 'accent' : 'neutral',
+          },
+        ]}
+        freshness={freshness}
+        search={{
+          value: query,
+          onChange: setQuery,
+          placeholder: 'Order, name, or anything said…',
+        }}
+        filters={[
+          {
+            label: 'Filter by who spoke last',
+            value: senderFilter,
+            onChange: setSenderFilter,
+            options: [
+              { value: 'all', label: 'Anyone spoke last' },
+              { value: 'waiting', label: 'Waiting on the desk' },
+              { value: 'customer', label: 'Customer' },
+              { value: 'rider', label: 'Courier' },
+              { value: 'dispatcher', label: 'This desk' },
+              { value: 'laundry_center', label: 'Hub' },
+            ],
+          },
+        ]}
+        filtersActive={filtersActive}
+        onClearFilters={() => {
+          setQuery('');
+          setSenderFilter('all');
+        }}
+        banner={<ResourceBanner error={freshness.error} refresh={freshness.refresh} />}
+      />
 
       <Panel
         title={
@@ -235,21 +319,6 @@ export default function MessagesPanel({
           </span>
         }
         description="Every thread on the board. A reply here reaches the customer's portal and the courier's app as Dispatch."
-        actions={
-          <>
-            {waiting > 0 && (
-              <Badge tone="warn" dot>
-                {waiting} spoke last
-              </Badge>
-            )}
-            <Badge mono>
-              {threads.length} thread{threads.length === 1 ? '' : 's'}
-            </Badge>
-            <Button size="sm" variant="secondary" icon={RefreshCw} onClick={onRefresh}>
-              Refresh
-            </Button>
-          </>
-        }
       >
         {threads.length === 0 ? (
           <EmptyState
@@ -260,6 +329,12 @@ export default function MessagesPanel({
                 ? undefined
                 : 'A thread appears here as soon as a customer or a courier writes into one — and as soon as a job advances a stage, which the server narrates into the same thread.'
             }
+          />
+        ) : shown.length === 0 ? (
+          <EmptyState
+            icon={MessageSquare}
+            title="No threads match"
+            detail={`${threads.length} thread${threads.length === 1 ? '' : 's'} on the board, none of them matching. Clear the filters to see them.`}
           />
         ) : (
           <div>
@@ -275,7 +350,7 @@ export default function MessagesPanel({
             />
 
             <div className="divide-y divide-admin-line">
-              {threads.map((thread) => {
+              {shown.map((thread) => {
                 const key = thread.orderId ?? '';
                 const isOpen = openId === key;
                 const booking = thread.orderId ? customers.get(thread.orderId) : undefined;
@@ -294,8 +369,12 @@ export default function MessagesPanel({
                       }}
                       className={`cursor-pointer px-5 py-3 transition-colors hover:bg-white/[0.02] ${ROW_GRID}`}
                     >
-                      <span className="order-1 font-mono text-[12px] font-medium tabular-nums text-admin-accent md:order-none">
-                        {thread.orderId ?? 'No order'}
+                      <span className="order-1 text-[12px] font-medium md:order-none">
+                        {thread.orderId ? (
+                          <OrderRef id={thread.orderId} />
+                        ) : (
+                          <span className="font-mono text-admin-fg-3">No order</span>
+                        )}
                       </span>
 
                       <div className="order-3 col-span-2 min-w-0 md:order-none md:col-span-1">
