@@ -1,7 +1,8 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { AlertCircle, AlertTriangle, Check, X } from 'lucide-react';
 import type { Booking } from '@freshfold/core';
 import { windowLabel } from './slots';
+import { useDialog } from './useDialog';
 
 /* -------------------------------------------------------------------------
    The portal's shared surfaces.
@@ -159,16 +160,14 @@ export function Modal({
 }) {
   const titleId = React.useId();
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  /* Escape, the focus trap, the scroll lock and giving the keyboard back to
+     whatever opened this. It had the first of those four and none of the other
+     three — so `aria-modal="true"` above was telling a screen reader the page
+     behind was inert while Tab walked straight out into it. See useDialog. */
+  const sheet = useDialog<HTMLDivElement>({ open: true, onClose });
 
   return (
-    <div className="overlay-in fixed inset-0 z-[110] flex items-end justify-center bg-black/75 p-0 backdrop-blur-sm sm:items-center sm:p-4">
+    <div className="overlay-in fixed inset-0 z-[var(--z-modal)] flex items-end justify-center bg-black/75 p-0 backdrop-blur-sm sm:items-center sm:p-4">
       {/* The backdrop, as its own element rather than an `onClick` on the
           container — a click that started inside the sheet and ended outside
           it should not close the sheet. */}
@@ -181,10 +180,12 @@ export function Modal({
       />
 
       <div
+        ref={sheet}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`sheet-in relative flex max-h-[92svh] w-full flex-col rounded-t-md border border-white/10 bg-brand-card sm:rounded-md ${
+        tabIndex={-1}
+        className={`sheet-in relative flex max-h-[92svh] w-full flex-col rounded-t-md border border-white/10 bg-brand-card outline-none sm:rounded-md ${
           wide ? 'sm:max-w-lg' : 'sm:max-w-md'
         }`}
       >

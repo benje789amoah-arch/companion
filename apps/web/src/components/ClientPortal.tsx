@@ -1096,7 +1096,7 @@ export default function ClientPortal({
       chrome down while this is open, and the bar below is the whole of the
       navigation.
     */
-    <div className="portal fixed inset-0 z-[var(--z-modal)] flex flex-col bg-brand-charcoal font-ui text-[15px] text-white antialiased selection:bg-brand-gold selection:text-brand-charcoal">
+    <div className="portal below-banner fixed inset-0 z-[var(--z-modal)] flex flex-col bg-brand-charcoal font-ui text-[15px] text-white antialiased selection:bg-brand-gold selection:text-brand-charcoal">
 
       {/* ------------------------------------------------------------- bar */}
       <header className="shrink-0 border-b border-white/10 bg-brand-charcoal">

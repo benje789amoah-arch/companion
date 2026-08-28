@@ -12,6 +12,7 @@ import {
 import * as store from '../services/store';
 import { FIELD } from './ui/portal';
 import { windowLabel } from './ui/slots';
+import { useDialog } from './ui/useDialog';
 
 /**
  * Moving a booking that is already on the board.
@@ -51,6 +52,13 @@ export default function RescheduleDrawer({ booking, onClose, onMoved }: Reschedu
     () => deliverySlotsFor(pickupDate, pickupTime, deliveryDate),
     [pickupDate, pickupTime, deliveryDate]
   );
+
+  /* Escape, the focus trap, the scroll lock and returning the keyboard to
+     whatever opened this. This sheet had none of the four: it declared
+     `aria-modal="true"` — a claim that the page behind is inert — while Tab
+     walked out of it into the portal underneath, and there was no key that
+     closed it at all. See ui/useDialog. */
+  const sheet = useDialog<HTMLDivElement>({ open: true, onClose });
 
   /**
    * The next fortnight, starting today.
@@ -151,7 +159,7 @@ export default function RescheduleDrawer({ booking, onClose, onMoved }: Reschedu
     /* A conditional render, not an `AnimatePresence` child: the exit did not
        complete, and a dismissed sheet left behind at `opacity: 0` is still a
        `fixed inset-0` pane taking every click. See `.overlay-in` in index.css. */
-    <div className="overlay-in fixed inset-0 z-[110] flex items-end justify-center bg-black/75 p-0 backdrop-blur-sm sm:items-center sm:p-4">
+    <div className="overlay-in fixed inset-0 z-[var(--z-modal)] flex items-end justify-center bg-black/75 p-0 backdrop-blur-sm sm:items-center sm:p-4">
       {/* The backdrop as its own target: this sheet used to be closable only
           by a 16px icon in its corner. */}
       <button
@@ -163,10 +171,12 @@ export default function RescheduleDrawer({ booking, onClose, onMoved }: Reschedu
       />
 
       <div
+        ref={sheet}
         role="dialog"
         aria-modal="true"
         aria-labelledby="reschedule-title"
-        className="sheet-in relative flex max-h-[92svh] w-full flex-col rounded-t-md border border-white/10 bg-brand-card font-ui text-[15px] text-white sm:max-w-md sm:rounded-md"
+        tabIndex={-1}
+        className="sheet-in relative flex max-h-[92svh] w-full flex-col rounded-t-md border border-white/10 bg-brand-card font-ui text-[15px] text-white outline-none sm:max-w-md sm:rounded-md"
       >
         <div className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4">
           <div className="min-w-0">

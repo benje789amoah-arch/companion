@@ -1385,22 +1385,74 @@ async function pullAccount(): Promise<void> {
   }
 }
 
-/** Starts polling. Safe to call more than once. Returns a stop function. */
+/**
+ * Starts polling. Safe to call more than once. Returns a stop function.
+ *
+ * ## Why it stops when the tab is hidden
+ *
+ * This used to be an unconditional `setInterval` at {@link POLL_INTERVAL_MS},
+ * started on mount and running for as long as the tab existed. That is 720
+ * requests an hour, per tab, and it kept running when:
+ *
+ *  - the tab was backgrounded, or the phone was in someone's pocket;
+ *  - the visitor was on the marketing page with no account and no order, so
+ *    every response was the same ledger they had no use for.
+ *
+ * On the metered mobile connections most of this site is used over, that is
+ * somebody's data spent on answers nobody is looking at — and on the dispatch
+ * server it is the bulk of its traffic arriving from tabs nobody is reading.
+ *
+ * A hidden tab does not need fresh data: it has nothing on screen. It needs
+ * fresh data *the moment it comes back*, which is what the immediate
+ * `resume()` below does — so returning to a tab is, if anything, faster than
+ * it was, because a visible tab now polls on a schedule that has just been
+ * restarted rather than one that could be 4.9 seconds stale.
+ *
+ * `visibilitychange` rather than `blur`/`focus`: blur fires when a window
+ * merely loses focus to another window on the same screen, which on a desktop
+ * is somebody glancing at the desk board in a second window and expecting it
+ * to keep moving.
+ */
 export function startSync(): () => void {
-  void drain();
-  void pull();
+  const tick = () => {
+    void drain();
+    void pull();
+  };
 
-  if (!pollTimer) {
-    pollTimer = setInterval(() => {
-      void drain();
-      void pull();
-    }, POLL_INTERVAL_MS);
+  const resume = () => {
+    if (pollTimer) return;
+    // Immediately, then on the interval — a tab coming back should not wait
+    // out a full period before it shows anything that moved while it was away.
+    tick();
+    pollTimer = setInterval(tick, POLL_INTERVAL_MS);
+  };
+
+  const pause = () => {
+    if (!pollTimer) return;
+    clearInterval(pollTimer);
+    pollTimer = null;
+  };
+
+  const onVisibilityChange = () => {
+    if (document.visibilityState === 'hidden') pause();
+    else resume();
+  };
+
+  // A tab that is already hidden at mount — restored by the browser in the
+  // background, or opened in a background tab — should not start polling until
+  // somebody looks at it.
+  if (document.visibilityState === 'hidden') {
+    // The queue is a different matter: a write made before the tab was
+    // backgrounded should still reach the server.
+    void drain();
+  } else {
+    resume();
   }
 
+  document.addEventListener('visibilitychange', onVisibilityChange);
+
   return () => {
-    if (pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-    }
+    document.removeEventListener('visibilitychange', onVisibilityChange);
+    pause();
   };
 }

@@ -166,11 +166,22 @@ async function main(): Promise<void> {
     // The built index.html links its bundle rather than inlining it, which is
     // what lets the policy above hold without a nonce Vercel cannot mint for a
     // static file. If Vite ever starts inlining, this is the warning.
+    //
+    // `application/ld+json` is excluded, and that is not a hole being opened.
+    // A block whose type is not a JavaScript MIME type is data: the browser
+    // never executes it, so `script-src` never gates it and there is nothing
+    // for a nonce to authorise. The page carries one — the LocalBusiness
+    // record injected by apps/web/vite/site-metadata.ts — and counting it as
+    // an inline script would have this check failing for a tag the policy has
+    // no opinion about. What the check is actually asserting, and now says, is
+    // that no *executable* inline script reaches the page.
     const built = path.resolve(HERE, '..', '..', 'web', 'dist', 'index.html');
     if (fs.existsSync(built)) {
       const html = fs.readFileSync(built, 'utf8');
-      const inline = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>/gi)];
-      check('the built page has no inline script for the policy to block', inline.length, 0);
+      const inline = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>/gi)].filter(
+        ([tag]) => !/type=["']application\/ld\+json["']/i.test(tag)
+      );
+      check('the built page has no executable inline script for the policy to block', inline.length, 0);
     } else {
       console.log('SKIP  built page not present — run `npm run build -w @freshfold/web` to check it');
     }

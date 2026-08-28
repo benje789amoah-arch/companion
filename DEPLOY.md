@@ -208,6 +208,37 @@ Once the domain resolves, go back to Render and set:
 Redeploy. Links in outbound email and the Paystack callback now point at the
 site rather than at nothing.
 
+**Set the same value on Vercel, as `SITE_URL`.** The website needs it for four
+things the server knows nothing about: the `<link rel="canonical">`, the
+`og:url` on the share card, `sitemap.xml`, and the `LocalBusiness` structured
+data. All four are claims about where the real site lives, and all four are
+worse wrong than absent — a preview deploy that names itself canonical is a
+preview deploy in the search results.
+
+The build warns when `SITE_URL` is unset and falls back to
+`https://freshfold.com`, so a missing value is visible in the deploy log rather
+than silent.
+
+### Checking the share card
+
+Paste the domain into a WhatsApp chat with yourself. You should get a 1200x630
+card with the headline and the price, not a bare link. If it comes back bare,
+in order of likelihood: `SITE_URL` is wrong or unset, so `og:image` points at a
+host that has no `og.jpg`; the domain has not finished propagating; or WhatsApp
+has the old bare-link result cached — it caches aggressively, so test with a
+URL it has not seen, e.g. `?x=1` on the end.
+
+`public/og.jpg` is generated, not hand-drawn. Re-render it after any change to
+the offer it prints:
+
+```
+cd apps/web && node scripts/brand-assets.mjs
+```
+
+That also re-renders the favicon PNGs. It needs Chrome on the machine — set
+`CHROME_PATH` if it is somewhere unusual — and it is deliberately not part of
+`npm run build`, so a deploy never depends on it.
+
 ---
 
 ## 4. Get email delivering to addresses that are not yours

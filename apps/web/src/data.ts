@@ -5,7 +5,7 @@ import {
   serviceById,
   type MembershipPlanId,
 } from '@freshfold/core';
-import { ServiceItem, SubscriptionPlan, Testimonial } from './types';
+import { ServiceItem, SubscriptionPlan } from './types';
 
 /**
  * The service cards.
@@ -22,7 +22,12 @@ const SERVICE_PRESENTATION: Record<string, { iconName: string; imageUrl: string 
   },
   drying: {
     iconName: 'Wind',
-    imageUrl: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSPI6SKSgSeb7TRH3tohbZVtJXr9VLQq8uyyryGaMA3AQ&s=10'
+    /* Was a Google Images thumbnail — an `encrypted-tbn0.gstatic.com` URL
+       ending `&s=10`, which is a ~100px preview of somebody else's search
+       result. It rendered as a blur in the services list beside ten sharp
+       photographs, it is not a link Google intends anyone to hotlink, and it
+       can stop resolving at any time. Same source as the rest now. */
+    imageUrl: 'https://images.unsplash.com/photo-1582735689369-4fe89db7114c?auto=format&fit=crop&q=80&w=800'
   },
   'ironing-folding': {
     iconName: 'Shirt',
@@ -179,30 +184,3 @@ export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = MEMBERSHIP_PLANS.map((plan
  * so the copy is gone rather than reconciled.
  */
 export { LOYALTY_TIERS } from '@freshfold/core';
-
-export const TESTIMONIALS: Testimonial[] = [
-  {
-    id: '1',
-    name: 'Seraphina Kensington',
-    role: 'Creative Director & Fashion Consultant',
-    quote: 'As someone with severe fabric standards, handling bespoke knitwear can trigger anxiety. FreshFold treats my garments as individual works of art.',
-    rating: 5,
-    avatarUrl: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&q=80&w=150'
-  },
-  {
-    id: '2',
-    name: 'Jonathan Reynolds',
-    role: 'Managing Partner at Reynolds Asset Management',
-    quote: 'The Professional plan changed the way I travel. I step off a plane, schedule a locker drop, and my business clothing is back inside my closet the next morning.',
-    rating: 5,
-    avatarUrl: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?auto=format&fit=crop&q=80&w=150'
-  },
-  {
-    id: '3',
-    name: 'Aurelia Vance',
-    role: 'Luxury Hotelier & Family Advocate',
-    quote: 'Washing bedsheets for a high-occupancy estate used to disrupt our schedule. FreshFold sanitizes our Italian cottons with natural scenting. Perfect care.',
-    rating: 5,
-    avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=150'
-  }
-];

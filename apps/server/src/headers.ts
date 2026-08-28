@@ -54,8 +54,18 @@ const GOOGLE_MAPS_SCRIPTS = 'https://maps.googleapis.com https://maps.gstatic.co
 const GOOGLE_MAPS_ASSETS = 'https://maps.gstatic.com https://maps.googleapis.com https://*.googleusercontent.com';
 const GOOGLE_FONTS = 'https://fonts.googleapis.com https://fonts.gstatic.com';
 
-/** Marketing photography on the public page, and Google's thumbnail host. */
-const IMAGE_HOSTS = 'https://images.unsplash.com https://encrypted-tbn0.gstatic.com';
+/**
+ * Marketing photography on the public page.
+ *
+ * `encrypted-tbn0.gstatic.com` used to be listed beside it, for a single
+ * service tile whose image was a Google Images *thumbnail* — a ~100px preview
+ * of a search result, hotlinked. That image has been replaced with one from
+ * the same source as the other ten, so the host is no longer reachable from
+ * any code path and has been dropped rather than left in the policy. An origin
+ * nothing loads from is an origin that can only ever be used by something you
+ * did not intend.
+ */
+const IMAGE_HOSTS = 'https://images.unsplash.com';
 
 /**
  * Where a `nonce` for this response lives, so a handler that renders inline

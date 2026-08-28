@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useState, useEffect } from 'react';
+import React, { Suspense, lazy, useState, useEffect, useCallback } from 'react';
 import Header from './components/Header';
 import Hero from './components/Hero';
 import Services from './components/Services';
@@ -15,6 +15,12 @@ import { ArrowUp } from 'lucide-react';
 import { priceBreakdown } from '@freshfold/core';
 import { useIntent } from './intent';
 import NextCollection from './components/ui/NextCollection';
+import ErrorBoundary from './components/ui/ErrorBoundary';
+import Pending from './components/ui/Pending';
+import ConnectionBanner from './components/ui/ConnectionBanner';
+import { useScrollSpy, useScrolledPast, scrollToSection } from './components/ui/scroll';
+import { currentRoute, navigate, normaliseUrl, subscribeToRoute, type Route } from './route';
+import { track } from './services/analytics';
 
 /**
  * The four heavy surfaces, split out of the first load.
@@ -40,16 +46,50 @@ const ChatbotWidget = lazy(() => import('./components/ChatbotWidget'));
 const PaystackReturn = lazy(() => import('./components/PaystackReturn'));
 
 /**
- * What shows while one of those chunks is on the wire.
+ * The wrapper every one of those lazy screens is mounted behind.
  *
- * Deliberately not a spinner over the whole page. Each of these mounts into a
- * space that was empty a moment ago — a modal, an overlay — so an empty space is
- * the honest intermediate state, and a full-screen loader would be a bigger
- * interruption than the wait it describes.
+ * It used to be `<Suspense fallback={null}>` and nothing else, which had two
+ * failure modes and no way to tell them apart from the outside:
+ *
+ *  - **Slow.** `null` meant pressing "Book a pickup" produced no visible
+ *    change until the chunk landed. On a desk connection that is 200ms and the
+ *    empty space is the honest intermediate state. On Kumasi mobile data it is
+ *    seconds, and a button that does nothing for seconds gets pressed again.
+ *    `Pending` waits 260ms before it says anything, so the fast case is
+ *    unchanged and only the slow one grows an acknowledgement.
+ *  - **Broken.** A chunk that never arrives — a dropped connection, a deploy
+ *    that rotated the hashed filenames under a tab left open overnight —
+ *    throws. With no boundary anywhere in the tree, React unmounted the whole
+ *    app and the customer was left looking at an empty dark page, with no
+ *    message and nothing in any log.
  */
-const Deferred = ({ children }: { children: React.ReactNode }) => (
-  <Suspense fallback={null}>{children}</Suspense>
+const Deferred = ({
+  children,
+  context,
+  label,
+  onDismiss,
+}: {
+  children: React.ReactNode;
+  context: string;
+  label?: string;
+  onDismiss?: () => void;
+}) => (
+  <ErrorBoundary context={context} onDismiss={onDismiss}>
+    <Suspense fallback={<Pending label={label} />}>{children}</Suspense>
+  </ErrorBoundary>
 );
+
+/** The sections the header nav lights up, in page order. */
+const SECTIONS = [
+  'hero',
+  'services',
+  'subscriptions',
+  'membership',
+  'why-choose-us',
+  'how-it-works',
+  'target-customers',
+  'contact',
+] as const;
 export default function App() {
   const [isBookingOpen, setIsBookingOpen] = useState(false);
   /**
@@ -65,25 +105,33 @@ export default function App() {
   const [activeBookings, setActiveBookings] = useState<Booking[]>([]);
   /** The subset of the ledger this browser is entitled to see. See the notifier. */
   const [ownBookings, setOwnBookings] = useState<Booking[]>([]);
-  const [activeSection, setActiveSection] = useState('hero');
-  const [showScrollTop, setShowScrollTop] = useState(false);
 
-  // Portal routing states
-  const [isPortalOpen, setIsPortalOpen] = useState(false);
-  const [portalBookingId, setPortalBookingId] = useState<string | null>(null);
   /**
-   * The token from an emailed setup link, when the portal was opened by one.
+   * Where the browser is, as one value rather than six pieces of state.
    *
-   * A token rather than the `setup=true` flag this used to be. The flag paired
-   * with a booking id, and a booking id is six digits: anyone could walk them
-   * against the public booking route and claim a stranger's account, which is
-   * the whole reason the password screen now asks the server what this token
-   * opens instead of trusting the URL.
+   * All the parsing lives in `route.ts` now — including the legacy `#portal`
+   * and `#paystack-success` fragment forms, which are still in emails already
+   * sent and in the payment callback allowlist, and are normalised to their
+   * path equivalents on arrival. See that file.
    */
-  const [portalSetupToken, setPortalSetupToken] = useState<string | null>(null);
+  const [route, setRoute] = useState<Route>(currentRoute);
 
-  // Manager admin routing state
-  const [isAdminOpen, setIsAdminOpen] = useState(false);
+  const isPortalOpen = route.name === 'portal';
+  const isAdminOpen = route.name === 'admin';
+  const isPaystackReturn = route.name === 'paystack-success';
+
+  /**
+   * Which section the header nav lights up, and whether the page has been
+   * scrolled far enough for the floating controls to be worth showing.
+   *
+   * Both used to come out of one `scroll` handler that read `offsetTop` off
+   * eight elements per event — a synchronous layout on every scroll event, and
+   * the reason this page stuttered on a mid-range Android. See
+   * `components/ui/scroll.ts`.
+   */
+  const activeSection = useScrollSpy(SECTIONS, 'hero');
+  const showScrollTop = useScrolledPast(500);
+
   /**
    * Whether the desk session has been checked with the server yet.
    *
@@ -93,15 +141,6 @@ export default function App() {
    * afterwards would put the whole ledger on screen for a frame.
    */
   const [isSupervisor, setIsSupervisor] = useState<boolean | null>(null);
-
-  /**
-   * Whether Paystack has just sent this window back.
-   *
-   * Its own branch rather than a third portal flag, because it replaces the
-   * whole page: what lands here is usually a 600×750 popup, and a marketing
-   * site is the wrong thing to put in one. See `PaystackReturn`.
-   */
-  const [isPaystackReturn, setIsPaystackReturn] = useState(false);
 
   // Re-validate the stored desk token whenever the admin route is entered. It
   // is checked against the server every time rather than trusted from storage —
@@ -155,98 +194,80 @@ export default function App() {
       (booking) => booking.status !== 'Delivered' && booking.status !== 'Cancelled'
     ) ?? null;
 
-  // Monitor URL hash/query variations for secure client portal transition triggers
+  /**
+   * Follow the URL, however it changed.
+   *
+   * One subscription covering `popstate` (the Back button), the app's own
+   * `navigate()` calls, and `hashchange` for an emailed `#portal?setup=…` link
+   * opened in a tab that is already loaded. See `route.ts`.
+   */
   useEffect(() => {
-    const handleHashAndParams = () => {
-      const hash = window.location.hash;
-
-      // Checked first, and returning early: this branch owns the whole window,
-      // so none of the portal/admin flags below should be touched on the way
-      // through.
-      if (hash.startsWith('#paystack-success')) {
-        setIsPaystackReturn(true);
-        return;
-      }
-      setIsPaystackReturn(false);
-
-      if (hash.startsWith('#portal')) {
-        setIsPortalOpen(true);
-        setIsAdminOpen(false);
-        const queryIdx = hash.indexOf('?');
-        if (queryIdx !== -1) {
-          const urlParams = new URLSearchParams(hash.substring(queryIdx));
-          setPortalBookingId(urlParams.get('bookingId'));
-          setPortalSetupToken(urlParams.get('setup'));
-        } else {
-          setPortalBookingId(null);
-          setPortalSetupToken(null);
-        }
-      } else if (hash.startsWith('#admin')) {
-        setIsAdminOpen(true);
-        setIsPortalOpen(false);
-        setPortalBookingId(null);
-        setPortalSetupToken(null);
-      } else {
-        setIsPortalOpen(false);
-        setIsAdminOpen(false);
-        setPortalBookingId(null);
-        setPortalSetupToken(null);
-      }
+    const sync = () => {
+      // Also on every change, not only before the first render in main.tsx: an
+      // emailed `/#portal?setup=…` link opened in a tab that is already on the
+      // site arrives as a `hashchange`, and without this it would keep the
+      // fragment form for the rest of the session.
+      normaliseUrl();
+      setRoute(currentRoute());
     };
-    
-    handleHashAndParams();
-    window.addEventListener('hashchange', handleHashAndParams);
-    return () => window.removeEventListener('hashchange', handleHashAndParams);
+    sync();
+    return subscribeToRoute(sync);
   }, []);
 
-  // Monitor scrolling to highlight appropriate header tags and show Back to Top button
+  /**
+   * Keep the portal and the desk out of a search index.
+   *
+   * `robots.txt` disallows both paths, but a `Disallow` is a request not to
+   * crawl rather than a promise not to index — a URL somebody linked to can
+   * still be listed, with a title Google guesses. `noindex` is the part that
+   * actually keeps a customer's account page out of a result, and because this
+   * is one HTML document serving every route, it has to be set as the route
+   * changes rather than in the head.
+   */
   useEffect(() => {
-    const handleScroll = () => {
-      // Back to top button visibility check
-      setShowScrollTop(window.scrollY > 500);
+    const shouldIndex = route.name === 'home';
+    let tag = document.querySelector<HTMLMetaElement>('meta[name="robots"]');
 
-      const scrollPosition = window.scrollY + 200;
-      const sections = [
-        { id: 'hero', top: 0 },
-        { id: 'services', el: document.getElementById('services') },
-        { id: 'subscriptions', el: document.getElementById('subscriptions') },
-        { id: 'membership', el: document.getElementById('membership') },
-        { id: 'why-choose-us', el: document.getElementById('why-choose-us') },
-        { id: 'how-it-works', el: document.getElementById('how-it-works') },
-        { id: 'target-customers', el: document.getElementById('target-customers') },
-        { id: 'contact', el: document.getElementById('contact') },
-      ];
-
-      for (let i = sections.length - 1; i >= 0; i--) {
-        const item = sections[i];
-        if (item.el) {
-          const offsetTop = item.el.offsetTop;
-          if (scrollPosition >= offsetTop) {
-            setActiveSection(item.id);
-            break;
-          }
-        } else if (item.id === 'hero' && scrollPosition < 400) {
-          setActiveSection('hero');
-          break;
-        }
-      }
-    };
-
-    window.addEventListener('scroll', handleScroll);
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, []);
-
-  const handleScrollToSection = (sectionId: string) => {
-    const element = document.getElementById(sectionId);
-    if (element) {
-      // Smooth travel transitions
-      element.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    } else if (sectionId === 'hero') {
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (shouldIndex) {
+      tag?.remove();
+      return;
     }
-  };
 
-  const openBooking = () => setIsBookingOpen(true);
+    if (!tag) {
+      tag = document.createElement('meta');
+      tag.name = 'robots';
+      document.head.appendChild(tag);
+    }
+    tag.content = 'noindex, nofollow';
+  }, [route.name]);
+
+  /**
+   * Opens the booking form, remembering which control opened it.
+   *
+   * A factory rather than a function taking the label directly, because most
+   * of these are passed straight to `onClick` and to child components that
+   * call `onOpenBooking()` with no arguments — a plain `openBooking(from)`
+   * would be handed a `MouseEvent` as its label at half the call sites.
+   *
+   * The label is the only way to tell afterwards which of the page's nine
+   * "Book a pickup" buttons people actually press, which is the difference
+   * between moving a button and moving a whole section.
+   */
+  const bookFrom = useCallback(
+    (from: string) => () => {
+      setIsBookingOpen(true);
+      track('booking_opened', { from });
+    },
+    []
+  );
+
+  const openPortal = useCallback((bookingId?: string) => {
+    navigate('portal', { bookingId });
+    track('portal_opened', { withOrder: Boolean(bookingId) });
+  }, []);
+
+  /** Back to the marketing page, from an overlay that owns the window. */
+  const closeOverlay = useCallback(() => navigate('home'), []);
 
   /**
    * The order as it stands, for the sticky bar.
@@ -270,7 +291,7 @@ export default function App() {
   // marketing sections and the chat bubble are all wrong in a checkout popup.
   if (isPaystackReturn) {
     return (
-      <Deferred>
+      <Deferred context="paystack-return" label="Confirming your payment">
         <PaystackReturn />
       </Deferred>
     );
@@ -281,6 +302,26 @@ export default function App() {
        escape hatch — see index.css. The portal, the booking modal and the
        supervisor desk render outside it and keep their own. */
     <div className="ff min-h-screen bg-brand-charcoal pb-[4.75rem] font-ui text-white antialiased selection:bg-brand-gold selection:text-brand-charcoal lg:pb-0">
+      {/*
+        The first thing a keyboard reaches, and the only thing it reaches that
+        is invisible until it does.
+
+        This page opens with a fixed header carrying seven section links and
+        two buttons. Without this, every visit on a keyboard or a screen reader
+        starts by tabbing through all nine of them to get to the hero — on
+        every route change, and again after every dialog that returns focus to
+        the top.
+      */}
+      <a
+        href="#main"
+        className="sr-only rounded-md bg-brand-gold px-5 py-3 text-[15px] font-semibold text-brand-charcoal focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[var(--z-toast)]"
+      >
+        Skip to the page
+      </a>
+
+      {/* Says out loud what the store has always quietly done about a dropped
+          connection. See the component. */}
+      <ConnectionBanner />
 
       {/*
         The site header — down while the portal is up.
@@ -297,20 +338,18 @@ export default function App() {
       */}
       {!isPortalOpen && (
         <Header
-          onOpenBooking={openBooking}
-          onOpenPortal={() => {
-            window.location.hash = '#portal';
-          }}
-          onScrollToSection={handleScrollToSection}
+          onOpenBooking={bookFrom('header')}
+          onOpenPortal={() => openPortal()}
+          onScrollToSection={scrollToSection}
           activeSection={activeSection}
         />
       )}
 
-      <main>
+      <main id="main">
         {/* Homepage Hero */}
         <Hero
-          onOpenBooking={openBooking}
-          onExplorePlans={() => handleScrollToSection('subscriptions')}
+          onOpenBooking={bookFrom('hero')}
+          onExplorePlans={() => scrollToSection('subscriptions')}
         />
 
         {/* "When would I get it back?", answered off the live dispatch board
@@ -320,13 +359,13 @@ export default function App() {
         <NextCollection />
 
         {/* Services Section with custom category targets */}
-        <Services onOpenBooking={openBooking} />
+        <Services onOpenBooking={bookFrom('services')} />
 
         {/* Subscription pricing structures */}
-        <Pricing onOpenBooking={openBooking} />
+        <Pricing onOpenBooking={bookFrom('pricing')} />
 
         {/* Loyalty tiers, earned rather than sold */}
-        <Membership onOpenBooking={openBooking} />
+        <Membership onOpenBooking={bookFrom('membership')} />
 
         {/* Philosophy Core guidelines */}
         <WhyChooseUs />
@@ -335,10 +374,10 @@ export default function App() {
         <HowItWorks />
 
         {/* Segment customized panels (Students, Execs, Spas) */}
-        <TargetCustomers onOpenBooking={openBooking} />
+        <TargetCustomers onOpenBooking={bookFrom('target-customers')} />
 
         {/* Communications, Map and Hours portal */}
-        <Contact onOpenBooking={openBooking} />
+        <Contact onOpenBooking={bookFrom('contact')} />
       </main>
 
       {/* Footer copyright */}
@@ -349,7 +388,11 @@ export default function App() {
           modal renders nothing until `isOpen`, so gating here is what keeps its
           chunk off the marketing page. */}
       {isBookingOpen && (
-        <Deferred>
+        <Deferred
+          context="booking-modal"
+          label="Opening the booking form"
+          onDismiss={() => setIsBookingOpen(false)}
+        >
           <BookingModal
             isOpen={isBookingOpen}
             onClose={() => setIsBookingOpen(false)}
@@ -360,48 +403,34 @@ export default function App() {
 
       {/* Immersive password-setup & progress-tracking Client Portal */}
       {isPortalOpen && (
-        <Deferred>
+        <Deferred context="client-portal" label="Opening your account" onDismiss={closeOverlay}>
           <ClientPortal
             isOpen={isPortalOpen}
-            onClose={() => {
-              setIsPortalOpen(false);
-              window.location.hash = '';
-            }}
-            bookingIdParam={portalBookingId}
-            setupTokenParam={portalSetupToken}
+            onClose={closeOverlay}
+            bookingIdParam={route.bookingId}
+            setupTokenParam={route.setupToken}
             activeBookings={activeBookings}
             onUpdateBookings={(updated) => {
               setActiveBookings(updated);
               store.writeBookings(updated);
             }}
-            onOpenBooking={() => {
-              setIsBookingOpen(true);
-            }}
+            onOpenBooking={bookFrom('portal')}
           />
         </Deferred>
       )}
 
       {/* Supervisor desk — behind a real login, not a URL fragment. */}
       {isAdminOpen && isSupervisor === false && (
-        <Deferred>
-          <AdminLogin
-            onAuthenticated={() => setIsSupervisor(true)}
-            onClose={() => {
-              setIsAdminOpen(false);
-              window.location.hash = '';
-            }}
-          />
+        <Deferred context="admin-login" label="Opening the desk" onDismiss={closeOverlay}>
+          <AdminLogin onAuthenticated={() => setIsSupervisor(true)} onClose={closeOverlay} />
         </Deferred>
       )}
 
       {isAdminOpen && isSupervisor === true && (
-        <Deferred>
+        <Deferred context="admin-dashboard" label="Loading the board" onDismiss={closeOverlay}>
           <AdminDashboard
             isOpen={isAdminOpen}
-            onClose={() => {
-              setIsAdminOpen(false);
-              window.location.hash = '';
-            }}
+            onClose={closeOverlay}
             onSignOut={() => {
               void store.adminLogout();
               setIsSupervisor(false);
@@ -428,7 +457,8 @@ export default function App() {
       {trackableBooking && !isPortalOpen && (
         <button
           onClick={() => {
-            window.location.hash = '#portal';
+            openPortal(trackableBooking.id);
+            track('order_tracked', { from: 'floating-notifier' });
           }}
           className="fixed bottom-5 left-5 z-[var(--z-floating)] hidden items-center gap-2.5 rounded-md border border-white/15 bg-brand-card/95 px-4 py-3 text-[14px] font-medium text-white shadow-[0_8px_30px_rgba(0,0,0,0.6)] backdrop-blur-sm transition-colors duration-200 hover:border-brand-gold/60 lg:flex"
           id="active-order-floating-notifier"
@@ -478,7 +508,8 @@ export default function App() {
             {trackableBooking ? (
               <button
                 onClick={() => {
-                  window.location.hash = '#portal';
+                  openPortal(trackableBooking.id);
+                  track('order_tracked', { from: 'sticky-bar' });
                 }}
                 className="flex min-w-0 flex-1 flex-col text-left"
               >
@@ -501,7 +532,7 @@ export default function App() {
                 trouble on the device most of these visitors are on.
               */
               <button
-                onClick={openBooking}
+                onClick={bookFrom('sticky-bar-order')}
                 className="flex min-w-0 flex-1 flex-col text-left"
               >
                 <span className="block truncate text-[13px] text-brand-text-muted">
@@ -525,7 +556,7 @@ export default function App() {
               </div>
             )}
             <button
-              onClick={openBooking}
+              onClick={bookFrom('sticky-bar')}
               className="shrink-0 rounded-md bg-brand-gold px-5 py-3 text-[15px] font-semibold text-brand-charcoal transition-colors duration-200 hover:bg-brand-gold-light"
             >
               {orderLines.length > 0 && !trackableBooking ? 'Book it' : 'Book a pickup'}
@@ -539,8 +570,8 @@ export default function App() {
           pre-sales opener; a signed-in customer with a live order has the
           message thread on the order itself. */}
       {!isPortalOpen && (
-        <Deferred>
-          <ChatbotWidget activeSection={activeSection} onOpenBooking={openBooking} />
+        <Deferred context="chatbot-widget">
+          <ChatbotWidget activeSection={activeSection} onOpenBooking={bookFrom('chatbot')} />
         </Deferred>
       )}
 

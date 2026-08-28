@@ -1,70 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { SHOP } from '../shop';
+import { SCHEDULE, SHOP, openAt } from '../shop';
 import Reveal from './ui/Reveal';
 import AreaCheck from './ui/AreaCheck';
-
-/**
- * When the desk is open, as one table.
- *
- * The badge and the printed schedule read the same rows, which is the whole
- * point of it being here. They used to disagree: the rows below said 07:00—20:30
- * on a weekday, 08:00—18:00 on Saturday and 09:00—16:00 on Sunday, while the
- * badge ran a flat `hours >= 7 && hours < 21` over all seven days. So it read
- * "Open now" for the last half hour of every weekday evening, for three hours
- * after closing on a Saturday, and for five on a Sunday — telling somebody the
- * desk would answer when it would not.
- *
- * Minutes from midnight rather than whole hours, because 20:30 is not an hour.
- *
- * Read in **GMT**, which is not the timezone bug it resembles: Ghana is GMT+0
- * and does not observe daylight saving, so UTC is the local wall clock all year.
- * Reading the visitor's own clock instead would tell somebody in London that a
- * Kumasi desk closes at 21:30 in summer.
- */
-interface OpeningWindow {
-  /** As printed in the schedule. */
-  label: string;
-  /** Minutes from midnight. */
-  opens: number;
-  closes: number;
-}
-
-const WEEKDAY_HOURS: OpeningWindow = { label: '07:00 — 20:30', opens: 7 * 60, closes: 20 * 60 + 30 };
-const SATURDAY_HOURS: OpeningWindow = { label: '08:00 — 18:00', opens: 8 * 60, closes: 18 * 60 };
-const SUNDAY_HOURS: OpeningWindow = { label: '09:00 — 16:00', opens: 9 * 60, closes: 16 * 60 };
-
-/** Indexed by `Date.getUTCDay()`, so Sunday is 0. */
-const WEEK: OpeningWindow[] = [
-  SUNDAY_HOURS,
-  WEEKDAY_HOURS,
-  WEEKDAY_HOURS,
-  WEEKDAY_HOURS,
-  WEEKDAY_HOURS,
-  WEEKDAY_HOURS,
-  SATURDAY_HOURS,
-];
-
-/**
- * Whether the desk is open at this instant.
- *
- * Bank holidays are not in here and cannot be: the schedule lists them beside
- * Sunday because that is the shift they are worked, but which days they fall on
- * is a calendar this component has no access to. The badge is therefore
- * optimistic on a handful of days a year, which is the same thing the printed
- * schedule is.
- */
-function openAt(now: Date): boolean {
-  const today = WEEK[now.getUTCDay()];
-  const minutes = now.getUTCHours() * 60 + now.getUTCMinutes();
-  return minutes >= today.opens && minutes < today.closes;
-}
-
-const SCHEDULE = [
-  { days: 'Monday to Friday', hours: WEEKDAY_HOURS },
-  { days: 'Saturday', hours: SATURDAY_HOURS },
-  { days: 'Sunday and bank holidays', hours: SUNDAY_HOURS },
-];
-
 
 interface ContactProps {
   onOpenBooking: () => void;

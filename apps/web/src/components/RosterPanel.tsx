@@ -27,6 +27,7 @@ import {
 } from '@freshfold/core';
 import * as store from '../services/store';
 import { Badge, Button, EmptyState, Field, Input, Panel } from './admin/ui';
+import { useToast } from './ui/Toast';
 
 /**
  * The courier roster.
@@ -65,6 +66,7 @@ function shiftLabel(shift: RiderShift): string {
 }
 
 export default function RosterPanel() {
+  const toast = useToast();
   const [riders, setRiders] = useState<RiderState[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -344,11 +346,23 @@ export default function RosterPanel() {
               <Button
                 size="sm"
                 icon={Copy}
-                onClick={() => {
-                  void navigator.clipboard?.writeText(
-                    `${issued.rider.employeeId} / ${issued.pin}`
-                  );
-                  setCopied(true);
+                onClick={async () => {
+                  /* Awaited, and the label only moves if it resolved.
+                     `setCopied(true)` used to run beside an unawaited
+                     `clipboard?.writeText()`, so the button said "Copied" on a
+                     browser with no clipboard API and on a write the browser
+                     refused because the document was not focused — and a
+                     supervisor then read a rider a PIN off an empty paste. */
+                  try {
+                    if (!navigator.clipboard) throw new Error('no clipboard');
+                    await navigator.clipboard.writeText(
+                      `${issued.rider.employeeId} / ${issued.pin}`
+                    );
+                    setCopied(true);
+                    toast('Sign-in and PIN copied.');
+                  } catch {
+                    toast('Could not reach the clipboard — read the PIN off the screen.', 'bad');
+                  }
                 }}
               >
                 {copied ? 'Copied' : 'Copy both'}

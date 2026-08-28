@@ -625,3 +625,109 @@
     border-color: rgba(13, 13, 13, 0.22);
   }
 }
+
+/* -------------------------------------------------------------------------
+   Landing on a section, under a header that is on top of it.
+
+   Every in-page jump on this site — the header nav, the footer's "On this
+   page" list, the hero's scroll cue, a `#contact` link somebody was sent —
+   ends in `scrollIntoView({ block: 'start' })` or a native `:target` jump.
+   Both put the top of the section at the top of the *viewport*, and the top of
+   the viewport is where the fixed header is. So every one of them landed with
+   the section's heading hidden behind the header, and the reader arrived
+   looking at the second paragraph of what they asked for.
+
+   `scroll-margin-top` is the fix that works for all of them at once, including
+   the ones no JavaScript here is involved in: it tells the browser the box
+   starts higher than it does, so every scrolling mechanism stops short by this
+   much. A number passed to `scrollIntoView` would only have fixed the ones the
+   app calls itself.
+
+   5.5rem is the taller of the header's two heights (`py-5`, unscrolled) plus a
+   little air. It cannot be a variable the header sets, because the header is
+   `fixed` and its height is not in the layout for anything to read.
+   ------------------------------------------------------------------------- */
+@layer base {
+  :where(section[id], main[id]) {
+    scroll-margin-top: 5.5rem;
+  }
+}
+
+@layer utilities {
+  /*
+    The three dots on the lazy-chunk placeholder. See ui/Pending.tsx.
+
+    A staggered fade rather than a bouncing translate: this appears over a page
+    that is otherwise still, and something moving position in the middle of a
+    dark screen pulls the eye harder than a wait deserves.
+  */
+  .pending-dot {
+    animation: pending-pulse 1.2s ease-in-out infinite;
+  }
+  .pending-dot:nth-child(2) {
+    animation-delay: 0.16s;
+  }
+  .pending-dot:nth-child(3) {
+    animation-delay: 0.32s;
+  }
+  @keyframes pending-pulse {
+    0%,
+    100% {
+      opacity: 0.25;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  /* A toast arriving. Same curve and distance as `.sheet-in`, so the two read
+     as the same system moving at the same speed. See ui/Toast.tsx. */
+  .toast-in {
+    animation: toast-in 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes toast-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+  }
+
+  /*
+    Reduced motion, for the three above.
+
+    The blanket rule near the top of this file collapses animation durations
+    inside `.ff` and `.portal`. These render outside both — the toast region
+    and the pending overlay are mounted at the document root, above `App` — so
+    they need saying again. `.pending-dot` resolves to a static half-lit dot
+    rather than to nothing: the point of it is that something is happening.
+  */
+  @media (prefers-reduced-motion: reduce) {
+    .pending-dot {
+      animation: none;
+      opacity: 0.7;
+    }
+    .toast-in {
+      animation: none;
+    }
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Room for the connection banner.
+
+   `ConnectionBanner` is `position: fixed` at the top of the viewport, and so
+   is every top-level surface on this site: the marketing header, the client
+   portal (`fixed inset-0`) and the supervisor desk. Fixed elements are
+   positioned against the viewport, so a padding or margin on `body` cannot
+   move them — each one has to be told, and telling each one in its own
+   component would be four copies of the same number to keep in step.
+
+   `--banner-h` is set by the banner from its own measured height and removed
+   when it is not on screen, so this resolves to `top: 0` the rest of the time
+   — which is almost always. Applied to a surface's outermost fixed element.
+   ------------------------------------------------------------------------- */
+@layer utilities {
+  .below-banner {
+    top: var(--banner-h, 0px);
+  }
+}

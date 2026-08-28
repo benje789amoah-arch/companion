@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { Enter, motionAllowed } from './ui/Reveal';
+import Img from './ui/Img';
 
 interface HeroProps {
   onOpenBooking: () => void;
@@ -82,12 +83,22 @@ export default function Hero({ onOpenBooking, onExplorePlans }: HeroProps) {
         the section has no seam at the header or at the price list below.
       */}
       <div ref={backdrop} className="absolute inset-0 -z-10 will-change-transform">
-        <img
-          src="https://images.unsplash.com/photo-1524404794194-16bae22718c0?auto=format&fit=crop&q=80&w=2000"
+        {/* The page's LCP element, and the one image on it that is worth
+            `priority`. It asked for `w=2000` unconditionally, which is the
+            file a 390px phone was downloading to paint a 390px-wide backdrop.
+
+            `sizes="100vw"` because it is full-bleed. Keep the candidate widths
+            in step with the `<link rel="preload">` in index.html — the browser
+            picks from that list first, and a mismatch turns the preload from a
+            saved request into a wasted one. */}
+        <Img
+          src="https://images.unsplash.com/photo-1524404794194-16bae22718c0"
           alt="Laundered sheets and towels, washed, pressed and folded into squared-off stacks"
-          fetchPriority="high"
+          sizes="100vw"
+          priority
+          width={1280}
+          height={853}
           className="h-[125%] w-full object-cover saturate-[0.72]"
-          referrerPolicy="no-referrer"
         />
         <div className="absolute inset-0 bg-brand-charcoal/[0.68]" />
         <div className="absolute inset-0 bg-gradient-to-b from-brand-charcoal via-transparent to-brand-charcoal" />

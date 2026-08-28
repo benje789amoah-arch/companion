@@ -1,5 +1,6 @@
 import Reveal from './ui/Reveal';
 import { useIntent } from '../intent';
+import Img from './ui/Img';
 
 interface TargetCustomersProps {
   onOpenBooking: () => void;
@@ -198,11 +199,13 @@ export default function TargetCustomers({ onOpenBooking }: TargetCustomersProps)
             </div>
 
             <figure className="lg:col-span-5">
-              <img
+              {/* Full width on a phone, five of twelve columns from `lg`. */}
+              <Img
                 src={sector.imageUrl}
                 alt={sector.imageAlt}
-                loading="lazy"
-                referrerPolicy="no-referrer"
+                sizes="(min-width: 1024px) 42vw, 100vw"
+                width={960}
+                height={640}
                 className="h-[280px] w-full rounded-lg object-cover sm:h-[380px] lg:h-full lg:min-h-[440px]"
               />
             </figure>

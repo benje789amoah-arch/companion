@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Menu, X } from 'lucide-react';
 import { priceBreakdown } from '@freshfold/core';
 import { useIntent } from '../intent';
+import { useDialog } from './ui/useDialog';
 
 interface HeaderProps {
   onOpenBooking: () => void;
@@ -85,25 +86,22 @@ export default function Header({
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
 
-  // A drawer that covers the page must not leave the page scrolling behind it.
-  useEffect(() => {
-    if (!mobileMenuOpen) return;
-    const previous = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = previous;
-    };
-  }, [mobileMenuOpen]);
-
-  // Escape closes it, which is the one keyboard affordance a drawer owes.
-  useEffect(() => {
-    if (!mobileMenuOpen) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMobileMenuOpen(false);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [mobileMenuOpen]);
+  /**
+   * The drawer's keyboard behaviour, shared with every other overlay here.
+   *
+   * It had two of the four: the scroll lock, so the page did not move behind
+   * it, and Escape. It did not trap focus — Tab left the open drawer and
+   * walked the marketing page underneath it, which is covered — and it never
+   * gave focus back, so dismissing the drawer dropped the keyboard at the top
+   * of the document and the next Tab started over from the wordmark.
+   *
+   * `useDialog` no-ops entirely while `open` is false, so this is safe to call
+   * unconditionally. See ui/useDialog.
+   */
+  const drawer = useDialog<HTMLDivElement>({
+    open: mobileMenuOpen,
+    onClose: () => setMobileMenuOpen(false),
+  });
 
   /**
    * The order the reader has built, carried into the button that books it.
@@ -124,7 +122,9 @@ export default function Header({
   return (
     <header
       id="main-header"
-      className={`fixed inset-x-0 top-0 z-[var(--z-header)] font-ui transition-[padding,background-color,border-color] duration-300 ${
+      /* `below-banner` keeps this clear of the connection banner when there
+         is one, and resolves to `top: 0` when there is not. See index.css. */
+      className={`below-banner fixed inset-x-0 z-[var(--z-header)] font-ui transition-[padding,background-color,border-color,top] duration-300 ${
         isScrolled || mobileMenuOpen
           ? 'border-b border-white/10 bg-brand-charcoal/90 py-3 backdrop-blur-xl'
           : 'border-b border-transparent py-5'
@@ -263,9 +263,11 @@ export default function Header({
           whichever of the two header heights is current, with no magic number
           to keep in step. */}
       <div
+        ref={drawer}
         id="mobile-drawer"
         hidden={!mobileMenuOpen}
-        className="absolute inset-x-0 top-full max-h-[calc(100svh-3.75rem)] overflow-y-auto border-t border-white/10 bg-brand-charcoal lg:hidden"
+        tabIndex={-1}
+        className="absolute inset-x-0 top-full max-h-[calc(100svh-3.75rem)] overflow-y-auto border-t border-white/10 bg-brand-charcoal outline-none lg:hidden"
       >
         <nav className="px-5 pb-8 pt-2" aria-label="All sections">
           {NAV_ITEMS.map((item) => (

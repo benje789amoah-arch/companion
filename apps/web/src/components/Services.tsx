@@ -6,6 +6,7 @@ import { ArrowRight } from 'lucide-react';
 import Reveal from './ui/Reveal';
 import Estimator from './ui/Estimator';
 import { useIntent } from '../intent';
+import Img from './ui/Img';
 
 interface ServicesProps {
   /** Opens the booking form, which reads the order out of the shared intent. */
@@ -119,13 +120,15 @@ export default function Services({ onOpenBooking }: ServicesProps) {
           <div className="hidden lg:col-span-5 lg:block">
             <div className="sticky top-28">
               <div className="relative aspect-[4/5] overflow-hidden rounded-lg bg-brand-card">
-                <img
+                {/* Five of twelve columns, and only rendered from `lg`. */}
+                <Img
                   key={active.id}
                   src={active.imageUrl}
                   alt={active.name}
+                  sizes="42vw"
+                  width={640}
+                  height={800}
                   className="panel-swap absolute inset-0 h-full w-full object-cover"
-                  loading="lazy"
-                  referrerPolicy="no-referrer"
                 />
               </div>
               <div className="mt-4 flex items-baseline justify-between gap-4">
@@ -151,12 +154,14 @@ export default function Services({ onOpenBooking }: ServicesProps) {
                 >
                   <div className="flex items-start gap-4 py-6 transition-[padding] duration-300 group-hover:sm:pl-3 sm:gap-6">
                     {/* The thumbnail the sticky panel replaces on wide screens. */}
-                    <img
+                    {/* 64px, fixed. This was fetching the same `w=800` file as
+                        the full-bleed panel above to paint a thumbnail. */}
+                    <Img
                       src={service.imageUrl}
                       alt=""
-                      aria-hidden="true"
-                      loading="lazy"
-                      referrerPolicy="no-referrer"
+                      sizes="64px"
+                      width={128}
+                      height={128}
                       className="h-16 w-16 shrink-0 rounded-md object-cover lg:hidden"
                     />
 

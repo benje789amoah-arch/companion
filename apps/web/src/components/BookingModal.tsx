@@ -51,6 +51,7 @@ import PickupPinField, { type PinOrigin } from './PickupPinField';
 import { usePaystackReturn } from './PaystackReturn';
 import { paymentLabel, windowLabel } from './ui/slots';
 import PaystackMark from './ui/PaystackMark';
+import { useDialog } from './ui/useDialog';
 
 interface BookingModalProps {
   isOpen: boolean;
@@ -726,61 +727,31 @@ export default function BookingModal({
     setPickupDate(isoDaysFromNow(1));
   }, [isOpen]);
 
-  const dialog = useRef<HTMLDivElement | null>(null);
   const body = useRef<HTMLDivElement | null>(null);
 
   /**
-   * The three things a dialog owes anyone not using a mouse.
+   * Escape, the focus trap, the scroll lock and giving the keyboard back.
    *
-   * This had none of them: no `role`, no `aria-modal`, no Escape, no focus
-   * trap, and the page behind kept scrolling — so tabbing out of the form
-   * landed silently in the marketing page underneath while the overlay still
-   * covered it, with no way back and no way out short of a click on the
-   * backdrop. The header's own drawer has done Escape and the scroll lock
-   * properly since it was written; there was no reason this had not.
+   * This was written out here, and it had a bug that the shared hook is shaped
+   * to prevent. The effect listed `onClose` in its dependencies, and `onClose`
+   * is an inline arrow in `App` — a new function on every render, and `App`
+   * re-renders on every store poll, five seconds apart. So the effect tore
+   * down and re-ran constantly, and its cleanup ended with:
+   *
+   *     restoreTo?.focus?.();
+   *
+   * `restoreTo` was whatever had focus when the effect last ran — on the first
+   * re-run, the "Book a pickup" button *behind* the modal. So a few seconds
+   * after the form opened, the keyboard was silently thrown out of the dialog
+   * and back onto the page underneath it, and every re-run after that
+   * re-anchored it there. Someone filling in the form with a keyboard was put
+   * outside it before they reached the second field.
+   *
+   * `useDialog` keeps `onClose` in a ref and depends only on `open`, so the
+   * effect runs once per opening and the restore happens on the way out, which
+   * is the only time it means anything. See ui/useDialog.
    */
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const restoreTo = document.activeElement as HTMLElement | null;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.stopPropagation();
-        onClose();
-        return;
-      }
-      if (event.key !== 'Tab') return;
-
-      const node = dialog.current;
-      if (!node) return;
-      const focusable = node.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-      );
-      if (focusable.length === 0) return;
-
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener('keydown', onKey);
-    dialog.current?.focus();
-
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      document.body.style.overflow = previousOverflow;
-      restoreTo?.focus?.();
-    };
-  }, [isOpen, onClose]);
+  const dialog = useDialog<HTMLDivElement>({ open: isOpen, onClose });
 
   // A new step is a new screenful; start it at the top rather than wherever the
   // last one was scrolled to.

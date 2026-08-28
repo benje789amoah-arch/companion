@@ -2,6 +2,7 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
 import { defineConfig, loadEnv } from 'vite';
+import siteMetadata from './vite/site-metadata';
 
 /**
  * Config is a function so it can read `.env` itself.
@@ -16,13 +17,34 @@ import { defineConfig, loadEnv } from 'vite';
  *
  * The shell still wins, which is what a deployment or CI expects.
  */
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ command, mode }) => {
   const env = { ...loadEnv(mode, __dirname, ''), ...process.env };
   const apiTarget = env.API_URL || 'http://127.0.0.1:4000';
   const disableHmr = env.DISABLE_HMR === 'true';
 
+  /**
+   * The origin this build will be served from.
+   *
+   * It goes into the canonical tag, the share card's `og:url`, the sitemap and
+   * the structured data — all four of which are claims about where the real
+   * site lives, and all four of which are actively harmful when wrong: a
+   * preview deploy that claims to be the canonical one is a preview deploy in
+   * the search results.
+   *
+   * There is no correct default, so the placeholder announces itself. It is
+   * the same value as the server's `APP_URL` and they should be set together.
+   */
+  const siteUrl = (env.SITE_URL || 'https://freshfold.com').replace(/\/$/, '');
+  if (!env.SITE_URL && command === 'build') {
+    console.warn(
+      `\n  ! SITE_URL is not set, so the build is claiming ${siteUrl} as its canonical origin.\n` +
+        '    Set it to the domain this deploy actually serves — the same value as the\n' +
+        "    server's APP_URL — or the share card and the sitemap will point somewhere else.\n"
+    );
+  }
+
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [react(), tailwindcss(), siteMetadata({ siteUrl })],
     define: {
       // A Maps JavaScript key is public by nature — it ships in the bundle and
       // is protected by an HTTP referrer restriction, not by secrecy. Nothing

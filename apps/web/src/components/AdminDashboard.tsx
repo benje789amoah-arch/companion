@@ -644,7 +644,7 @@ export default function AdminDashboard({
   );
 
   return (
-    <div className="fixed inset-0 z-[60] flex bg-admin-rail font-sans text-admin-fg antialiased">
+    <div className="below-banner fixed inset-0 z-[60] flex bg-admin-rail font-sans text-admin-fg antialiased">
       {/* ---------------------------------------------------------------
           Left rail. Fixed on lg+, a drawer below it.
           --------------------------------------------------------------- */}
