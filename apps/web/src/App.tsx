@@ -11,7 +11,10 @@ import Contact from './components/Contact';
 import Footer from './components/Footer';
 import { Booking } from './types';
 import * as store from './services/store';
-import { Sparkles, ArrowUp, Check } from 'lucide-react';
+import { ArrowUp } from 'lucide-react';
+import { priceBreakdown } from '@freshfold/core';
+import { useIntent } from './intent';
+import NextCollection from './components/ui/NextCollection';
 
 /**
  * The four heavy surfaces, split out of the first load.
@@ -49,7 +52,16 @@ const Deferred = ({ children }: { children: React.ReactNode }) => (
 );
 export default function App() {
   const [isBookingOpen, setIsBookingOpen] = useState(false);
-  const [preselectedService, setPreselectedService] = useState('');
+  /**
+   * What the visitor has told the page so far.
+   *
+   * `App` used to hold a service name and a count and thread them into the
+   * booking form as props — the only one of the page's nine interactive
+   * controls whose answer survived being scrolled past. Every control now
+   * writes into the shared intent instead, and this reads it for the one thing
+   * `App` itself renders: the standing offer at the bottom of a phone.
+   */
+  const { intent } = useIntent();
   const [activeBookings, setActiveBookings] = useState<Booking[]>([]);
   /** The subset of the ledger this browser is entitled to see. See the notifier. */
   const [ownBookings, setOwnBookings] = useState<Booking[]>([]);
@@ -234,10 +246,21 @@ export default function App() {
     }
   };
 
-  const handleOpenBookingWithService = (serviceName: string) => {
-    setPreselectedService(serviceName);
-    setIsBookingOpen(true);
-  };
+  const openBooking = () => setIsBookingOpen(true);
+
+  /**
+   * The order as it stands, for the sticky bar.
+   *
+   * Priced through `priceBreakdown` rather than summed here, for the same
+   * reason the estimator does: how an order is priced is core's business, and
+   * a second copy of that arithmetic on the marketing page is a second number
+   * to disagree with the checkout.
+   */
+  const orderLines = intent.items;
+  const orderTotal =
+    orderLines.length > 0
+      ? priceBreakdown({ serviceType: orderLines[0].serviceType, items: orderLines }).gross
+      : 0;
 
   const handleBookingCreated = (newBooking: Booking) => {
     setActiveBookings((prev) => [newBooking, ...prev]);
@@ -254,33 +277,56 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-brand-charcoal text-white font-sans antialiased selection:bg-brand-sage selection:text-brand-charcoal">
+    /* `ff` scopes the marketing page's focus ring and its reduced-motion
+       escape hatch — see index.css. The portal, the booking modal and the
+       supervisor desk render outside it and keep their own. */
+    <div className="ff min-h-screen bg-brand-charcoal pb-[4.75rem] font-ui text-white antialiased selection:bg-brand-gold selection:text-brand-charcoal lg:pb-0">
 
-      {/* Universal Floater Header */}
-      <Header
-        onOpenBooking={() => handleOpenBookingWithService('')}
-        onOpenPortal={() => {
-          window.location.hash = '#portal';
-        }}
-        onScrollToSection={handleScrollToSection}
-        activeSection={activeSection}
-      />
+      {/*
+        The site header — down while the portal is up.
+
+        The portal used to be a sheet laid over this page with `pt-[72px]`
+        reserved so the header showed above it, which put "Book a pickup" and
+        the section nav over a customer reading their own delivery window. It
+        is its own screen now and paints over this one, but painting over a
+        header is not the same as it not being there: it was still in the tab
+        order and still on the accessibility tree, so a keyboard or a screen
+        reader landed in the marketing nav before reaching the account.
+
+        Same reasoning for the floating controls and the chat bubble below.
+      */}
+      {!isPortalOpen && (
+        <Header
+          onOpenBooking={openBooking}
+          onOpenPortal={() => {
+            window.location.hash = '#portal';
+          }}
+          onScrollToSection={handleScrollToSection}
+          activeSection={activeSection}
+        />
+      )}
 
       <main>
         {/* Homepage Hero */}
         <Hero
-          onOpenBooking={() => handleOpenBookingWithService('')}
+          onOpenBooking={openBooking}
           onExplorePlans={() => handleScrollToSection('subscriptions')}
         />
 
+        {/* "When would I get it back?", answered off the live dispatch board
+            rather than in prose. Directly under the hero because it is the
+            second of the three questions the page exists to answer, and the
+            hero has just answered the first. */}
+        <NextCollection />
+
         {/* Services Section with custom category targets */}
-        <Services onSelectService={handleOpenBookingWithService} />
+        <Services onOpenBooking={openBooking} />
 
         {/* Subscription pricing structures */}
-        <Pricing onSelectPlan={handleOpenBookingWithService} />
+        <Pricing onOpenBooking={openBooking} />
 
-        {/* Interactive Luxury Loyalty */}
-        <Membership />
+        {/* Loyalty tiers, earned rather than sold */}
+        <Membership onOpenBooking={openBooking} />
 
         {/* Philosophy Core guidelines */}
         <WhyChooseUs />
@@ -289,10 +335,10 @@ export default function App() {
         <HowItWorks />
 
         {/* Segment customized panels (Students, Execs, Spas) */}
-        <TargetCustomers onSelectCustomerType={handleOpenBookingWithService} />
+        <TargetCustomers onOpenBooking={openBooking} />
 
         {/* Communications, Map and Hours portal */}
-        <Contact />
+        <Contact onOpenBooking={openBooking} />
       </main>
 
       {/* Footer copyright */}
@@ -306,11 +352,7 @@ export default function App() {
         <Deferred>
           <BookingModal
             isOpen={isBookingOpen}
-            onClose={() => {
-              setIsBookingOpen(false);
-              setPreselectedService('');
-            }}
-            preselectedService={preselectedService}
+            onClose={() => setIsBookingOpen(false)}
             onBookingCreated={handleBookingCreated}
           />
         </Deferred>
@@ -383,24 +425,34 @@ export default function App() {
         cancelled orders are left out too: there is nothing left to track, and
         a pulsing button that never goes away is not a notification.
       */}
-      {trackableBooking && (
+      {trackableBooking && !isPortalOpen && (
         <button
           onClick={() => {
             window.location.hash = '#portal';
           }}
-          className="fixed bottom-6 left-6 z-40 bg-black/95 hover:bg-[#161616] border border-brand-sage/60 text-white px-5 py-3.5 rounded-xl text-xs font-bold tracking-wider uppercase shadow-[0_4px_25px_rgba(0,0,0,0.5)] flex items-center space-x-2 animate-pulse group cursor-pointer"
+          className="fixed bottom-5 left-5 z-[var(--z-floating)] hidden items-center gap-2.5 rounded-md border border-white/15 bg-brand-card/95 px-4 py-3 text-[14px] font-medium text-white shadow-[0_8px_30px_rgba(0,0,0,0.6)] backdrop-blur-sm transition-colors duration-200 hover:border-brand-gold/60 lg:flex"
           id="active-order-floating-notifier"
         >
-          <span className="w-2 h-2 rounded-full bg-brand-sage" />
-          <span>Track Order: {trackableBooking.id}</span>
+          {/* The pulse is on the dot, not on the button. A whole control
+              breathing in the corner of the page is an alarm, and this is a
+              standing offer to look at an order that is going fine. */}
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-brand-sage-light opacity-60" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-brand-sage-light" />
+          </span>
+          <span>
+            Track order <span className="tnum text-brand-gold">{trackableBooking.id}</span>
+          </span>
         </button>
       )}
 
-      {/* Back to Top floating arrow */}
-      {showScrollTop && (
+      {/* Back to Top floating arrow. Desktop only: on a phone the bottom edge
+          belongs to the booking bar below, and a second floating control
+          fighting it for the same corner is clutter. */}
+      {showScrollTop && !isPortalOpen && (
         <button
           onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-          className="fixed bottom-24 right-6 z-40 p-3 bg-brand-sage hover:bg-white hover:text-black text-white rounded-xl shadow-xl transition-all duration-300 transform hover:scale-105 cursor-pointer border border-white/10"
+          className="fixed bottom-5 right-5 z-[var(--z-floating)] hidden h-11 w-11 place-items-center rounded-md border border-white/15 bg-brand-card/95 text-white shadow-[0_8px_30px_rgba(0,0,0,0.6)] backdrop-blur-sm transition-colors duration-200 hover:border-brand-gold/60 hover:text-brand-gold lg:grid"
           aria-label="Back to top"
           id="scroll-to-top-button"
         >
@@ -408,10 +460,89 @@ export default function App() {
         </button>
       )}
 
-      {/* AI Chatbot Widget */}
-      <Deferred>
-        <ChatbotWidget />
-      </Deferred>
+      {/*
+        The phone's standing offer.
+
+        A marketing page on a phone is a long scroll with the one action that
+        matters sitting at the very top, out of sight from the second screenful
+        onwards. This puts it back within thumb reach without stealing the
+        header, and it carries the price so the button is never a cold ask.
+
+        It doubles as the tracker when this visitor has an order on the go:
+        that is the reason a returning customer is on this page, and it
+        outranks booking another one.
+      */}
+      {showScrollTop && !isPortalOpen && (
+        <div className="fixed inset-x-0 bottom-0 z-[var(--z-floating)] border-t border-white/10 bg-brand-charcoal/95 backdrop-blur-md lg:hidden">
+          <div className="flex items-center gap-3 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+            {trackableBooking ? (
+              <button
+                onClick={() => {
+                  window.location.hash = '#portal';
+                }}
+                className="flex min-w-0 flex-1 flex-col text-left"
+              >
+                <span className="flex items-center gap-1.5 text-[13px] text-brand-text-muted">
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand-sage-light" />
+                  Order in progress
+                </span>
+                <span className="truncate text-[15px] font-medium text-white">
+                  Track <span className="tnum text-brand-gold">{trackableBooking.id}</span>
+                </span>
+              </button>
+            ) : orderLines.length > 0 ? (
+              /*
+                An order in progress upstairs, carried down the page.
+
+                On a phone the estimator is a screenful somewhere in the middle
+                of a long scroll, and the total someone just built stops
+                existing the moment they scroll past it. This keeps it under
+                their thumb — which is also what makes building one worth the
+                trouble on the device most of these visitors are on.
+              */
+              <button
+                onClick={openBooking}
+                className="flex min-w-0 flex-1 flex-col text-left"
+              >
+                <span className="block truncate text-[13px] text-brand-text-muted">
+                  {orderLines.length === 1
+                    ? orderLines[0].serviceType
+                    : `${orderLines.length} services`}
+                </span>
+                <span className="block text-[15px] font-medium text-white">
+                  Your order &middot;{' '}
+                  <span className="tnum text-brand-gold">₵{orderTotal}</span>
+                </span>
+              </button>
+            ) : (
+              <div className="min-w-0 flex-1">
+                <span className="block text-[13px] text-brand-text-muted">
+                  Pickup &amp; delivery free
+                </span>
+                <span className="block text-[15px] font-medium text-white">
+                  A wash from <span className="tnum text-brand-gold">₵30</span>
+                </span>
+              </div>
+            )}
+            <button
+              onClick={openBooking}
+              className="shrink-0 rounded-md bg-brand-gold px-5 py-3 text-[15px] font-semibold text-brand-charcoal transition-colors duration-200 hover:bg-brand-gold-light"
+            >
+              {orderLines.length > 0 && !trackableBooking ? 'Book it' : 'Book a pickup'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* The question box. Told where the reader is, so its openers can be
+          about what is on screen rather than the same five every time. It is a
+          pre-sales opener; a signed-in customer with a live order has the
+          message thread on the order itself. */}
+      {!isPortalOpen && (
+        <Deferred>
+          <ChatbotWidget activeSection={activeSection} onOpenBooking={openBooking} />
+        </Deferred>
+      )}
 
     </div>
   );

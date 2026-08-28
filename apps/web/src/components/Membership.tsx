@@ -1,206 +1,186 @@
-import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import {
-  PHONE_DIGITS,
-  PHONE_LENGTH_MESSAGE,
-  isCompletePhone,
-  limitPhoneInput,
-} from '@freshfold/core';
+import { useState } from 'react';
 import { LOYALTY_TIERS } from '../data';
 import { LoyaltyTier } from '../types';
-import { Award, ShieldCheck, History, HelpCircle, Gift, Sparkles, Sliders, Calendar, Clock, CreditCard, Wallet, Lock, Smartphone, CheckCircle2, X, Crown, Check, Banknote } from 'lucide-react';
+import Reveal from './ui/Reveal';
 
-export default function Membership() {
-  const [selectedTierId, setSelectedTierId] = useState<'basic' | 'silver' | 'gold'>('silver');
+interface MembershipProps {
+  onOpenBooking: () => void;
+}
 
-  // Membership payment states
-  const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>('monthly');
+/**
+ * How each tier is dressed. Everything else about it — the name, the threshold,
+ * the discount, the perks — is `LOYALTY_TIERS` in `@freshfold/core`, the same
+ * table the customer app and the portal read.
+ *
+ * The tiers are *earned*, at a point per cedi. This section used to price them
+ * at ₵79 and ₵149 a month, which is the membership plan's price on a loyalty
+ * tier's card: two different things, and only one of them was ever for sale.
+ */
+const TIER_STYLE: Record<string, { mark: string; accent: string; ring: string; sheen: string }> = {
+  basic: {
+    mark: 'B',
+    accent: 'text-white',
+    ring: 'ring-white/25',
+    sheen: 'from-white/10',
+  },
+  silver: {
+    mark: 'S',
+    accent: 'text-brand-sage-light',
+    ring: 'ring-brand-sage-light/60',
+    sheen: 'from-brand-sage-light/20',
+  },
+  gold: {
+    mark: 'G',
+    accent: 'text-brand-gold',
+    ring: 'ring-brand-gold/70',
+    sheen: 'from-brand-gold/25',
+  },
+};
 
-  // Price calculations
-  const getTierPrice = (tierId: string) => {
-    if (tierId === 'basic') return 0;
-    if (tierId === 'silver') return billingCycle === 'annual' ? 67 : 79;
-    return billingCycle === 'annual' ? 126 : 149;
-  };
+const pointsLabel = (tier: LoyaltyTier) =>
+  tier.minPoints === 0 ? 'First order' : `${tier.minPoints.toLocaleString()} points`;
 
+const rateLabel = (tier: LoyaltyTier) =>
+  tier.discountRate === 0 ? 'List price' : `${Math.round(tier.discountRate * 100)}% off everything`;
 
-  // The tier the visitor is previewing, from the card picker above.
-  const activeLoyaltyTier = LOYALTY_TIERS.find(t => {
-    if (selectedTierId === 'basic') return t.id === 'basic';
-    if (selectedTierId === 'silver') return t.id === 'silver';
-    return t.id === 'gold';
-  }) || LOYALTY_TIERS[1];
+export default function Membership({ onOpenBooking }: MembershipProps) {
+  const [selectedTierId, setSelectedTierId] = useState<string>('silver');
 
-  const getPointsCap = (tierId: string) => {
-    if (tierId === 'basic') return 'Up to 500 lifetime points';
-    if (tierId === 'silver') return '500 to 1,500 lifetime points';
-    return '1,500+ lifetime points';
-  };
+  const activeTier =
+    LOYALTY_TIERS.find((tier) => tier.id === selectedTierId) ?? LOYALTY_TIERS[0];
+  const style = TIER_STYLE[activeTier.id] ?? TIER_STYLE.basic;
 
   return (
-    <section id="membership" className="py-24 bg-brand-charcoal relative overflow-hidden border-b border-white/5">
-      {/* Background aesthetics */}
-      <div className="absolute top-1/2 left-0 w-[40%] h-[40%] rounded-full bg-brand-sage/5 blur-[150px] pointer-events-none" />
-      <div className="absolute top-[30%] right-0 w-[40%] h-[40%] rounded-full bg-brand-gold/5 blur-[150px] pointer-events-none" />
-
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
-        
-        {/* Section Header */}
-        <div className="text-center max-w-3xl mx-auto mb-16">
-          <span className="font-sans text-[11px] uppercase tracking-[0.4em] text-brand-sage font-bold">
-            Digital Identity
-          </span>
-          <h2 className="font-serif text-3xl sm:text-5xl text-white font-light tracking-tight mt-3">
-            Pure Care <span className="font-serif italic text-brand-sage">Loyalty Program</span>
+    <section
+      id="membership"
+      className="border-b border-white/10 bg-brand-charcoal py-20 font-ui sm:py-28"
+    >
+      <div className="mx-auto max-w-[88rem] px-5 sm:px-8">
+        <Reveal className="max-w-[52ch]">
+          <h2 className="font-display text-section font-medium text-white text-balance">
+            The more you send, the less it costs.
           </h2>
-          <p className="font-sans text-[#8E9299] text-sm mt-4 font-light tracking-wide max-w-xl mx-auto">
-            Explore the tiers and what each unlocks. Points accrue on the orders you actually place.
+          <p className="mt-5 text-lead text-brand-text-muted">
+            One point for every cedi you spend. Nothing to buy and nothing to sign up for — the
+            card moves up on its own, and the discount comes off every order after it.
           </p>
-        </div>
+        </Reveal>
 
-        {/* Card selector buttons — above the grid so the card face and the perks
-            panel below start on the same line. */}
-        <div className="flex justify-center mb-10">
-          <div className="flex gap-2.5 p-1 bg-[#161616] rounded-xl border border-white/10" id="card-picker">
-            {LOYALTY_TIERS.map((tier) => (
-              <button
-                key={tier.id}
-                onClick={() => setSelectedTierId(tier.id as any)}
-                className={`px-5 py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all duration-300 cursor-pointer ${
-                  selectedTierId === tier.id
-                    ? 'bg-brand-sage text-white'
-                    : 'text-[#8E9299] hover:text-white'
-                }`}
-              >
-                {tier.id === 'basic' ? 'Bronze' : tier.id === 'silver' ? 'Silver' : 'Gold'}
-              </button>
-            ))}
-          </div>
-        </div>
+        <div className="mt-14 grid gap-10 lg:grid-cols-12 lg:gap-14" id="loyalty-container">
+          {/* The card */}
+          <div className="lg:col-span-5">
+            <div
+              key={activeTier.id}
+              className={`panel-swap relative flex aspect-[1.6] w-full max-w-[26rem] flex-col justify-between overflow-hidden rounded-xl bg-gradient-to-br from-brand-sage-dark to-brand-charcoal p-6 ring-1 ${style.ring}`}
+              id={`digital-laundry-card-${activeTier.id}`}
+            >
+                {/* The foil. A single soft corner sheen in the tier's own
+                    colour — the one decorative gradient on the page, and it is
+                    standing in for a physical thing. */}
+                <div
+                  aria-hidden="true"
+                  className={`pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full bg-gradient-to-br to-transparent blur-2xl ${style.sheen}`}
+                />
 
-        {/* Dashboard Grid Container */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 items-start" id="loyalty-container">
-
-          {/* LEFT: Interactive Digital Card (Grid Columns: 5) */}
-          <div className="lg:col-span-5 flex flex-col items-center">
-
-            {/* Virtual Card Rendering Frame - Sculpted curved details */}
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={activeLoyaltyTier.id}
-                initial={{ opacity: 0, rotateY: 45, scale: 0.95 }}
-                animate={{ opacity: 1, rotateY: 0, scale: 1 }}
-                exit={{ opacity: 0, rotateY: -45, scale: 0.95 }}
-                transition={{ duration: 0.6 }}
-                className={`relative w-full max-w-[400px] h-60 rounded-2xl p-6 flex flex-col justify-between shadow-[0_20px_50px_rgba(0,0,0,0.9)] border border-white/15 overflow-hidden ${
-                  activeLoyaltyTier.id === 'gold'
-                    ? 'bg-gradient-to-br from-[#2A2A2A] to-[#1A1A1A]'
-                    : activeLoyaltyTier.id === 'silver'
-                    ? 'bg-gradient-to-br from-[#5A5A40] to-[#3D3D2D]'
-                    : 'bg-gradient-to-br from-[#3D3D2D] to-[#161616]'
-                }`}
-                id={`digital-laundry-card-${activeLoyaltyTier.id}`}
-              >
-                {/* Background foil shimmer ornament */}
-                <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-white/5 via-transparent to-transparent opacity-60 pointer-events-none" />
-                <div className="absolute -bottom-10 -right-10 w-44 h-44 rounded-full bg-blend-soft-light bg-brand-sage/10 blur-3xl pointer-events-none" />
-
-                {/* Card Top Block */}
-                <div className="flex justify-between items-start relative z-10">
-                  <div className="text-left">
-                    <p className="font-mono text-[9px] tracking-[0.3em] text-white/50 uppercase">
-                      Boutique Patron ID
-                    </p>
-                    <p className="font-serif text-sm tracking-widest text-white mt-1 uppercase font-semibold">
-                      {activeLoyaltyTier.cardName}
-                    </p>
-                  </div>
-                  {/* Card chip motif */}
-                  <div className="w-10 h-7 rounded-md bg-gradient-to-br from-amber-200/40 via-amber-100/20 to-stone-500/30 border border-white/20 flex items-center justify-center relative shadow-inner">
-                    <div className="w-6 h-4 border-r border-b border-white/10 rounded-sm" />
-                  </div>
-                </div>
-
-                {/* Card Center Stamp */}
-                <div className="my-auto flex items-center space-x-3.5 relative z-10 text-left">
-                  <div className="p-3.5 rounded-xl bg-white/5 border border-white/10 z-10 w-11 h-11 flex items-center justify-center font-bold text-sm text-white">
-                    {activeLoyaltyTier.id === 'gold' ? 'G' : activeLoyaltyTier.id === 'silver' ? 'S' : 'B'}
-                  </div>
+                <div className="relative flex items-start justify-between">
                   <div>
-                    <h3 className="font-sans text-xs uppercase tracking-widest text-white font-bold">
-                      {activeLoyaltyTier.name}
-                    </h3>
-                    <p className={`font-sans text-[10px] ${activeLoyaltyTier.id === 'silver' ? 'text-white/80' : 'text-[#8E9299]'} mt-0.5 font-light`}>
-                      {getPointsCap(activeLoyaltyTier.id)}
+                    <p className="text-label text-white/60">FreshFold card</p>
+                    <p className={`mt-1 text-[15px] font-semibold ${style.accent}`}>
+                      {activeTier.cardName}
                     </p>
                   </div>
-                </div>
-
-                {/* Card Bottom Block */}
-                <div className="flex justify-between items-end relative z-10 text-left">
-                  <div>
-                    <span className="font-mono text-[8px] tracking-[0.2em] text-white/40 block uppercase">
-                      Direct Loyalty Benefit
-                    </span>
-                    <span className="font-serif text-lg tracking-wider text-white font-semibold block italic">
-                      {activeLoyaltyTier.discountRate > 0
-                        ? `${activeLoyaltyTier.discountRate * 100}% Surcharges Off`
-                        : 'Complimentary Upgrades'}
-                    </span>
-                  </div>
-                  {/* Subtle watermarked typographic lock */}
-                  <span className="font-mono text-[8px] tracking-[0.3em] text-white/40 uppercase font-bold">
-                    Julian V. Rossi
+                  <span
+                    className={`grid h-10 w-10 place-items-center rounded-md bg-white/10 text-[17px] font-bold ${style.accent} fs-expanded`}
+                  >
+                    {style.mark}
                   </span>
                 </div>
-              </motion.div>
-            </AnimatePresence>
 
-          </div>
-
-          {/* RIGHT: Tier Details, Rewards Benefits & Laundry ledger (Grid Columns: 7) */}
-          <div className="lg:col-span-7 space-y-8 text-left" id="loyalty-perks-history">
-            
-            {/* Benefits detail list details */}
-            <div className="bg-[#161616] rounded-2xl p-6 border border-white/10 space-y-6">
-              <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 border-b border-white/10 pb-4">
-                <div>
-                  <h4 className="font-serif text-lg text-white font-medium flex items-center space-x-2">
-                    <Gift className="w-4 h-4 text-brand-sage" />
-                    <span>Tier Loyalty Rewards & Perks</span>
-                  </h4>
-                  <p className="text-xs text-stone-400 mt-0.5">
-                    {activeLoyaltyTier.name} — Plan Rate: <strong className="text-brand-sage font-mono">{selectedTierId === 'basic' ? 'Complimentary' : `₵${getTierPrice(selectedTierId)}.00 GHS / month`}</strong>
+                <div className="relative">
+                  <p className="text-[26px] font-semibold leading-none tracking-[-0.03em] text-white sm:text-[30px]">
+                    {rateLabel(activeTier)}
                   </p>
-                </div>
-
-                <a
-                  href="#contact"
-                  className="px-5 py-2.5 bg-brand-gold text-black hover:bg-yellow-400 font-bold text-xs uppercase tracking-wider rounded-xl transition-all cursor-pointer font-mono flex items-center justify-center gap-1.5 shrink-0 shadow-lg"
-                >
-                  <Crown className="w-4 h-4" />
-                  <span>Enquire about this tier</span>
-                </a>
+                  <div className="mt-5 flex items-end justify-between gap-4 border-t border-white/15 pt-4">
+                    <div>
+                      <p className="text-label text-white/60">Reached at</p>
+                      <p className="mt-0.5 text-[15px] font-medium text-white tnum">
+                        {pointsLabel(activeTier)}
+                      </p>
+                    </div>
+                    <p className="text-label text-white/60 tnum">1 point per ₵1</p>
+                  </div>
               </div>
-
-              <ul className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {activeLoyaltyTier.benefits.map((benefit, idx) => (
-                  <li key={idx} className="flex items-start bg-black/40 p-3 rounded-xl border border-white/5">
-                    <span className="w-2 h-2 rounded-full bg-brand-sage shrink-0 mt-2 mr-3" />
-                    <span className="font-sans text-xs text-stone-300 font-light leading-relaxed">
-                      {benefit}
-                    </span>
-                  </li>
-                ))}
-              </ul>
             </div>
 
+            <button
+              onClick={onOpenBooking}
+              className="mt-6 rounded-md bg-brand-gold px-6 py-3.5 text-[15px] font-semibold text-brand-charcoal transition-colors duration-200 hover:bg-brand-gold-light"
+            >
+              Book a pickup and start counting
+            </button>
           </div>
 
+          {/* The ladder */}
+          <div className="lg:col-span-7" id="loyalty-perks-history">
+            <ol className="border-t border-white/10">
+              {LOYALTY_TIERS.map((tier) => {
+                const isActive = tier.id === activeTier.id;
+                const tierStyle = TIER_STYLE[tier.id] ?? TIER_STYLE.basic;
+                return (
+                  <li key={tier.id} className="border-b border-white/10">
+                    <button
+                      onClick={() => setSelectedTierId(tier.id)}
+                      aria-expanded={isActive}
+                      className="flex w-full items-baseline gap-4 py-5 text-left"
+                    >
+                      <span
+                        className={`w-28 shrink-0 text-body tnum ${
+                          isActive ? 'text-brand-gold' : 'text-brand-text-muted'
+                        }`}
+                      >
+                        {pointsLabel(tier)}
+                      </span>
+                      <span
+                        className={`flex-1 font-display text-[25px] font-medium transition-colors duration-200 ${
+                          isActive ? 'text-white' : 'text-white/85'
+                        }`}
+                      >
+                        {tier.name}
+                      </span>
+                      <span className={`shrink-0 text-[15px] font-medium ${tierStyle.accent}`}>
+                        {rateLabel(tier)}
+                      </span>
+                    </button>
+
+                    {/* The perks, only for the tier being read. Height is not
+                        animated — a list of four lines expanding is a layout
+                        animation, and it judders on the phones this page is
+                        mostly read on. */}
+                    {isActive && (
+                      <ul className="panel-swap grid gap-2.5 pb-6 sm:grid-cols-2 sm:gap-x-8">
+                        {tier.benefits.map((benefit) => (
+                          <li key={benefit} className="flex gap-2.5 text-body text-brand-text-light">
+                            <span
+                              aria-hidden="true"
+                              className="mt-[0.62em] h-1 w-1 shrink-0 rounded-full bg-brand-sage-light"
+                            />
+                            {benefit}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+
+            <p className="mt-6 max-w-[62ch] text-body text-brand-text-muted">
+              Points are counted on what you actually spend, and they do not expire. You can see the
+              running total on your order page at any time.
+            </p>
+          </div>
         </div>
-
       </div>
-
     </section>
   );
 }

@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
 import { Booking, UserAccount } from '../types';
 import * as store from '../services/store';
 import { displayAmount } from '../services/amount';
@@ -32,18 +31,18 @@ import {
   type Message,
   type SavedAddress,
 } from '@freshfold/core';
-import { 
-  X, Shield, Lock, Smartphone, Mail, Sparkles, User, LogOut,
-  MapPin, Calendar, Clock, ChevronRight, CheckCircle2, History,
-  Award, Play, Plus, RefreshCw, Send, AlertTriangle, AlertCircle,
-  CreditCard, Wallet, Banknote, QrCode, Receipt, DollarSign, CheckCircle, Trash2,
-  CalendarClock
+import {
+  X, Lock, Mail, User, LogOut, MapPin, Clock, ChevronRight,
+  Check, Plus, Send, AlertTriangle, AlertCircle, Wallet, Receipt,
+  MessageSquare, Trash2, Pencil, CalendarClock, ArrowLeft, Package,
 } from 'lucide-react';
 import LiveDispatchMap from './LiveDispatchMap';
 import HandoffCode from './HandoffCode';
 import RescheduleDrawer from './RescheduleDrawer';
 import AddressAutocomplete from './AddressAutocomplete';
 import { usePaystackReturn } from './PaystackReturn';
+import PaystackMark from './ui/PaystackMark';
+import { paymentLabel, windowLabel } from './ui/slots';
 
 /**
  * Dispatch states in which the bags are still with the customer, and the
@@ -73,53 +72,77 @@ const DELIVERY_PENDING = new Set<JobStatus>([
  * Who a message is from, in the customer's language. The wire values are the
  * dispatch team's own vocabulary, and "laundry_center" on a bubble helps
  * nobody.
+ *
+ * Plain job titles rather than the house style this product has stopped using:
+ * "Wagyingo Opal Atelier" was the shop calling itself an atelier on a message
+ * bubble, to a customer who is asking which gate to come to.
  */
 const SENDER_LABELS: Record<Message['sender'], string> = {
-  rider: 'Your Courier',
+  rider: 'Your rider',
   customer: 'You',
-  dispatcher: 'Dispatch Desk',
-  laundry_center: 'Wagyingo Opal Atelier',
+  dispatcher: 'The desk',
+  laundry_center: 'The shop',
 };
 
 /**
- * How each loyalty tier is dressed here.
+ * The one ink each loyalty tier is written in.
  *
  * The tiers themselves — names, thresholds, discounts, benefits — come from
  * `@freshfold/core` and are shared with the customer app and the server. This
  * portal used to carry its own table inline, with Silver starting at 400 points
  * and Gold at 700 against 500 and 1500 everywhere else, so the same customer
- * read as Gold on the website and Silver in the app. Only the Tailwind classes
- * are local now, because only they are specific to this surface.
+ * read as Gold on the website and Silver in the app.
+ *
+ * What is left here is a colour, and it is the same colour the landing's
+ * membership section paints each tier in, so a customer sees one Silver across
+ * both. Sage-light rather than sage: `--color-brand-sage` is 2.4:1 on charcoal
+ * and is a fill that carries white text, never an ink.
  */
-const TIER_STYLES: Record<LoyaltyTierId, {
-  colorClass: string;
-  borderColor: string;
-  bgGradient: string;
-  radialGradient: string;
-  badgeColor: string;
-}> = {
-  gold: {
-    colorClass: 'text-[#c5a880]',
-    borderColor: 'border-[#c5a880]/30',
-    bgGradient: 'from-[#1C1C16] to-[#0A0A0A]',
-    radialGradient: 'from-[#c5a880]/15',
-    badgeColor: 'bg-brand-gold/10 text-brand-gold border-brand-gold/20',
-  },
-  silver: {
-    colorClass: 'text-slate-300',
-    borderColor: 'border-slate-500/30',
-    bgGradient: 'from-[#1F2022] to-[#0E0F10]',
-    radialGradient: 'from-slate-400/10',
-    badgeColor: 'bg-slate-500/10 text-slate-300 border-slate-500/20',
-  },
-  basic: {
-    colorClass: 'text-amber-600',
-    borderColor: 'border-amber-700/30',
-    bgGradient: 'from-[#1A1412] to-[#0E0C0B]',
-    radialGradient: 'from-amber-700/10',
-    badgeColor: 'bg-amber-700/10 text-amber-500 border-amber-700/20',
-  },
+const TIER_INK: Record<LoyaltyTierId, string> = {
+  gold: 'text-brand-gold',
+  silver: 'text-brand-sage-light',
+  basic: 'text-white',
 };
+
+import {
+  AS_MONEY,
+  AS_PRIMARY,
+  AS_QUIET,
+  Banner,
+  BTN,
+  FIELD,
+  LABEL,
+  Modal,
+  Panel,
+  PanelHead,
+  PaymentPill,
+  Row,
+  SIZE_MD,
+  SIZE_SM,
+  whenLine,
+} from './ui/portal';
+
+/**
+ * The three places there are to be.
+ *
+ * There were four, and the fourth was the problem: a "Dashboard & Live Map"
+ * tab beside a "My Orders" tab, which meant the answer to "where is my
+ * laundry" and the answer to "what have I ordered" were two different screens
+ * that each showed half of both. The wallet then appeared on all three — in
+ * the tab's own label, as a card on the dashboard, and again on the wallet
+ * page — so the same balance was on screen three times and none of them was
+ * the place to go and change it.
+ *
+ * Orders is where an order is. Wallet is where money is. Account is where you
+ * are. Nothing appears in two of them.
+ */
+const NAV_ITEMS = [
+  { id: 'orders', label: 'Orders', icon: Package },
+  { id: 'wallet', label: 'Wallet', icon: Wallet },
+  { id: 'account', label: 'Account', icon: User },
+] as const;
+
+type PortalTab = (typeof NAV_ITEMS)[number]['id'];
 
 /** What `GET /api/auth/claim` hands back for a live setup link. */
 interface SetupBooking {
@@ -313,7 +336,7 @@ export default function ClientPortal({
           // never also be spent settling an order.
           purpose: 'wallet_topup',
           display: {
-            customer_name: currentUser?.name || 'Patron',
+            customer_name: currentUser?.name || 'FreshFold customer',
           }
         })
       });
@@ -359,11 +382,16 @@ export default function ClientPortal({
         setTopUpPaystackAuthUrl('');
         setTopUpPaystackRef('');
         setSuccessMsg(
-          `Wallet topped up via Paystack. ` +
-          `New balance: ₵${(account.walletBalance ?? 0).toFixed(2)} GHS`
+          `Wallet topped up. Balance: ₵${(account.walletBalance ?? 0).toFixed(2)}.`
         );
       } else if (announce) {
-        alert(`Status: ${data.data?.status || 'pending'}. Complete payment in Paystack checkout and retry.`);
+        // Into the sheet's own banner rather than a `window.alert`, which
+        // blocks the page, cannot be styled, and on a phone covers the
+        // checkout window it is telling the customer to go back to.
+        setTopUpPaystackError(
+          `Paystack says this payment is ${data.data?.status || 'still pending'}. ` +
+            'Finish it in the checkout window, then check again.'
+        );
       }
     } catch (err: any) {
       setTopUpPaystackError(err.message || 'Error verifying Paystack transaction.');
@@ -414,8 +442,9 @@ export default function ClientPortal({
     ? messages.filter((message) => message.orderId === threadOrderId)
     : [];
 
-  // Main portal navigation tab state
-  const [activePortalTab, setActivePortalTab] = useState<'dashboard' | 'orders' | 'wallet' | 'settings'>('dashboard');
+  // Which of the three pages is showing. See NAV_ITEMS for why there are
+  // three of them and not the four this had.
+  const [activePortalTab, setActivePortalTab] = useState<PortalTab>('orders');
   const [receiptModalBooking, setReceiptModalBooking] = useState<Booking | null>(null);
 
   /**
@@ -715,7 +744,7 @@ export default function ClientPortal({
     setSuccessMsg('');
 
     if (!setupTokenParam || !setupBooking) {
-      setSetupError('No active booking state is associated with this link.');
+      setSetupError('This link is not attached to a booking.');
       return;
     }
 
@@ -740,15 +769,15 @@ export default function ClientPortal({
       // it is never held in this browser.
       const account = await store.claimBooking(setupTokenParam, setupPassword);
 
-      // The spent token leaves the URL in the same beat the terminal opens.
+      // The spent token leaves the URL in the same beat the account opens.
       //
       // These used to be 1.5 seconds apart, which put the setup card and the
       // signed-in portal on screen together — the overlap the note on
-      // `AnimatePresence` above is about. There is also nothing left to read on
-      // the card by then: the account exists and the terminal is the answer.
+      // `AnimatePresence` in the render is about. There is also nothing left to
+      // read on the card by then: the account exists and is the answer.
       setCurrentUser(account);
       window.location.hash = '#portal';
-      setSuccessMsg('Patron account certified successfully.');
+      setSuccessMsg('Account created. Welcome to FreshFold.');
 
     } catch (e) {
       // Two refusals mean the same thing to the customer: this link cannot set
@@ -790,7 +819,7 @@ export default function ClientPortal({
     setSuccessMsg('');
 
     if (!inputIdentifier || !inputPassword) {
-      setLoginError('Credentials fields cannot be left empty.');
+      setLoginError('Enter your email or phone number and your password.');
       return;
     }
 
@@ -798,7 +827,6 @@ export default function ClientPortal({
       const account = await store.login(inputIdentifier, inputPassword);
       setCurrentUser(account);
       setInputPassword('');
-      setSuccessMsg('Welcome back, Patron.');
     } catch (e) {
       // A rejected sign-in may just mean this patron has a booking but has
       // never chosen a password, so point them at setup rather than leaving
@@ -809,9 +837,17 @@ export default function ClientPortal({
       });
 
       if (bookingMatch) {
-        setLoginError(`We found your booking ${bookingMatch.id} under this contact! However, you haven't chosen a secure login password yet. Open the setup link in your booking confirmation email — or press "Send my setup link again" below and we will mail you a fresh one.`);
+        setLoginError(
+          `We found booking ${bookingMatch.id} under those details, but no password has been ` +
+            'set for it yet. Open the setup link in your confirmation email, or press "Send my ' +
+            'setup link again" below.'
+        );
       } else {
-        setLoginError(e instanceof Error ? e.message : 'No matching patron credentials found. Please double-check formatting or schedule a pickup to sign up.');
+        setLoginError(
+          e instanceof Error
+            ? e.message
+            : 'We could not sign you in with those details. Check them, or book a pickup to get started.'
+        );
       }
     }
   };
@@ -924,63 +960,8 @@ export default function ClientPortal({
     setCurrentUser(null);
     setInputPassword('');
     setInputIdentifier('');
-    setSuccessMsg('Account safely signed out.');
+    setSuccessMsg('Signed out.');
     window.location.hash = '#portal';
-  };
-
-  // Step the progress of an active booking for interactive presentation/testing
-  // Handler to remove a single order from the client portal
-  const handleRemoveOrder = (bookingId: string) => {
-    if (!window.confirm(`Are you sure you want to remove order ${bookingId} from your account history?`)) {
-      return;
-    }
-    try {
-      const allBookings: Booking[] = store.readBookings();
-      const updatedAll = allBookings.filter(b => b.id !== bookingId);
-      store.writeBookings(updatedAll);
-      
-      // Update parent state
-      onUpdateBookings(updatedAll);
-
-      // Update local userBookings state
-      const remainingUserBookings = userBookings.filter(b => b.id !== bookingId);
-      setUserBookings(remainingUserBookings);
-      if (activeTrackingId === bookingId) {
-        setActiveTrackingId(remainingUserBookings.length > 0 ? remainingUserBookings[0].id : null);
-      }
-
-      setSuccessMsg(`Order ${bookingId} has been successfully removed.`);
-      setTimeout(() => setSuccessMsg(''), 4000);
-    } catch (e) {
-      console.error('Error removing order:', e);
-    }
-  };
-
-  // Handler to clear all orders for the current user
-  const handleClearAllOrders = () => {
-    if (userBookings.length === 0) return;
-    if (!window.confirm('Are you sure you want to clear ALL your orders from history? This action cannot be undone.')) {
-      return;
-    }
-    try {
-      const allBookings: Booking[] = store.readBookings();
-      const updatedAll = allBookings.filter(b => {
-        if (!currentUser) return true;
-        const matchesEmail = b.email.toLowerCase() === currentUser.email.toLowerCase();
-        const matchesPhone = samePhone(b.phone, currentUser.phone);
-        return !matchesEmail && !matchesPhone;
-      });
-
-      store.writeBookings(updatedAll);
-      onUpdateBookings(updatedAll);
-      setUserBookings([]);
-      setActiveTrackingId(null);
-
-      setSuccessMsg('All orders have been cleared from your account history.');
-      setTimeout(() => setSuccessMsg(''), 4000);
-    } catch (e) {
-      console.error('Error clearing all orders:', e);
-    }
   };
 
   /**
@@ -1021,8 +1002,8 @@ export default function ClientPortal({
       setPaystackAuthUrl('');
       setPaystackRef('');
       setSuccessMsg(
-        `Payment of ₵${(settled.amount ?? 0).toFixed(2)} GHS received via ${method}.` +
-          (settled.transactionRef ? ` Ref: ${settled.transactionRef}` : '')
+        `Paid ₵${(settled.amount ?? 0).toFixed(2)} by ${paymentLabel(method).toLowerCase()}.` +
+          (settled.transactionRef ? ` Reference ${settled.transactionRef}.` : '')
       );
       setTimeout(() => setSuccessMsg(''), 6000);
     } catch (error) {
@@ -1074,1047 +1055,1024 @@ export default function ClientPortal({
   // rider's dispatch status can never disagree about how far along a job is.
   const getStatusPercent = bookingProgressPercent;
 
-  // Helper to get status descriptions matching the luxurious FreshFold theme
-  const getStatusDetail = (status: Booking['status']) => {
-    switch (status) {
-      case 'Scheduled': return 'Your appointment is registered. Master artisan scheduled.';
-      case 'Collecting': return 'Concierge courier is inbound to collect your clothing protectors.';
-      case 'In Care': return 'Garments undergo botanical stain treatment and temperature washing.';
-      case 'Ironing & Folding': return 'Artisanal hand-pressing and boutique crisp folding active.';
-      case 'Quality Check': return 'Pristine laser-alignment and fabric thread inspection complete, awaiting a courier.';
-      case 'Delivering': return 'Your courier is riding back to your door with the finished order.';
-      case 'Delivered': return 'Delivered back safely into your physical closet wardrobe sanctuary.';
-      default: return 'Under luxury surveillance.';
-    }
-  };
-
   if (!isOpen) return null;
 
+  /* ---------------------------------------------------------------- render */
+
+  const signedIn = !!currentUser;
+
+  /** Orders that still have somewhere to go. */
+  const liveOrders = userBookings.filter(
+    (candidate) => candidate.status !== 'Delivered' && candidate.status !== 'Cancelled'
+  );
+
+  /**
+   * The order the tracking panel is showing.
+   *
+   * `activeTrackingId` is seeded from the whole list, so it can land on a
+   * delivered order — which is fine, and is what the Track button on a past
+   * order does deliberately.
+   */
+  const tracked = userBookings.find((candidate) => candidate.id === activeTrackingId) ?? null;
+
+  const shownOrders = userBookings.filter((candidate) => {
+    if (orderFilter === 'active') return candidate.status !== 'Delivered';
+    if (orderFilter === 'completed') return candidate.status === 'Delivered';
+    return true;
+  });
+
+  const firstName = (currentUser?.name ?? '').trim().split(/\s+/)[0] || 'there';
+
   return (
-    <div className="fixed inset-0 z-50 flex flex-col pt-[72px] bg-brand-charcoal text-white overflow-y-auto">
-      
-      {/* Top Banner Status Info */}
-      <div className="bg-[#121212] py-3.5 px-6 border-b border-white/5 flex items-center justify-between z-25 relative">
-        <div className="flex items-center space-x-2.5">
-          <div className="w-2.5 h-2.5 rounded-full bg-brand-sage animate-pulse" />
-          <span className="font-mono text-[10px] tracking-[0.25em] text-stone-400 uppercase font-black">
-            Laundro-Progress Central Tracking Terminal
-          </span>
+    /*
+      `portal` scopes this surface's focus ring and its reduced-motion escape —
+      see index.css, where `.ff` does the same for the landing.
+
+      The portal is its own screen now rather than a sheet laid over the
+      marketing page. It used to sit at `z-50` with `pt-[72px]` reserved for
+      the site header showing above it, which meant a customer reading their
+      delivery window still had "Book a pickup" and the section nav overhead —
+      a shopfront bolted to the top of an account. App.tsx takes the marketing
+      chrome down while this is open, and the bar below is the whole of the
+      navigation.
+    */
+    <div className="portal fixed inset-0 z-[var(--z-modal)] flex flex-col bg-brand-charcoal font-ui text-[15px] text-white antialiased selection:bg-brand-gold selection:text-brand-charcoal">
+
+      {/* ------------------------------------------------------------- bar */}
+      <header className="shrink-0 border-b border-white/10 bg-brand-charcoal">
+        <div className="mx-auto flex h-16 w-full max-w-6xl items-center gap-3 px-4 sm:px-6">
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Back to the FreshFold site"
+            className="group flex shrink-0 items-center gap-2 rounded-md py-1 pr-2 text-white transition-colors duration-200 hover:text-brand-gold"
+          >
+            <ArrowLeft aria-hidden="true" className="h-4 w-4 text-brand-text-muted transition-colors duration-200 group-hover:text-brand-gold" />
+            <span className="font-display text-[23px] font-medium leading-none">FreshFold</span>
+          </button>
+
+          {signedIn && (
+            <nav className="ml-4 hidden items-center gap-1 md:flex" aria-label="Your account">
+              {NAV_ITEMS.map((item) => {
+                const isActive = activePortalTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setActivePortalTab(item.id)}
+                    aria-current={isActive ? 'page' : undefined}
+                    className={`relative rounded-md px-3 py-2 text-[14px] font-medium transition-colors duration-200 ${
+                      isActive ? 'text-white' : 'text-brand-text-muted hover:text-white'
+                    }`}
+                  >
+                    {item.label}
+                    {/* Brass, two pixels, the same mark the site header uses for
+                        the section you are reading. Sage cannot do this job: at
+                        2.4:1 on charcoal a rule in it is simply not there. */}
+                    <span
+                      aria-hidden="true"
+                      className={`absolute inset-x-3 -bottom-0.5 h-0.5 origin-left rounded-full bg-brand-gold transition-transform duration-300 ${
+                        isActive ? 'scale-x-100' : 'scale-x-0'
+                      }`}
+                    />
+                  </button>
+                );
+              })}
+            </nav>
+          )}
+
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            {signedIn ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onOpenBooking}
+                  className={`${BTN} ${AS_PRIMARY} ${SIZE_MD} hidden sm:inline-flex`}
+                >
+                  <Plus aria-hidden="true" className="h-4 w-4" />
+                  Book a pickup
+                </button>
+                <span
+                  aria-hidden="true"
+                  className="hidden h-9 w-9 place-items-center rounded-md border border-white/12 font-display text-[18px] font-medium text-brand-gold sm:grid"
+                >
+                  {currentUser.name.charAt(0).toUpperCase()}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  className={`${BTN} ${AS_QUIET} ${SIZE_SM}`}
+                >
+                  <LogOut aria-hidden="true" className="h-4 w-4" />
+                  <span className="hidden sm:inline">Sign out</span>
+                </button>
+              </>
+            ) : (
+              <button type="button" onClick={onClose} className={`${BTN} ${AS_QUIET} ${SIZE_SM}`}>
+                Back to the site
+              </button>
+            )}
+          </div>
         </div>
-        <button
-          onClick={onClose}
-          className="p-1 px-3 text-xs tracking-widest text-[#8E9299] hover:text-white uppercase font-bold font-sans flex items-center gap-1 bg-white/5 hover:bg-white/10 rounded-lg transition-colors border border-white/5 cursor-pointer"
-        >
-          <X className="w-3.5 h-3.5" />
-          <span>Exit Portal</span>
-        </button>
-      </div>
 
-      <div className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 w-full relative">
-        {/* Background artwork */}
-        <div className="absolute top-1/4 right-1/4 w-[400px] h-[400px] bg-brand-sage/5 blur-[150px] pointer-events-none rounded-full" />
-        <div className="absolute bottom-12 left-10 w-[300px] h-[300px] bg-brand-gold/5 blur-[120px] pointer-events-none rounded-full" />
+        {/* The same three destinations on a phone, as a row under the bar
+            rather than a hamburger: there are three of them, and a menu that
+            hides three things is a menu for the sake of having one. */}
+        {signedIn && (
+          <nav className="flex border-t border-white/10 md:hidden" aria-label="Your account">
+            {NAV_ITEMS.map((item) => {
+              const isActive = activePortalTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setActivePortalTab(item.id)}
+                  aria-current={isActive ? 'page' : undefined}
+                  className={`relative flex flex-1 items-center justify-center gap-2 py-3 text-[14px] font-medium transition-colors duration-200 ${
+                    isActive ? 'text-white' : 'text-brand-text-muted'
+                  }`}
+                >
+                  <item.icon aria-hidden="true" className="h-4 w-4" />
+                  {item.label}
+                  <span
+                    aria-hidden="true"
+                    className={`absolute inset-x-4 bottom-0 h-0.5 origin-center rounded-full bg-brand-gold transition-transform duration-300 ${
+                      isActive ? 'scale-x-100' : 'scale-x-0'
+                    }`}
+                  />
+                </button>
+              );
+            })}
+          </nav>
+        )}
+      </header>
 
+      {/* --------------------------------------------------------- content */}
+      <main className="min-h-0 flex-1 overflow-y-auto">
         {/*
-          Not `mode="wait"`.
+          Not `AnimatePresence`, in either mode.
 
-          Two reasons, neither of them cosmetic. The three panels below are
-          separate conditions rather than one switch, so two can be true in a
-          single render — which framer-motion says out loud in the console:
-          "attempting to animate multiple children within AnimatePresence, but
-          its mode is set to wait". And `wait` makes the entering panel wait on
-          the leaving one's exit *animation*; where animations do not run — a
-          backgrounded tab is the ordinary case, since browsers stop
+          These three are the whole screen, one at a time, and they were
+          crossfading through it. `mode="wait"` makes the entering panel wait on
+          the leaving one's exit *animation*, and where animations do not run —
+          a backgrounded tab is the ordinary case, since browsers stop
           requestAnimationFrame there — that exit never finishes and the
-          entering panel never mounts at all.
+          entering panel never mounts at all. The default mode has the failure
+          this actually shipped with: signing in left the sign-in card mounted
+          at `opacity: 0` and still in flow, so the account screen rendered
+          under 600px of invisible form. An exit animation that does not
+          complete does not unmount its child, and nothing on the page said so.
 
-          Claiming a setup link is the worst moment for that: the account is
-          created and the session stored, so the terminal is the only correct
-          thing to be looking at. The default mode crossfades instead, and
-          nothing is waiting on a frame that may never come.
+          `.panel-swap` in index.css is the idiom this codebase already settled
+          on for a panel that changes under a control: a CSS animation with no
+          fill mode, keyed so React restarts it. Outside the 320ms it is
+          running the element is at its ordinary style — visible, in flow — so
+          a swap that never animates is a swap that simply happened. There is
+          no state in which one of these can hold the screen open.
         */}
-        <AnimatePresence>
 
-          {/* STATE 1: SETUP/PASSWORD CREATION MODE
-              `!currentUser` because a claimed link has nothing left to set — the
-              terminal below is what that customer wants, and overlapping panels
-              are what the note above is about. */}
+          {/* ------------------------------------------- 1. choose a password
+              `!currentUser` because a claimed link has nothing left to set —
+              the account below is what that customer wants, and overlapping
+              panels are what the note above is about. */}
           {setupTokenParam && !currentUser && (
-            <motion.div
+            <div
               key="setup-view"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="max-w-md mx-auto bg-[#161616] p-8 rounded-2xl border border-white/10 shadow-2xl relative overflow-hidden"
+              className="panel-swap mx-auto w-full max-w-md px-4 py-10 sm:px-6 sm:py-16"
             >
-              <div className="absolute top-0 left-0 right-0 h-1.5 bg-brand-gold" />
-              
-              <div className="text-center space-y-3 mb-6">
-                <div className="inline-flex p-3 bg-brand-gold/15 rounded-full border border-brand-gold/25 mb-1 text-brand-gold">
-                  <Shield className="w-8 h-8" />
-                </div>
-                <h3 className="font-serif text-2xl text-white font-light">
-                  Certify Your Password
-                </h3>
-                <p className="font-sans text-stone-400 text-xs font-light max-w-xs mx-auto leading-relaxed">
-                  {setupBooking ? (
-                    <>
-                      Booking <span className="text-brand-sage font-mono font-bold">{setupBooking.id}</span> verified. Set a secure password to unlock continuous progress updates.
-                    </>
-                  ) : setupError ? (
-                    <>This setup link could not be opened.</>
-                  ) : (
-                    <>Verifying your setup link…</>
-                  )}
-                </p>
-              </div>
+              <h1 className="font-display text-[32px] font-medium leading-tight text-white">
+                Choose a password
+              </h1>
+              <p className="mt-2 text-[15px] leading-relaxed text-brand-text-muted">
+                {setupBooking ? (
+                  <>
+                    We found booking <span className="tnum font-medium text-white">{setupBooking.id}</span>.
+                    Set a password and you can follow it from here.
+                  </>
+                ) : setupError ? (
+                  <>This link could not be opened.</>
+                ) : (
+                  <>Checking your link…</>
+                )}
+              </p>
 
-              {setupBooking && (
-                <div className="bg-black/40 rounded-xl p-4 border border-white/5 mb-6 text-xs space-y-1.5 text-left">
-                  <span className="text-[9px] font-mono tracking-widest text-[#8E9299]/70 uppercase block mb-1">PATRON METRIC HIGHLIGHTS</span>
-                  <div className="flex justify-between"><span className="text-stone-400">Patron Name:</span><span className="text-white font-medium">{setupBooking.name}</span></div>
-                  <div className="flex justify-between"><span className="text-stone-400">Inbound Phone:</span><span className="text-white font-medium">{setupBooking.phone}</span></div>
-                  <div className="flex justify-between"><span className="text-stone-400">Email Address:</span><span className="text-white font-medium">{setupBooking.email}</span></div>
-                </div>
-              )}
+              <div className="mt-6 space-y-4">
+                {setupBooking && (
+                  <Panel className="px-5 py-4">
+                    <div className="space-y-2.5">
+                      <Row label="Name">{setupBooking.name}</Row>
+                      <Row label="Phone"><span className="tnum">{setupBooking.phone}</span></Row>
+                      <Row label="Email">{setupBooking.email}</Row>
+                    </div>
+                  </Panel>
+                )}
 
-              {setupError && (
-                <div className="bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl p-3.5 mb-5 text-xs flex items-start gap-2.5">
-                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>{setupError}</span>
-                </div>
-              )}
+                {setupError && <Banner tone="bad">{setupError}</Banner>}
+                {successMsg && <Banner tone="ok">{successMsg}</Banner>}
 
-              {successMsg && (
-                <div className="bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 rounded-xl p-3.5 mb-5 text-xs flex items-start gap-2.5">
-                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>{successMsg}</span>
-                </div>
-              )}
-
-              {/* Only once the server has said what this link opens. A dead or
-                  spent link gets the way out below and no password fields —
-                  there is nothing they could be submitted to. */}
-              <form
-                onSubmit={handleSetupPasswordSubmit}
-                className={`space-y-4 text-left ${setupBooking ? '' : 'hidden'}`}
-              >
-                <div className="space-y-1.5">
-                  <label className="font-sans text-[10px] uppercase font-bold tracking-widest text-[#8E9299]">Secure Account Password</label>
-                  <div className="relative">
-                    <Lock className="absolute left-3.5 top-3.5 w-4 h-4 text-stone-500" />
+                {/* Only once the server has said what this link opens. A dead
+                    or spent link gets the way out below and no password fields
+                    — there is nothing they could be submitted to. */}
+                <form
+                  onSubmit={handleSetupPasswordSubmit}
+                  className={`space-y-4 ${setupBooking ? '' : 'hidden'}`}
+                >
+                  <div className="space-y-1.5">
+                    <label htmlFor="setup-password" className={LABEL}>New password</label>
                     <input
+                      id="setup-password"
                       type="password"
+                      autoComplete="new-password"
                       required
                       value={setupPassword}
                       onChange={(e) => setSetupPassword(e.target.value)}
-                      placeholder="Min. 5 characters"
-                      className="w-full bg-black text-white pl-10 pr-4 py-3 border border-white/10 focus:border-brand-gold focus:outline-none text-xs rounded-xl transition-colors"
+                      placeholder="At least 5 characters"
+                      className={FIELD}
                     />
                   </div>
-                </div>
 
-                <div className="space-y-1.5">
-                  <label className="font-sans text-[10px] uppercase font-bold tracking-widest text-[#8E9299]">Confirm Account Password</label>
-                  <div className="relative">
-                    <Lock className="absolute left-3.5 top-3.5 w-4 h-4 text-stone-500" />
+                  <div className="space-y-1.5">
+                    <label htmlFor="setup-confirm" className={LABEL}>Type it again</label>
                     <input
+                      id="setup-confirm"
                       type="password"
+                      autoComplete="new-password"
                       required
                       value={setupConfirmPassword}
                       onChange={(e) => setSetupConfirmPassword(e.target.value)}
-                      placeholder="Repeat choosing password"
-                      className="w-full bg-black text-white pl-10 pr-4 py-3 border border-white/10 focus:border-brand-gold focus:outline-none text-xs rounded-xl transition-colors"
+                      placeholder="The same password"
+                      className={FIELD}
                     />
                   </div>
-                </div>
 
-                <button
-                  type="submit"
-                  className="w-full py-3.5 bg-brand-gold hover:bg-brand-gold-light text-black font-extrabold uppercase font-sans text-xs tracking-widest rounded-xl transition-all cursor-pointer flex items-center justify-center space-x-2 mt-2 shadow-[0_10px_20px_rgba(197,168,128,0.15)]"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                  <span>Create Account & Log In</span>
-                </button>
+                  <button type="submit" className={`${BTN} ${AS_PRIMARY} ${SIZE_MD} w-full`}>
+                    Create my account
+                    <ChevronRight aria-hidden="true" className="h-4 w-4" />
+                  </button>
+                </form>
 
-              </form>
-
-              <div className="text-center pt-3">
                 <button
                   type="button"
                   onClick={() => {
                     window.location.hash = '#portal';
                   }}
-                  className="font-sans text-[11px] text-stone-500 hover:text-white uppercase tracking-wider font-semibold cursor-pointer"
+                  className="w-full py-2 text-[14px] font-medium text-brand-text-muted transition-colors duration-200 hover:text-white"
                 >
-                  Go back to traditional Login
+                  I already have a password — sign in
                 </button>
               </div>
-            </motion.div>
+            </div>
           )}
 
-          {/* STATE 2: DIRECT MANUAL LOGIN MODE (If no currentUser is set) */}
+          {/* --------------------------------------------------- 2. sign in */}
           {!currentUser && !setupTokenParam && (
-            <motion.div
+            <div
               key="login-view"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="max-w-md mx-auto bg-[#161616] p-8 rounded-2xl border border-white/10 shadow-2xl relative overflow-hidden"
+              className="panel-swap mx-auto w-full max-w-md px-4 py-10 sm:px-6 sm:py-16"
             >
-              <div className="absolute top-0 left-0 right-0 h-1.5 bg-brand-sage" />
+              <h1 className="font-display text-[32px] font-medium leading-tight text-white">
+                Sign in
+              </h1>
+              <p className="mt-2 text-[15px] leading-relaxed text-brand-text-muted">
+                Follow an order, pay a bill and keep your collection addresses in one place.
+              </p>
 
-              <div className="text-center space-y-3 mb-6">
-                <div className="inline-flex p-3 bg-brand-sage/15 rounded-full border border-brand-sage/25 mb-1 text-brand-sage">
-                  <User className="w-8 h-8" />
+              <div className="mt-6 space-y-4">
+                {loginError && <Banner tone="bad">{loginError}</Banner>}
+                {successMsg && <Banner tone="ok">{successMsg}</Banner>}
+
+                <form onSubmit={handleLoginSubmit} className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label htmlFor="login-id" className={LABEL}>Email or phone number</label>
+                    <div className="relative">
+                      <Mail aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-brand-text-muted" />
+                      <input
+                        id="login-id"
+                        type="text"
+                        autoComplete="username"
+                        required
+                        value={inputIdentifier}
+                        onChange={(e) => setInputIdentifier(e.target.value)}
+                        placeholder="ama@example.com or 0244123456"
+                        className={`${FIELD} pl-10`}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <div className="flex items-baseline justify-between gap-3">
+                      <label htmlFor="login-password" className={LABEL}>Password</label>
+                      {/* `type="button"` matters: this sits inside the sign-in
+                          form, and a bare <button> would submit it. */}
+                      <button
+                        type="button"
+                        onClick={handleForgotPassword}
+                        disabled={resetSending}
+                        className="text-[13px] font-medium text-brand-gold transition-colors duration-200 hover:text-brand-gold-light disabled:text-brand-text-muted"
+                      >
+                        {resetSending ? 'Sending…' : 'Forgotten it?'}
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <Lock aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-brand-text-muted" />
+                      <input
+                        id="login-password"
+                        type="password"
+                        autoComplete="current-password"
+                        required
+                        value={inputPassword}
+                        onChange={(e) => setInputPassword(e.target.value)}
+                        placeholder="Your password"
+                        className={`${FIELD} pl-10`}
+                      />
+                    </div>
+                  </div>
+
+                  <button type="submit" className={`${BTN} ${AS_PRIMARY} ${SIZE_MD} w-full`}>
+                    Sign in
+                    <ChevronRight aria-hidden="true" className="h-4 w-4" />
+                  </button>
+                </form>
+
+                <div className="space-y-3 border-t border-white/10 pt-5">
+                  <p className="text-[14px] leading-relaxed text-brand-text-muted">
+                    Booking for the first time? You do not need an account. We email you a link to
+                    set a password once your first order is in.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={onOpenBooking}
+                      className={`${BTN} ${AS_QUIET} ${SIZE_SM}`}
+                    >
+                      Book a pickup
+                    </button>
+                    {/* The way back for a guest who lost that email. Forgotten
+                        it? above cannot help them: there is no account to reset
+                        until a setup link has been spent. */}
+                    <button
+                      type="button"
+                      onClick={handleResendSetupLink}
+                      disabled={setupSending}
+                      className={`${BTN} ${AS_QUIET} ${SIZE_SM}`}
+                    >
+                      {setupSending ? 'Sending…' : 'Send my setup link again'}
+                    </button>
+                  </div>
                 </div>
-                <h3 className="font-serif text-2xl text-white font-light">
-                  Patron Closet Terminal
-                </h3>
-                <p className="font-sans text-stone-400 text-xs font-light max-w-xs mx-auto leading-relaxed">
-                  Input your registered email or phone coordinates along with your secure password to audit active laundry care cycles.
-                </p>
               </div>
+            </div>
+          )}
 
-              {loginError && (
-                <div className="bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl p-3.5 mb-5 text-xs flex items-start gap-2.5 text-left">
-                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-red-400" />
-                  <span className="leading-relaxed">{loginError}</span>
+          {/* ------------------------------------------------ 3. the account */}
+          {currentUser && (
+            <div
+              key="portal-main-view"
+              className="panel-swap mx-auto w-full max-w-6xl px-4 py-8 sm:px-6 sm:py-10"
+            >
+              {/*
+                Above everything else, because the server refuses a booking from
+                an unconfirmed account — finding that out at checkout, after
+                filling in the whole form, is the version of this that generates
+                support calls.
+              */}
+              {currentUser.emailVerified === false && (
+                <div className="mb-6">
+                  <Banner tone="note">
+                    <span className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                      <span>
+                        {verifyNotice || (
+                          <>
+                            Confirm your email before you book again — we sent a link to{' '}
+                            <strong className="font-semibold text-white">{currentUser.email}</strong>.
+                          </>
+                        )}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void handleResendVerification()}
+                        disabled={verifySending}
+                        className={`${BTN} ${AS_QUIET} ${SIZE_SM}`}
+                      >
+                        {verifySending ? 'Sending…' : 'Send it again'}
+                      </button>
+                    </span>
+                  </Banner>
                 </div>
               )}
 
               {successMsg && (
-                <div className="bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 rounded-xl p-3.5 mb-5 text-xs flex items-start gap-2.5 text-left">
-                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span>{successMsg}</span>
+                <div className="mb-6">
+                  <Banner tone="ok">{successMsg}</Banner>
                 </div>
               )}
 
-              <form onSubmit={handleLoginSubmit} className="space-y-4 text-left">
-                <div className="space-y-1.5">
-                  <label className="font-sans text-[10px] uppercase font-bold tracking-widest text-[#8E9299]">Email Address or Phone Number</label>
-                  <div className="relative">
-                    <Mail className="absolute left-3.5 top-3.5 w-4 h-4 text-stone-500" />
-                    <input
-                      type="text"
-                      required
-                      value={inputIdentifier}
-                      onChange={(e) => setInputIdentifier(e.target.value)}
-                      placeholder="e.g. PCobbold@yahoo.com or 0244123456"
-                      className="w-full bg-black text-white pl-10 pr-4 py-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs rounded-xl transition-colors"
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <div className="flex justify-between items-center">
-                    <label className="font-sans text-[10px] uppercase font-bold tracking-widest text-[#8E9299]">Patron Password</label>
-                    {/* `type="button"` matters: this sits inside the sign-in
-                        form, and a bare <button> would submit it. */}
-                    <button
-                      type="button"
-                      onClick={handleForgotPassword}
-                      disabled={resetSending}
-                      className="text-[9px] font-sans text-brand-gold font-bold hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-wait"
-                    >
-                      {resetSending ? 'Sending…' : 'Reset Password?'}
-                    </button>
-                  </div>
-                  <div className="relative">
-                    <Lock className="absolute left-3.5 top-3.5 w-4 h-4 text-stone-500" />
-                    <input
-                      type="password"
-                      required
-                      value={inputPassword}
-                      onChange={(e) => setInputPassword(e.target.value)}
-                      placeholder="Password chosen during setup link"
-                      className="w-full bg-black text-white pl-10 pr-4 py-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs rounded-xl transition-colors"
-                    />
-                  </div>
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full py-3.5 bg-white text-black font-extrabold uppercase font-sans text-xs tracking-widest rounded-xl hover:bg-brand-sage hover:text-white transition-all cursor-pointer flex items-center justify-center space-x-2 mt-2"
-                >
-                  <span>Sign In to Terminal</span>
-                  <ChevronRight className="w-3.5 h-3.5" />
-                </button>
-
-                <div className="text-center pt-2 space-y-3">
-                  <p className="font-sans text-[10.5px] text-stone-500 leading-relaxed font-light">
-                    First-time scheduling? Access passwords are created via a secure email link you receive after placing a booking.
-                  </p>
-                  {/* The way back for a guest who lost that email. Reset
-                      Password above cannot help them: there is no account to
-                      reset until a setup link has been spent. */}
-                  <button
-                    type="button"
-                    onClick={handleResendSetupLink}
-                    disabled={setupSending}
-                    className="font-sans text-[10px] text-brand-sage font-bold uppercase tracking-wider hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-wait"
-                  >
-                    {setupSending ? 'Sending…' : 'Send my setup link again'}
-                  </button>
-                </div>
-              </form>
-            </motion.div>
-          )}
-
-          {/* STATE 3: FULL ACCESS tracking & orders portal (If logged in!) */}
-          {currentUser && (
-            <motion.div
-              key="portal-main-view"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="space-y-8 text-left"
-            >
-              {/*
-                UNCONFIRMED EMAIL NOTICE
-
-                Shown above everything else, because the server refuses a
-                booking from an unconfirmed account — finding that out at
-                checkout, after filling in the whole form, is the version of
-                this that generates support calls.
-              */}
-              {currentUser.emailVerified === false && (
-                <div className="bg-brand-gold/10 border border-brand-gold/30 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center gap-4">
-                  <AlertCircle className="w-5 h-5 text-brand-gold shrink-0" />
-                  <div className="flex-1">
-                    <h4 className="font-serif text-base text-white mb-1">Confirm your email</h4>
-                    <p className="text-xs font-sans text-stone-400 font-light leading-relaxed">
-                      {verifyNotice ||
-                        <>We sent a link to <strong className="text-stone-200">{currentUser.email}</strong>. Confirm it to start booking pickups.</>}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void handleResendVerification()}
-                    disabled={verifySending}
-                    className="px-4 py-2.5 rounded-xl text-xs font-sans tracking-wider uppercase font-bold bg-brand-gold/20 text-brand-gold border border-brand-gold/40 hover:bg-brand-gold/30 disabled:opacity-50 disabled:cursor-not-allowed transition-all whitespace-nowrap cursor-pointer"
-                  >
-                    {verifySending ? 'Sending…' : 'Resend link'}
-                  </button>
-                </div>
-              )}
-
-              {/* TOP BANNER: Welcome card */}
-              <div className="bg-[#161616] rounded-2xl border border-white/10 p-6 relative overflow-hidden shadow-xl">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                  <div className="flex items-center space-x-4">
-                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-brand-sage/30 to-black border border-brand-sage/40 flex items-center justify-center text-brand-sage text-2xl font-serif shadow-inner">
-                      {currentUser.name.charAt(0)}
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="font-mono text-[8px] tracking-[0.25em] text-[#8E9299] uppercase font-bold block">
-                          PATRON CLOSET TERMINAL
-                        </span>
-                        {/* Membership Badge */}
-                        <span className="px-2 py-0.5 rounded-full text-[9px] font-serif font-bold bg-brand-gold/15 text-brand-gold border border-brand-gold/30">
-                          ⭐️ {currentUser.points ?? 0} care points
-                        </span>
-                      </div>
-                      <h3 className="font-serif text-2xl text-white font-medium">
-                        Welcome back, {currentUser.name}
-                      </h3>
-                      <p className="text-xs font-sans text-stone-400 flex items-center gap-1.5 mt-1 font-light">
-                        <MapPin className="w-3.5 h-3.5 text-brand-sage shrink-0" />
-                        <span>
-                          {userBookings[0]?.address ? (
-                            <>Last collection: <strong className="text-stone-200">{[userBookings[0].address, userBookings[0].suburb].filter(Boolean).join(', ')}</strong></>
-                          ) : (
-                            <>No collections yet — your address is taken at booking.</>
-                          )}
-                        </span>
-                      </p>
-                    </div>
-                  </div>
-
-                </div>
-
-                {/* SIMPLE TAB NAVIGATION BAR */}
-                <div className="flex flex-wrap items-center justify-between gap-3 pt-6 mt-6 border-t border-white/10">
-                  <div className="flex items-center gap-2 overflow-x-auto">
-                    <button
-                      type="button"
-                      onClick={() => setActivePortalTab('dashboard')}
-                      className={`px-4 py-2.5 rounded-xl text-xs font-sans tracking-wider uppercase font-bold transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
-                        activePortalTab === 'dashboard'
-                          ? 'bg-brand-sage text-white border border-brand-sage shadow-md'
-                          : 'bg-black/40 text-stone-400 border border-white/5 hover:text-white hover:bg-black/70'
-                      }`}
-                    >
-                      <MapPin className="w-3.5 h-3.5" />
-                      <span>Dashboard & Live Map</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setActivePortalTab('orders')}
-                      className={`px-4 py-2.5 rounded-xl text-xs font-sans tracking-wider uppercase font-bold transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
-                        activePortalTab === 'orders'
-                          ? 'bg-brand-sage text-white border border-brand-sage shadow-md'
-                          : 'bg-black/40 text-stone-400 border border-white/5 hover:text-white hover:bg-black/70'
-                      }`}
-                    >
-                      <Receipt className="w-3.5 h-3.5" />
-                      <span>My Orders ({userBookings.length})</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setActivePortalTab('wallet')}
-                      className={`px-4 py-2.5 rounded-xl text-xs font-sans tracking-wider uppercase font-bold transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
-                        activePortalTab === 'wallet'
-                          ? 'bg-brand-gold text-black border border-brand-gold shadow-md'
-                          : 'bg-black/40 text-stone-400 border border-white/5 hover:text-white hover:bg-black/70'
-                      }`}
-                    >
-                      <Wallet className="w-3.5 h-3.5" />
-                      <span>Wallet & Loyalty (₵{walletBalance.toFixed(2)})</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setActivePortalTab('settings')}
-                      className={`px-4 py-2.5 rounded-xl text-xs font-sans tracking-wider uppercase font-bold transition-all flex items-center gap-2 whitespace-nowrap cursor-pointer ${
-                        activePortalTab === 'settings'
-                          ? 'bg-white text-black border border-white shadow-md'
-                          : 'bg-black/40 text-stone-400 border border-white/5 hover:text-white hover:bg-black/70'
-                      }`}
-                    >
-                      <Shield className="w-3.5 h-3.5" />
-                      <span>Account Settings</span>
-                    </button>
-                  </div>
-
-                  {/* Action buttons aligned on the exact same row as Account Settings */}
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      onClick={onOpenBooking}
-                      className="px-4 py-2.5 bg-brand-sage hover:bg-brand-sage-light text-white rounded-xl text-xs font-sans font-bold uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer shadow-md"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Book New Pickup</span>
-                    </button>
-                    <button
-                      onClick={handleSignOut}
-                      className="px-3.5 py-2.5 bg-black/40 hover:bg-red-500/10 text-stone-400 hover:text-red-400 rounded-xl text-xs font-mono tracking-wider uppercase font-bold border border-white/5 cursor-pointer flex items-center gap-1.5 transition-all"
-                      title="Sign Out"
-                    >
-                      <LogOut className="w-3.5 h-3.5" />
-                      <span>Sign Out</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* TAB 1: DASHBOARD & LIVE TRACKING MAP */}
-              {activePortalTab === 'dashboard' && (
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                  {/* Left Column: Quick Stats & Concierge */}
-                  <div className="lg:col-span-4 space-y-6">
-                    {/* Wallet Quick Box */}
-                    <div className="bg-[#161616] rounded-2xl border border-brand-gold/30 p-5 space-y-3 relative overflow-hidden">
-                      <div className="flex justify-between items-center">
-                        <span className="font-mono text-[9px] text-brand-gold uppercase tracking-widest font-bold">FRESHFOLD PATRON WALLET</span>
-                        <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded font-mono font-bold">✓ Active</span>
-                      </div>
-                      <div className="flex items-baseline justify-between">
-                        <span className="font-serif text-2xl font-bold text-white">₵{walletBalance.toFixed(2)} <span className="text-xs font-mono text-stone-400">GHS</span></span>
-                        <button
-                          type="button"
-                          onClick={() => setTopUpModalOpen(true)}
-                          className="px-3 py-1.5 bg-brand-gold text-black rounded-lg text-[10px] font-bold uppercase tracking-wider hover:bg-yellow-400 transition-all font-mono flex items-center gap-1 cursor-pointer"
-                        >
-                          <Plus className="w-3 h-3" /> Top Up
-                        </button>
-                      </div>
-                      <p className="text-[10.5px] text-stone-400 font-sans font-light leading-tight">
-                        Pre-funded wallet balance for 1-click order settlements across Kumasi suburbs.
-                      </p>
-                    </div>
-
-                    {/* Quick Action CTAs */}
-                    <div className="space-y-3">
-                      <button
-                        onClick={onOpenBooking}
-                        className="w-full py-3.5 bg-brand-sage hover:bg-brand-sage-light text-white rounded-xl text-xs font-sans tracking-widest font-bold uppercase transition-all flex items-center justify-center space-x-2 border border-white/5 shadow-lg cursor-pointer"
-                      >
-                        <Plus className="w-4 h-4" />
-                        <span>Schedule New Pickup</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => setConciergeOpen(true)}
-                        className="w-full py-3 bg-black/60 hover:bg-black/90 text-brand-gold border border-brand-gold/30 rounded-xl text-xs font-mono tracking-wider font-bold uppercase transition-all flex items-center justify-center space-x-2 cursor-pointer shadow-md"
-                      >
-                        <Sparkles className="w-4 h-4 text-brand-gold" />
-                        <span>Artisan Concierge Desk</span>
-                      </button>
-                    </div>
-
-                    {/* Care Points Card */}
-                    <div className="bg-[#161616] rounded-2xl border border-white/10 p-5 space-y-3">
-                      <div className="flex justify-between items-center">
-                        <span className="font-mono text-[9px] text-[#8E9299] uppercase tracking-widest font-bold">CARE POINTS PASS</span>
-                        <span className={`text-[10px] font-serif ${TIER_STYLES[tier.id].colorClass} font-bold`}>{tier.name}</span>
-                      </div>
-                      <div className="flex items-baseline justify-between">
-                        <span className={`font-serif text-xl font-bold ${TIER_STYLES[tier.id].colorClass}`}>
-                          {patronPoints.toLocaleString()} pts
-                        </span>
-                        {tier.discountRate > 0 && (
-                          <span className="text-[9px] font-mono text-stone-400">
-                            *{Math.round(tier.discountRate * 100)}% MEMBERSHIP DISCOUNT COEFF
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-[10px] text-stone-400 font-sans leading-relaxed">
-                        {tier.description}
-                      </p>
-                      {nextTier && (
-                        <div className="space-y-1.5 pt-1">
-                          <div className="h-1 rounded-full bg-white/10 overflow-hidden">
-                            <div
-                              className="h-full rounded-full bg-brand-gold transition-all"
-                              style={{ width: `${tierPercent}%` }}
-                            />
-                          </div>
-                          <p className="text-[9px] font-mono text-stone-400">
-                            {pointsToNext.toLocaleString()} points to {nextTier.name}
-                          </p>
-                        </div>
-                      )}
-                    </div>
-
-                    {/*
-                      The membership the customer pays for, which this portal
-                      had no notion of — the app read it off `account.plan`
-                      while the website showed only the points tier, so a paid
-                      subscription was invisible on one of the two surfaces.
-                    */}
-                    {activePlan && activePlanDefinition && (
-                      <div className="bg-[#161616] rounded-2xl border border-brand-sage/30 p-5 space-y-2">
-                        <div className="flex justify-between items-center">
-                          <span className="font-mono text-[9px] text-[#8E9299] uppercase tracking-widest font-bold">Subscription</span>
-                          <span className="text-[10px] font-serif text-brand-sage font-bold">
-                            {activePlan.cancelAtPeriodEnd ? 'Ends soon' : 'Active'}
-                          </span>
-                        </div>
-                        <p className="font-serif text-lg text-white font-bold">{activePlanDefinition.name}</p>
-                        <p className="text-[10px] text-stone-400 font-sans leading-relaxed">
-                          {Math.max(0, activePlanDefinition.includedPickups - (activePlan.pickupsUsed ?? 0))} of{' '}
-                          {activePlanDefinition.includedPickups} included pickups left ·{' '}
-                          {activePlan.cancelAtPeriodEnd ? 'ends' : 'renews'} on{' '}
-                          {new Date(activePlan.renewsOn).toLocaleDateString()}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Right Column: Live GPS Delivery Map & Active Shipment Tracking */}
-                  <div className="lg:col-span-8 space-y-6">
-                    <div className="bg-[#161616] rounded-2xl border border-brand-sage/30 p-6 overflow-hidden relative shadow-md space-y-6">
-                      {userBookings.length === 0 ? (
-                        <div className="text-center py-10 space-y-4">
-                          <div className="inline-flex p-4 bg-stone-900 border border-white/10 rounded-full text-[#8E9299]">
-                            <Clock className="w-10 h-10" />
-                          </div>
-                          <div className="space-y-1">
-                            <h4 className="font-serif text-lg text-white font-medium">No Active Laundry Shipments</h4>
-                            <p className="font-sans text-[#8E9299] text-xs max-w-sm mx-auto font-light leading-relaxed">
-                              You currently have no active orders in transit. Book a pickup to dispatch our Kumasi concierge runner!
-                            </p>
-                          </div>
-                          <button
-                            onClick={onOpenBooking}
-                            className="px-6 py-2.5 bg-brand-sage text-white font-bold text-[11px] font-sans uppercase tracking-widest rounded-xl hover:bg-brand-sage-light transition-all cursor-pointer"
-                          >
-                            Book First Pickup
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="space-y-6">
-                          {/* Active Selector Block */}
-                          <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 pb-4 border-b border-white/10">
-                            <div>
-                              <span className="font-mono text-[8px] tracking-[0.3em] text-[#8E9299] uppercase font-bold">Active GPS Monitor</span>
-                              <h4 className="font-serif text-xl text-white font-light">
-                                Live Shipment Telemetry
-                              </h4>
-                            </div>
-                            
-                            <div className="flex gap-1.5 overflow-x-auto">
-                              {userBookings.map((b) => (
-                                <button
-                                  key={b.id}
-                                  onClick={() => setActiveTrackingId(b.id)}
-                                  className={`px-3 py-1.5 text-[10px] font-mono rounded-xl border font-bold transition-all cursor-pointer ${
-                                    activeTrackingId === b.id 
-                                      ? 'bg-brand-sage border-brand-sage text-white' 
-                                      : 'bg-black/40 border-white/10 text-stone-400 hover:text-white'
-                                  }`}
-                                >
-                                  {b.id} ({b.status})
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-
-                          {/* Selected Booking Tracking Details */}
-                          {userBookings.filter(b => b.id === activeTrackingId).map((booking) => {
-                            const percent = getStatusPercent(booking.status);
-                            
-                            return (
-                              <div key={booking.id} className="space-y-6">
-                                {/* Top Info Strip */}
-                                <div className="grid grid-cols-1 md:grid-cols-12 gap-4 bg-black/40 p-4 rounded-xl border border-white/5 items-center">
-                                  <div className="md:col-span-8 space-y-1">
-                                    <div className="flex items-center space-x-2">
-                                      <span className="text-[11px] bg-brand-sage/20 text-brand-sage border border-brand-sage/20 font-mono px-2 py-0.5 rounded-lg font-black">{booking.id}</span>
-                                      <span className="text-stone-600 font-bold">•</span>
-                                      <span className="text-stone-300 font-sans font-bold text-xs uppercase tracking-wider">{describeItems(booking) || booking.serviceType}</span>
-                                    </div>
-                                    <p className="font-sans text-[11px] font-light text-[#8E9299] flex items-center gap-1.5">
-                                      <MapPin className="w-3.5 h-3.5 text-brand-sage shrink-0" />
-                                      <span>{booking.address}, {booking.suburb}</span>
-                                    </p>
-                                    <p className="font-sans text-[11px] font-light text-[#8E9299] flex items-center gap-1.5">
-                                      <Clock className="w-3.5 h-3.5 text-brand-sage shrink-0" />
-                                      {/* The return window when there is one. Orders
-                                          placed before customers could choose one
-                                          genuinely have no hour to show, so those
-                                          keep the date alone. */}
-                                      <span>
-                                        Back {booking.deliveryDate}
-                                        {booking.deliveryTime ? `, ${booking.deliveryTime}` : ''}
-                                      </span>
-                                    </p>
-                                  </div>
-
-                                  {/* Offered only while the rules would accept it —
-                                      a button whose every option the server refuses
-                                      is worse than no button. The verdict is core's
-                                      `canReschedule`, the same one the route runs. */}
-                                  {canReschedule({
-                                    status:
-                                      booking.status === 'Cancelled'
-                                        ? 'cancelled'
-                                        : (booking.rider?.jobStatus ?? 'unassigned'),
-                                    schedule: {
-                                      pickupDate: booking.pickupDate,
-                                      pickupTime: booking.pickupTime,
-                                      deliveryDate: booking.deliveryDate,
-                                      deliveryTime: booking.deliveryTime,
-                                      rescheduleCount: booking.rescheduleCount,
-                                    },
-                                  } as Job).ok && (
-                                    <div className="md:col-span-4 flex md:justify-end">
-                                      <button
-                                        type="button"
-                                        onClick={() => setReschedulingId(booking.id)}
-                                        className="inline-flex items-center gap-1.5 px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/10 text-stone-300 hover:text-white rounded-xl text-[10px] font-bold font-sans uppercase tracking-widest transition-all cursor-pointer"
-                                      >
-                                        <CalendarClock className="w-3.5 h-3.5" />
-                                        Move pickup
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* Progress bar line */}
-                                <div className="space-y-2">
-                                  <div className="flex justify-between items-center text-xs">
-                                    <span className="font-mono text-stone-400">STATUS: <strong className="text-white uppercase font-bold">{booking.status}</strong></span>
-                                    <span className="font-mono text-brand-sage font-bold">{percent}% COMPLETE</span>
-                                  </div>
-                                  <div className="w-full bg-black/60 h-2.5 rounded-full overflow-hidden p-0.5 border border-white/10 relative">
-                                    <div 
-                                      className="bg-brand-sage h-full rounded-full transition-all duration-700 ease-out shadow-[0_0_10px_rgba(90,90,64,0.6)]" 
-                                      style={{ width: `${percent}%` }}
-                                    />
-                                  </div>
-
-                                  {/*
-                                    Stage strip, off BOOKING_STAGE_SEQUENCE.
-                                    Hand-listing the stages here is how this
-                                    strip ended up one stage behind the rest of
-                                    the product; deriving it means a stage
-                                    added in core arrives here for free.
-                                  */}
-                                  <div
-                                    className="grid pt-1 text-center font-mono text-[8px] font-bold uppercase tracking-tighter gap-1"
-                                    style={{
-                                      gridTemplateColumns: `repeat(${BOOKING_STAGE_SEQUENCE.length}, minmax(0, 1fr))`,
-                                    }}
-                                  >
-                                    {BOOKING_STAGE_SEQUENCE.map((stageName, stageIndex) => (
-                                      <div
-                                        key={stageName}
-                                        className={`flex flex-col items-center ${
-                                          percent >= bookingProgressPercent(stageName)
-                                            ? 'text-brand-sage'
-                                            : 'text-stone-600'
-                                        }`}
-                                      >
-                                        <CheckCircle2 className="w-3.5 h-3.5 mb-0.5" />
-                                        <span>
-                                          {stageIndex + 1}. {stageName}
-                                        </span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-
-                                {/* Live Dispatch Map */}
-                                <LiveDispatchMap
-                                  clientSuburb={booking.suburb}
-                                  clientAddress={booking.address}
-                                  bookingStatus={booking.status}
-                                  bookingId={booking.id}
-                                  clientName={booking.name}
-                                  clientCoords={booking.pickupCoords}
-                                  rider={booking.rider}
-                                />
-
-                                {/* Collection hand-off — only while the bags are
-                                    still here. Once the courier has them the code
-                                    has done its job. */}
-                                {COLLECTION_PENDING.has(booking.rider?.jobStatus ?? 'unassigned') && (
-                                  <HandoffCode booking={booking} />
-                                )}
-
-                                {/* And the other end of the round trip: the code
-                                    the courier needs before the clean laundry
-                                    changes hands back. */}
-                                {DELIVERY_PENDING.has(booking.rider?.jobStatus ?? 'unassigned') && (
-                                  <HandoffCode booking={booking} leg="delivery" />
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* TAB 2: MY ORDERS & RECEIPTS */}
+              {/* ======================================== ORDERS ========== */}
               {activePortalTab === 'orders' && (
                 <div className="space-y-6">
-                  {/* Order Filter Tabs & Clear All Header */}
-                  <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 bg-[#161616] p-4 rounded-2xl border border-white/10">
-                    <div className="flex items-center space-x-2">
-                      <Receipt className="w-5 h-5 text-brand-sage" />
-                      <h4 className="font-serif text-lg text-white font-medium">Order History & Receipts</h4>
+                  <div className="flex flex-wrap items-end justify-between gap-4">
+                    <div>
+                      <h1 className="font-display text-[32px] font-medium leading-tight text-white">
+                        Welcome back, {firstName}
+                      </h1>
+                      <p className="mt-1 text-[15px] text-brand-text-muted">
+                        {liveOrders.length === 0
+                          ? 'Nothing with us right now.'
+                          : liveOrders.length === 1
+                            ? 'One order with us.'
+                            : `${liveOrders.length} orders with us.`}
+                      </p>
                     </div>
-
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="flex gap-1 bg-black/60 p-1 rounded-xl border border-white/10 text-[10px] font-mono">
-                        <button
-                          type="button"
-                          onClick={() => setOrderFilter('all')}
-                          className={`px-3 py-1.5 rounded-lg font-bold uppercase transition-all cursor-pointer ${
-                            orderFilter === 'all' ? 'bg-white text-black' : 'text-stone-400 hover:text-white'
-                          }`}
-                        >
-                          All ({userBookings.length})
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setOrderFilter('active')}
-                          className={`px-3 py-1.5 rounded-lg font-bold uppercase transition-all cursor-pointer ${
-                            orderFilter === 'active' ? 'bg-brand-sage text-white' : 'text-stone-400 hover:text-white'
-                          }`}
-                        >
-                          Active
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setOrderFilter('completed')}
-                          className={`px-3 py-1.5 rounded-lg font-bold uppercase transition-all cursor-pointer ${
-                            orderFilter === 'completed' ? 'bg-brand-gold text-black' : 'text-stone-400 hover:text-white'
-                          }`}
-                        >
-                          Delivered
-                        </button>
-                      </div>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={onOpenBooking}
+                      className={`${BTN} ${AS_PRIMARY} ${SIZE_MD} sm:hidden`}
+                    >
+                      <Plus aria-hidden="true" className="h-4 w-4" />
+                      Book a pickup
+                    </button>
                   </div>
 
-                  {/* Orders Cards List */}
-                  {(() => {
-                    const filtered = userBookings.filter(b => {
-                      if (orderFilter === 'active') return b.status !== 'Delivered';
-                      if (orderFilter === 'completed') return b.status === 'Delivered';
-                      return true;
-                    });
+                  {/* ------------------------------------------ tracking */}
+                  {!tracked ? (
+                    <Panel className="px-6 py-14 text-center">
+                      <Package aria-hidden="true" className="mx-auto h-8 w-8 text-brand-text-muted" />
+                      <h2 className="mt-4 text-[19px] font-medium text-white">Nothing to track yet</h2>
+                      <p className="mx-auto mt-2 max-w-sm text-[14px] leading-relaxed text-brand-text-muted">
+                        Book a pickup and a rider will collect it the same day. You can watch them
+                        on the map from here.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={onOpenBooking}
+                        className={`${BTN} ${AS_PRIMARY} ${SIZE_MD} mt-6`}
+                      >
+                        <Plus aria-hidden="true" className="h-4 w-4" />
+                        Book a pickup
+                      </button>
+                    </Panel>
+                  ) : (
+                    (() => {
+                      const percent = getStatusPercent(tracked.status);
+                      const jobStatus = tracked.rider?.jobStatus ?? 'unassigned';
+                      const movable = canReschedule({
+                        status: tracked.status === 'Cancelled' ? 'cancelled' : jobStatus,
+                        schedule: {
+                          pickupDate: tracked.pickupDate,
+                          pickupTime: tracked.pickupTime,
+                          deliveryDate: tracked.deliveryDate,
+                          deliveryTime: tracked.deliveryTime,
+                          rescheduleCount: tracked.rescheduleCount,
+                        },
+                      } as Job).ok;
 
-                    if (filtered.length === 0) {
                       return (
-                        <div className="bg-[#161616] rounded-2xl border border-white/10 p-10 text-center space-y-4">
-                          <div className="inline-flex p-3.5 bg-black/50 border border-white/10 rounded-full text-stone-500">
-                            <Receipt className="w-8 h-8 text-brand-sage" />
-                          </div>
-                          <div className="space-y-1">
-                            <h5 className="font-serif text-white text-base font-medium">No Orders Found</h5>
-                            <p className="font-sans text-xs text-stone-400 font-light max-w-sm mx-auto">
-                              {userBookings.length === 0
-                                ? "Your order history is clear. Schedule a pickup to send your laundry to our care team."
-                                : "No orders match the selected filter category."}
-                            </p>
-                          </div>
-                          <button
-                            onClick={onOpenBooking}
-                            className="px-5 py-2.5 bg-brand-sage hover:bg-brand-sage-light text-white font-bold text-xs font-sans uppercase tracking-widest rounded-xl transition-all cursor-pointer"
+                        <Panel>
+                          <PanelHead
+                            title="Where your laundry is"
+                            note={describeItems(tracked) || tracked.serviceType}
                           >
-                            + Schedule New Pickup
-                          </button>
-                        </div>
-                      );
-                    }
-
-                    return (
-                      <div className="space-y-4">
-                        {filtered.map((booking) => (
-                          <div key={booking.id} className="bg-[#161616] rounded-2xl border border-white/10 p-5 space-y-4 hover:border-brand-sage/40 transition-all">
-                            <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 pb-3 border-b border-white/5">
-                              <div className="flex items-center space-x-3">
-                                <span className="font-mono text-xs bg-brand-sage/20 text-brand-sage border border-brand-sage/30 px-2.5 py-1 rounded-lg font-extrabold">
-                                  {booking.id}
-                                </span>
-                                <span className="font-serif text-base text-white font-medium">
-                                  {describeItems(booking) || booking.serviceType}
-                                </span>
-                              </div>
-
-                              <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
-                                {booking.paymentStatus === 'Paid' ? (
-                                  <span className="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-lg font-mono font-bold flex items-center gap-1">
-                                    <CheckCircle2 className="w-3 h-3" /> PAID (₵{displayAmount(booking).toFixed(2)})
-                                  </span>
-                                ) : (
-                                  <span className="text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-1 rounded-lg font-mono font-bold flex items-center gap-1">
-                                    UNPAID / COD (₵{displayAmount(booking).toFixed(2)})
-                                  </span>
-                                )}
-
-                                <button
-                                  type="button"
-                                  onClick={() => setReceiptModalBooking(booking)}
-                                  className="px-3 py-1 bg-black/50 hover:bg-black text-stone-300 border border-white/10 rounded-lg text-[10px] font-mono uppercase font-bold flex items-center gap-1 transition-all cursor-pointer"
-                                >
-                                  <Receipt className="w-3 h-3 text-brand-gold" /> View Receipt
-                                </button>
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs text-stone-400">
-                              <div>
-                                <span className="text-[9px] font-mono text-stone-500 uppercase block">Pickup Slot</span>
-                                <span className="text-white font-medium">{booking.pickupDate} • {booking.pickupTime}</span>
-                              </div>
-                              <div>
-                                <span className="text-[9px] font-mono text-stone-500 uppercase block">Suburb Address</span>
-                                <span className="text-white font-medium">{booking.address}, {booking.suburb}</span>
-                              </div>
-                              <div>
-                                <span className="text-[9px] font-mono text-stone-500 uppercase block">Scent Option</span>
-                                <span className="text-brand-gold font-medium">{decodeFinish(booking.specialInstructions).scent ?? '—'}</span>
-                              </div>
-                              <div>
-                                <span className="text-[9px] font-mono text-stone-500 uppercase block">Current Status</span>
-                                <span className="text-brand-sage font-bold uppercase">{booking.status}</span>
-                              </div>
-                            </div>
-
-                            {booking.paymentStatus !== 'Paid' && (
-                              <div className="pt-2 border-t border-white/5 flex justify-end">
-                                <button
-                                  type="button"
-                                  onClick={() => setPayModalBooking(booking)}
-                                  className="px-4 py-2 bg-brand-gold text-black rounded-xl text-xs font-bold font-mono uppercase tracking-wider hover:bg-yellow-400 transition-all flex items-center gap-1.5 cursor-pointer shadow-md"
-                                >
-                                  <Smartphone className="w-3.5 h-3.5" /> Settle Online Now (₵{displayAmount(booking).toFixed(2)} GHS)
-                                </button>
+                            {/* Only when there is a choice to make. One order
+                                does not need a switcher for itself. */}
+                            {liveOrders.length > 1 && (
+                              <div className="flex flex-wrap gap-1.5">
+                                {liveOrders.map((candidate) => (
+                                  <button
+                                    key={candidate.id}
+                                    type="button"
+                                    onClick={() => setActiveTrackingId(candidate.id)}
+                                    aria-pressed={activeTrackingId === candidate.id}
+                                    className={`tnum rounded-md px-2.5 py-1.5 text-[13px] font-medium transition-colors duration-200 ${
+                                      activeTrackingId === candidate.id
+                                        ? 'bg-brand-sage text-white'
+                                        : 'border border-white/12 text-brand-text-muted hover:text-white'
+                                    }`}
+                                  >
+                                    {candidate.id}
+                                  </button>
+                                ))}
                               </div>
                             )}
+                          </PanelHead>
+
+                          <div className="space-y-6 px-5 py-5">
+                            {/* The two things a customer opened this page to
+                                read, at the top and at the size of a headline. */}
+                            <div className="flex flex-wrap items-start justify-between gap-x-8 gap-y-4">
+                              <div>
+                                <p className="text-[13px] text-brand-text-muted">Order</p>
+                                <p className="tnum mt-1 text-[21px] font-semibold leading-none text-white">
+                                  {tracked.id}
+                                </p>
+                              </div>
+                              <div className="sm:text-right">
+                                <p className="text-[13px] text-brand-text-muted">Back to you</p>
+                                <p className="mt-1 text-[21px] font-semibold leading-none text-white">
+                                  {whenLine(tracked.deliveryDate, tracked.deliveryTime) || 'We will confirm'}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div>
+                              <div className="flex items-baseline justify-between gap-4">
+                                <span className="text-[15px] font-medium text-white">{tracked.status}</span>
+                                <span className="tnum text-[14px] text-brand-text-muted">{percent}%</span>
+                              </div>
+                              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
+                                {/* Sage-light rather than sage. The fill has to
+                                    read against the track behind it, and #5A5A40
+                                    at this height on `white/10` does not. */}
+                                <div
+                                  className="h-full rounded-full bg-brand-sage-light transition-[width] duration-700 ease-out"
+                                  style={{ width: `${percent}%` }}
+                                />
+                              </div>
+
+                              {/*
+                                The stages, off BOOKING_STAGE_SEQUENCE.
+                                Hand-listing them here is how this strip ended up
+                                one stage behind the rest of the product;
+                                deriving it means a stage added in core arrives
+                                here for free.
+
+                                Two columns on a phone and four on a desktop:
+                                the old version was one grid of six at every
+                                width, which on a 360px screen gave each stage
+                                55px and an 8px type size to fit it in — and
+                                which, since the sequence is seven long, left
+                                the last stage standing on a row of its own.
+                              */}
+                              <ol className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3 lg:grid-cols-4">
+                                {BOOKING_STAGE_SEQUENCE.map((stageName, stageIndex) => {
+                                  const done = percent >= bookingProgressPercent(stageName);
+                                  return (
+                                    <li
+                                      key={stageName}
+                                      className={`flex items-start gap-2 text-[13px] leading-snug ${
+                                        done ? 'text-white' : 'text-brand-text-muted'
+                                      }`}
+                                    >
+                                      <span
+                                        aria-hidden="true"
+                                        className={`mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full ${
+                                          done ? 'bg-brand-sage-light text-brand-charcoal' : 'border border-white/20'
+                                        }`}
+                                      >
+                                        {done && <Check className="h-2.5 w-2.5" strokeWidth={3} />}
+                                      </span>
+                                      <span>
+                                        <span className="sr-only">
+                                          Stage {stageIndex + 1}, {done ? 'done' : 'not yet'}:{' '}
+                                        </span>
+                                        {stageName}
+                                      </span>
+                                    </li>
+                                  );
+                                })}
+                              </ol>
+                            </div>
+
+                            <dl className="grid gap-x-8 gap-y-4 border-t border-white/10 pt-5 sm:grid-cols-3">
+                              <div>
+                                <dt className="flex items-center gap-1.5 text-[13px] text-brand-text-muted">
+                                  <MapPin aria-hidden="true" className="h-3.5 w-3.5" />
+                                  Collecting from
+                                </dt>
+                                <dd className="mt-1 text-[14px] leading-snug text-white">
+                                  {[tracked.address, tracked.suburb].filter(Boolean).join(', ')}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt className="flex items-center gap-1.5 text-[13px] text-brand-text-muted">
+                                  <Clock aria-hidden="true" className="h-3.5 w-3.5" />
+                                  Pickup window
+                                </dt>
+                                <dd className="mt-1 text-[14px] leading-snug text-white">
+                                  {whenLine(tracked.pickupDate, tracked.pickupTime) || '—'}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt className="flex items-center gap-1.5 text-[13px] text-brand-text-muted">
+                                  <Receipt aria-hidden="true" className="h-3.5 w-3.5" />
+                                  {tracked.paymentStatus === 'Paid' ? 'Paid' : 'To pay'}
+                                </dt>
+                                <dd className="tnum mt-1 text-[14px] leading-snug text-white">
+                                  ₵{displayAmount(tracked).toFixed(2)}
+                                  <span className="ml-1.5 text-brand-text-muted">
+                                    {paymentLabel(tracked.paymentMethod)}
+                                  </span>
+                                </dd>
+                              </div>
+                            </dl>
+
+                            <div className="flex flex-wrap gap-2">
+                              {tracked.paymentStatus !== 'Paid' && (
+                                <button
+                                  type="button"
+                                  onClick={() => setPayModalBooking(tracked)}
+                                  className={`${BTN} ${AS_MONEY} ${SIZE_MD}`}
+                                >
+                                  Pay ₵{displayAmount(tracked).toFixed(2)}
+                                </button>
+                              )}
+                              {/* Offered only while the rules would accept it — a
+                                  button whose every option the server refuses is
+                                  worse than no button. The verdict is core's
+                                  `canReschedule`, the same one the route runs. */}
+                              {movable && (
+                                <button
+                                  type="button"
+                                  onClick={() => setReschedulingId(tracked.id)}
+                                  className={`${BTN} ${AS_QUIET} ${SIZE_MD}`}
+                                >
+                                  <CalendarClock aria-hidden="true" className="h-4 w-4" />
+                                  Move this pickup
+                                </button>
+                              )}
+                              {/* The message thread, put where the order is. It
+                                  used to be a button called "Artisan Concierge
+                                  Desk" in a sidebar two panels away from the
+                                  order it was about. */}
+                              <button
+                                type="button"
+                                onClick={() => setConciergeOpen(true)}
+                                className={`${BTN} ${AS_QUIET} ${SIZE_MD}`}
+                              >
+                                <MessageSquare aria-hidden="true" className="h-4 w-4" />
+                                Message the shop
+                                {thread.length > 0 && (
+                                  <span className="tnum text-brand-text-muted">{thread.length}</span>
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setReceiptModalBooking(tracked)}
+                                className={`${BTN} ${AS_QUIET} ${SIZE_MD}`}
+                              >
+                                Receipt
+                              </button>
+                            </div>
+
+                            {/* Collection hand-off — only while the bags are
+                                still here. Once the rider has them the code has
+                                done its job. */}
+                            {COLLECTION_PENDING.has(jobStatus) && <HandoffCode booking={tracked} />}
+
+                            {/* And the other end of the round trip: the code the
+                                rider needs before the clean laundry changes
+                                hands back. */}
+                            {DELIVERY_PENDING.has(jobStatus) && (
+                              <HandoffCode booking={tracked} leg="delivery" />
+                            )}
                           </div>
-                        ))}
-                      </div>
-                    );
-                  })()}
+
+                          {/* Full-bleed inside the panel. The map is the one
+                              thing here that is worth its own edge-to-edge
+                              block, and boxing it inside a second border was
+                              what made it read as one more card. */}
+                          <div className="border-t border-white/10">
+                            <LiveDispatchMap
+                              clientSuburb={tracked.suburb}
+                              clientAddress={tracked.address}
+                              bookingStatus={tracked.status}
+                              bookingId={tracked.id}
+                              clientName={tracked.name}
+                              clientCoords={tracked.pickupCoords}
+                              rider={tracked.rider}
+                            />
+                          </div>
+                        </Panel>
+                      );
+                    })()
+                  )}
+
+                  {/* --------------------------------------- every order */}
+                  {userBookings.length > 0 && (
+                    <Panel>
+                      <PanelHead title="All orders">
+                        <div
+                          className="flex gap-1 rounded-md border border-white/12 p-1"
+                          role="group"
+                          aria-label="Filter orders"
+                        >
+                          {([
+                            ['all', `All ${userBookings.length}`],
+                            ['active', 'In progress'],
+                            ['completed', 'Delivered'],
+                          ] as const).map(([id, label]) => (
+                            <button
+                              key={id}
+                              type="button"
+                              onClick={() => setOrderFilter(id)}
+                              aria-pressed={orderFilter === id}
+                              className={`rounded px-2.5 py-1.5 text-[13px] font-medium transition-colors duration-200 ${
+                                orderFilter === id
+                                  ? 'bg-white/10 text-white'
+                                  : 'text-brand-text-muted hover:text-white'
+                              }`}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      </PanelHead>
+
+                      {shownOrders.length === 0 ? (
+                        <p className="px-5 py-8 text-center text-[14px] text-brand-text-muted">
+                          No orders under that filter.
+                        </p>
+                      ) : (
+                        <ul className="divide-y divide-white/10">
+                          {shownOrders.map((booking) => {
+                            const finish = decodeFinish(booking.specialInstructions);
+                            return (
+                              <li
+                                key={booking.id}
+                                className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6"
+                              >
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+                                    <span className="tnum text-[15px] font-semibold text-white">
+                                      {booking.id}
+                                    </span>
+                                    <span className="text-[14px] text-white">
+                                      {describeItems(booking) || booking.serviceType}
+                                    </span>
+                                    <PaymentPill booking={booking} />
+                                  </div>
+                                  <p className="mt-1 text-[13px] leading-relaxed text-brand-text-muted">
+                                    {[
+                                      whenLine(booking.pickupDate, booking.pickupTime),
+                                      booking.suburb,
+                                      finish.scent,
+                                      booking.status,
+                                    ]
+                                      .filter(Boolean)
+                                      .join(' · ')}
+                                  </p>
+                                </div>
+
+                                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                                  <span className="tnum mr-1 text-[16px] font-semibold text-white">
+                                    ₵{displayAmount(booking).toFixed(2)}
+                                  </span>
+                                  {booking.status !== 'Delivered' && booking.id !== activeTrackingId && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setActiveTrackingId(booking.id)}
+                                      className={`${BTN} ${AS_QUIET} ${SIZE_SM}`}
+                                    >
+                                      Track
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => setReceiptModalBooking(booking)}
+                                    className={`${BTN} ${AS_QUIET} ${SIZE_SM}`}
+                                  >
+                                    Receipt
+                                  </button>
+                                  {booking.paymentStatus !== 'Paid' && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setPayModalBooking(booking)}
+                                      className={`${BTN} ${AS_MONEY} ${SIZE_SM}`}
+                                    >
+                                      Pay
+                                    </button>
+                                  )}
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </Panel>
+                  )}
                 </div>
               )}
 
-              {/* TAB 3: WALLET & LOYALTY REWARDS */}
+              {/* ======================================== WALLET ========== */}
               {activePortalTab === 'wallet' && (
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                  {/* Left Column: Wallet Management & Mobile Money */}
-                  <div className="lg:col-span-6 space-y-6">
-                    <div className="bg-[#161616] rounded-2xl border border-brand-gold/40 p-6 space-y-5 shadow-xl">
-                      <div className="flex justify-between items-center">
-                        <span className="font-mono text-[9px] text-brand-gold uppercase tracking-widest font-bold">FRESHFOLD PATRON DIGITAL WALLET</span>
-                        <span className="text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded font-mono font-bold">MoMo Ready</span>
-                      </div>
+                <div className="space-y-6">
+                  <div>
+                    <h1 className="font-display text-[32px] font-medium leading-tight text-white">
+                      Wallet
+                    </h1>
+                    <p className="mt-1 text-[15px] text-brand-text-muted">
+                      Money and points, both in one place.
+                    </p>
+                  </div>
 
-                      <div className="bg-gradient-to-br from-[#1F1D1B] to-black p-5 rounded-xl border border-brand-gold/20 space-y-2">
-                        <span className="text-[10px] font-mono text-stone-400 uppercase">Available Cedi Balance</span>
-                        <div className="flex items-baseline justify-between">
-                          <span className="font-serif text-3xl font-bold text-white">₵{walletBalance.toFixed(2)} <span className="text-sm font-mono text-brand-gold">GHS</span></span>
+                  {redeemedRewardMsg && <Banner tone="ok">{redeemedRewardMsg}</Banner>}
+
+                  <div className="grid gap-6 lg:grid-cols-2">
+                    {/* ------------------------------------ the balance */}
+                    <Panel className="flex flex-col">
+                      <PanelHead title="Balance" note="Pay for an order in one tap, with no checkout." />
+                      <div className="flex flex-1 flex-col justify-between gap-6 px-5 py-5">
+                        <p className="tnum text-[40px] font-semibold leading-none tracking-[-0.03em] text-white">
+                          ₵{walletBalance.toFixed(2)}
+                        </p>
+                        <div className="space-y-3">
                           <button
                             type="button"
                             onClick={() => setTopUpModalOpen(true)}
-                            className="px-4 py-2 bg-brand-gold text-black rounded-xl text-xs font-bold font-mono uppercase tracking-wider hover:bg-yellow-400 transition-all cursor-pointer shadow-lg flex items-center gap-1.5"
+                            className={`${BTN} ${AS_MONEY} ${SIZE_MD} w-full`}
                           >
-                            <Plus className="w-3.5 h-3.5" /> Top Up Wallet
+                            <Plus aria-hidden="true" className="h-4 w-4" />
+                            Top up
                           </button>
+                          {/* The three coloured boxes that were here — one
+                              yellow, one red, one blue — were three network
+                              brands painted in their own colours on a surface
+                              whose palette means something. It is a sentence. */}
+                          <p className="text-[13px] leading-relaxed text-brand-text-muted">
+                            Top up with MTN MoMo, Telecel Cash, AT Money or a card. Handled by
+                            Paystack.
+                          </p>
                         </div>
                       </div>
+                    </Panel>
 
-                      <div className="space-y-3 pt-2">
-                        <span className="font-mono text-[9.5px] text-stone-400 uppercase font-bold block">Supported Local Payment Options</span>
-                        <div className="grid grid-cols-3 gap-2 text-center text-[10px] font-mono font-bold">
-                          <div className="p-2.5 bg-black/50 border border-white/10 rounded-xl text-yellow-400">MTN MoMo</div>
-                          <div className="p-2.5 bg-black/50 border border-white/10 rounded-xl text-red-400">Telecel Cash</div>
-                          <div className="p-2.5 bg-black/50 border border-white/10 rounded-xl text-blue-400">AT Money / Card</div>
+                    {/* -------------------------------------- the points */}
+                    <Panel className="flex flex-col">
+                      <PanelHead
+                        title="Care points"
+                        note="A point for every cedi you spend. The tier is earned, not bought."
+                      />
+                      <div className="flex flex-1 flex-col justify-between gap-6 px-5 py-5">
+                        <div>
+                          <p className={`tnum text-[40px] font-semibold leading-none tracking-[-0.03em] ${TIER_INK[tier.id]}`}>
+                            {patronPoints.toLocaleString()}
+                            <span className="ml-2 text-[15px] font-medium tracking-normal text-brand-text-muted">
+                              points
+                            </span>
+                          </p>
+                          <p className="mt-2 text-[15px] text-white">
+                            <span className="font-semibold">{tier.name}</span>
+                            {tier.discountRate > 0 && (
+                              <span className="text-brand-text-muted">
+                                {' '}· {Math.round(tier.discountRate * 100)}% off everything
+                              </span>
+                            )}
+                          </p>
+                          <p className="mt-2 text-[14px] leading-relaxed text-brand-text-muted">
+                            {tier.description}
+                          </p>
                         </div>
-                      </div>
-                    </div>
-                  </div>
 
-                  {/* Right Column: Loyalty Points & Reward Store */}
-                  <div className="lg:col-span-6 space-y-6">
-                    <div className="bg-[#161616] rounded-2xl border border-white/10 p-6 space-y-5 shadow-xl">
-                      <div className="flex justify-between items-center">
-                        <span className="font-mono text-[9px] text-brand-sage uppercase tracking-widest font-bold">CARE POINTS REWARD STORE</span>
-                        <span className="text-xs font-serif font-bold text-brand-gold">{patronPoints.toLocaleString()} Care Points</span>
-                      </div>
-
-                      {redeemedRewardMsg && (
-                        <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs rounded-xl flex items-center gap-2">
-                          <CheckCircle2 className="w-4 h-4 shrink-0" />
-                          <span>{redeemedRewardMsg}</span>
-                        </div>
-                      )}
-
-                      {/*
-                        One list, from `@freshfold/core`, so the customer app's
-                        wallet screen offers exactly these rewards at exactly
-                        these prices. Each button posts to the server, which is
-                        what takes the points — these used to check the balance,
-                        say "Successfully redeemed" and deduct nothing at all.
-                      */}
-                      <div className="space-y-3">
-                        {LOYALTY_REWARDS.map((reward) => {
-                          const affordable = patronPoints >= reward.cost;
-                          const busy = redeemingReward === reward.id;
-
-                          return (
-                            <div
-                              key={reward.id}
-                              className="p-4 bg-black/40 rounded-xl border border-white/10 flex justify-between items-center gap-3"
-                            >
-                              <div>
-                                <h5 className="font-serif text-sm text-white font-bold">{reward.name}</h5>
-                                <p className="text-[10.5px] text-stone-400 font-light">
-                                  Redeem {reward.cost.toLocaleString()} Care Points — {reward.description}
-                                </p>
-                              </div>
-                              <button
-                                type="button"
-                                disabled={!affordable || busy}
-                                onClick={() => handleRedeem(reward.id)}
-                                className={`px-3 py-1.5 rounded-lg text-[10px] font-mono font-bold uppercase shrink-0 transition-colors ${
-                                  affordable && !busy
-                                    ? 'bg-brand-gold text-black hover:bg-yellow-400 cursor-pointer'
-                                    : 'bg-white/10 text-stone-500 cursor-not-allowed'
-                                }`}
-                              >
-                                {busy ? 'Redeeming…' : `Redeem ${reward.cost.toLocaleString()} pts`}
-                              </button>
+                        {nextTier && (
+                          <div>
+                            <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                              <div
+                                className="h-full rounded-full bg-brand-gold transition-[width] duration-700 ease-out"
+                                style={{ width: `${tierPercent}%` }}
+                              />
                             </div>
-                          );
-                        })}
+                            <p className="mt-2 text-[13px] text-brand-text-muted">
+                              <span className="tnum">{pointsToNext.toLocaleString()}</span> points to{' '}
+                              {nextTier.name}
+                            </p>
+                          </div>
+                        )}
                       </div>
-                    </div>
+                    </Panel>
                   </div>
+
+                  {/*
+                    The membership the customer pays for, which this portal had
+                    no notion of — the app read it off `account.plan` while the
+                    website showed only the points tier, so a paid subscription
+                    was invisible on one of the two surfaces.
+                  */}
+                  {activePlan && activePlanDefinition && (
+                    <Panel>
+                      <PanelHead title="Your plan" />
+                      <div className="space-y-2.5 px-5 py-5">
+                        <Row label="Plan" strong>{activePlanDefinition.name}</Row>
+                        <Row label="Pickups left">
+                          <span className="tnum">
+                            {Math.max(0, activePlanDefinition.includedPickups - (activePlan.pickupsUsed ?? 0))}
+                          </span>{' '}
+                          of <span className="tnum">{activePlanDefinition.includedPickups}</span>
+                        </Row>
+                        <Row label={activePlan.cancelAtPeriodEnd ? 'Ends' : 'Renews'}>
+                          {new Date(activePlan.renewsOn).toLocaleDateString()}
+                        </Row>
+                      </div>
+                    </Panel>
+                  )}
+
+                  {/* ------------------------------------------- rewards */}
+                  <Panel>
+                    <PanelHead title="Spend your points" />
+                    {/*
+                      One list, from `@freshfold/core`, so the customer app's
+                      wallet screen offers exactly these rewards at exactly these
+                      prices. Each button posts to the server, which is what
+                      takes the points — these used to check the balance, say
+                      "Successfully redeemed" and deduct nothing at all.
+                    */}
+                    <ul className="divide-y divide-white/10">
+                      {LOYALTY_REWARDS.map((reward) => {
+                        const affordable = patronPoints >= reward.cost;
+                        const busy = redeemingReward === reward.id;
+
+                        return (
+                          <li
+                            key={reward.id}
+                            className="flex flex-wrap items-center justify-between gap-3 px-5 py-4"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-[15px] font-medium text-white">{reward.name}</p>
+                              <p className="mt-0.5 text-[13px] leading-relaxed text-brand-text-muted">
+                                {reward.description}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              disabled={!affordable || busy}
+                              onClick={() => handleRedeem(reward.id)}
+                              className={`${BTN} ${AS_MONEY} ${SIZE_SM} shrink-0`}
+                            >
+                              {busy ? 'Redeeming…' : (
+                                <>
+                                  <span className="tnum">{reward.cost.toLocaleString()}</span> points
+                                </>
+                              )}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </Panel>
                 </div>
               )}
 
-              {/* TAB 4: ACCOUNT SETTINGS */}
-              {activePortalTab === 'settings' && (
-                <div className="max-w-2xl mx-auto space-y-5">
+              {/* ======================================= ACCOUNT ========== */}
+              {activePortalTab === 'account' && (
+                <div className="mx-auto max-w-2xl space-y-6">
+                  <div>
+                    <h1 className="font-display text-[32px] font-medium leading-tight text-white">
+                      Account
+                    </h1>
+                    <p className="mt-1 text-[15px] text-brand-text-muted">
+                      Signed in as {currentUser.email}.
+                    </p>
+                  </div>
 
-                  {/* ---------------------------------------------- details */}
-                  <div className="bg-[#161616] rounded-2xl border border-white/10 p-6 space-y-5 shadow-2xl">
-                    <div className="space-y-1 pb-4 border-b border-white/10">
-                      <span className="font-mono text-[9px] text-brand-sage uppercase tracking-widest block font-bold">PATRON ACCOUNT</span>
-                      <h4 className="font-serif text-xl text-white">Your Details</h4>
-                      <p className="text-[11px] text-stone-400 leading-relaxed pt-1">
-                        The name your courier asks for at the door, and the number they call from it.
-                      </p>
-                    </div>
+                  {/* --------------------------------------- your details */}
+                  <Panel>
+                    <PanelHead
+                      title="Your details"
+                      note="The name your rider asks for at the door, and the number they call from it."
+                    />
+                    <div className="space-y-4 px-5 py-5">
+                      {savedSettingsMsg && !profileDirty && <Banner tone="ok">{savedSettingsMsg}</Banner>}
+                      {profileError && <Banner tone="bad">{profileError}</Banner>}
 
-                    {savedSettingsMsg && !profileDirty && (
-                      <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs rounded-xl flex items-center gap-2">
-                        <CheckCircle2 className="w-4 h-4 shrink-0" />
-                        <span>{savedSettingsMsg}</span>
-                      </div>
-                    )}
-
-                    {profileError && (
-                      <div className="p-3 bg-red-500/10 border border-red-500/30 text-red-400 text-xs rounded-xl flex items-center gap-2">
-                        <AlertCircle className="w-4 h-4 shrink-0" />
-                        <span>{profileError}</span>
-                      </div>
-                    )}
-
-                    <div className="space-y-4">
                       <div className="space-y-1.5">
-                        <label htmlFor="patron-name" className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Name</label>
+                        <label htmlFor="patron-name" className={LABEL}>Name</label>
                         <input
                           id="patron-name"
                           type="text"
+                          autoComplete="name"
                           value={profileName}
                           onChange={(e) => setProfileName(e.target.value)}
                           placeholder="Ama Mensah"
-                          className="w-full bg-black text-white text-xs p-3 rounded-xl border border-white/10 font-sans focus:border-brand-sage focus:outline-none"
+                          className={FIELD}
                         />
                       </div>
 
                       <div className="space-y-1.5">
-                        <label htmlFor="patron-phone" className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Contact Phone</label>
+                        <label htmlFor="patron-phone" className={LABEL}>Phone</label>
                         <input
                           id="patron-phone"
                           type="tel"
                           inputMode="numeric"
+                          autoComplete="tel"
                           value={profilePhone}
                           /* Through `limitPhoneInput`, so the eleventh digit
                              simply never lands rather than being rejected under
                              a full box afterwards. */
                           onChange={(e) => setProfilePhone(limitPhoneInput(e.target.value))}
                           placeholder={`${PHONE_DIGITS} digits — e.g. 0550001234`}
-                          className="w-full bg-black text-white text-xs p-3 rounded-xl border border-white/10 font-mono focus:border-brand-sage focus:outline-none"
+                          className={`${FIELD} tnum`}
                         />
                       </div>
 
                       <div className="space-y-1.5">
-                        <label htmlFor="patron-email" className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Registered Email</label>
+                        <label htmlFor="patron-email" className={LABEL}>Email</label>
                         <input
                           id="patron-email"
                           type="text"
                           disabled
                           value={currentUser.email}
-                          className="w-full bg-black/50 text-stone-400 text-xs p-3 rounded-xl border border-white/5 font-mono cursor-not-allowed"
+                          className={FIELD}
                         />
-                        <p className="text-[10px] text-stone-500 pt-0.5">
-                          Your address is your sign-in. Contact the desk to change it.
+                        <p className="text-[13px] leading-relaxed text-brand-text-muted">
+                          Your email is your sign-in. Call the shop if you need to change it.
                         </p>
                       </div>
 
@@ -2122,143 +2080,136 @@ export default function ClientPortal({
                         type="button"
                         onClick={saveProfileDetails}
                         disabled={!profileDirty || profileSaving}
-                        className={`w-full py-3 rounded-xl text-xs font-bold font-sans uppercase tracking-widest transition-all shadow-lg mt-1 ${
-                          profileDirty && !profileSaving
-                            ? 'bg-brand-sage text-white hover:bg-brand-sage-light cursor-pointer'
-                            : 'bg-white/10 text-stone-500 cursor-not-allowed'
-                        }`}
+                        className={`${BTN} ${AS_PRIMARY} ${SIZE_MD}`}
                       >
-                        {profileSaving ? 'Saving…' : 'Save Details'}
+                        {profileSaving ? 'Saving…' : 'Save changes'}
                       </button>
                     </div>
-                  </div>
+                  </Panel>
 
-                  {/* --------------------------------------- address book */}
-                  <div className="bg-[#161616] rounded-2xl border border-white/10 p-6 space-y-5 shadow-2xl">
-                    <div className="flex items-start justify-between gap-3 pb-4 border-b border-white/10">
-                      <div className="space-y-1">
-                        <span className="font-mono text-[9px] text-brand-sage uppercase tracking-widest block font-bold">COLLECTION POINTS</span>
-                        <h4 className="font-serif text-xl text-white">Saved Addresses</h4>
-                        <p className="text-[11px] text-stone-400 leading-relaxed pt-1">
-                          Kept in step with the FreshFold app — an address added on your phone appears here.
-                        </p>
-                      </div>
+                  {/* -------------------------------------- address book */}
+                  <Panel>
+                    <PanelHead
+                      title="Collection addresses"
+                      note="Kept in step with the FreshFold app — an address added on your phone appears here."
+                    >
                       {savedAddresses.length < MAX_SAVED_ADDRESSES && !addressDraft && (
                         <button
                           type="button"
                           onClick={startNewAddress}
-                          className="px-3 py-2 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-xl text-[10px] font-bold font-mono uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+                          className={`${BTN} ${AS_QUIET} ${SIZE_SM}`}
                         >
-                          <Plus className="w-3.5 h-3.5" /> Add
+                          <Plus aria-hidden="true" className="h-4 w-4" />
+                          Add
                         </button>
                       )}
-                    </div>
+                    </PanelHead>
 
                     {addressError && (
-                      <div className="p-3 bg-red-500/10 border border-red-500/30 text-red-400 text-xs rounded-xl flex items-center gap-2">
-                        <AlertCircle className="w-4 h-4 shrink-0" />
-                        <span>{addressError}</span>
+                      <div className="px-5 pt-5">
+                        <Banner tone="bad">{addressError}</Banner>
                       </div>
                     )}
 
-                    {savedAddresses.length === 0 && !addressDraft && (
-                      <p className="text-xs text-stone-500 py-2">
-                        No saved addresses yet. Add one and it will be offered the next time you book.
+                    {savedAddresses.length === 0 && !addressDraft ? (
+                      <p className="px-5 py-6 text-[14px] leading-relaxed text-brand-text-muted">
+                        No addresses saved yet. Add one and it will be offered the next time you book.
                       </p>
-                    )}
-
-                    <div className="space-y-2.5">
-                      {savedAddresses.map((saved) => (
-                        <div
-                          key={saved.id}
-                          className="p-3.5 bg-black/40 rounded-xl border border-white/10 flex items-start justify-between gap-3"
-                        >
-                          <div className="space-y-1 min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-white text-xs font-bold">{saved.label}</span>
-                              {saved.isDefault && (
-                                <span className="px-1.5 py-0.5 bg-brand-sage/20 text-brand-sage rounded text-[8px] font-mono font-bold uppercase tracking-wider">
-                                  Default
-                                </span>
-                              )}
+                    ) : (
+                      <ul className="divide-y divide-white/10">
+                        {savedAddresses.map((saved) => (
+                          <li
+                            key={saved.id}
+                            className="flex items-start justify-between gap-4 px-5 py-4"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-[15px] font-medium text-white">{saved.label}</span>
+                                {saved.isDefault && (
+                                  <span className="rounded border border-white/15 px-1.5 py-0.5 text-[12px] font-medium text-brand-sage-light">
+                                    Default
+                                  </span>
+                                )}
+                              </div>
+                              <p className="mt-1 break-words text-[14px] leading-relaxed text-brand-text-muted">
+                                {saved.address}, {saved.suburb}
+                              </p>
                             </div>
-                            <p className="text-[11px] text-stone-400 leading-relaxed break-words">
-                              {saved.address}
-                            </p>
-                            <p className="text-[10px] text-stone-500 font-mono">{saved.suburb}</p>
-                          </div>
 
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            {!saved.isDefault && (
+                            <div className="flex shrink-0 items-center gap-1">
+                              {!saved.isDefault && (
+                                <button
+                                  type="button"
+                                  disabled={addressSaving}
+                                  /* `withAddress` clears the flag from everyone
+                                     else when the incoming entry claims it, so
+                                     this is the whole of "make default". */
+                                  onClick={() =>
+                                    commitAddresses(
+                                      withAddress(savedAddresses, { ...saved, isDefault: true })
+                                    )
+                                  }
+                                  aria-label={`Collect from ${saved.label} by default`}
+                                  className="grid h-9 w-9 place-items-center rounded-md text-brand-text-muted transition-colors duration-200 hover:bg-white/5 hover:text-brand-sage-light disabled:cursor-not-allowed"
+                                >
+                                  <Check aria-hidden="true" className="h-4 w-4" />
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 disabled={addressSaving}
-                                /* `withAddress` clears the flag from everyone
-                                   else when the incoming entry claims it, so
-                                   this is the whole of "make default". */
-                                onClick={() =>
-                                  commitAddresses(
-                                    withAddress(savedAddresses, { ...saved, isDefault: true })
-                                  )
-                                }
-                                title="Make this the default"
-                                className="p-2 bg-white/5 hover:bg-white/10 rounded-lg text-stone-400 hover:text-brand-sage transition-all cursor-pointer disabled:cursor-not-allowed"
+                                onClick={() => {
+                                  setAddressDraft(saved);
+                                  setAddressError('');
+                                }}
+                                aria-label={`Edit ${saved.label}`}
+                                className="grid h-9 w-9 place-items-center rounded-md text-brand-text-muted transition-colors duration-200 hover:bg-white/5 hover:text-white disabled:cursor-not-allowed"
                               >
-                                <CheckCircle className="w-3.5 h-3.5" />
+                                <Pencil aria-hidden="true" className="h-4 w-4" />
                               </button>
-                            )}
-                            <button
-                              type="button"
-                              disabled={addressSaving}
-                              onClick={() => {
-                                setAddressDraft(saved);
-                                setAddressError('');
-                              }}
-                              title="Edit"
-                              className="p-2 bg-white/5 hover:bg-white/10 rounded-lg text-stone-400 hover:text-white transition-all cursor-pointer disabled:cursor-not-allowed"
-                            >
-                              <MapPin className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              disabled={addressSaving}
-                              onClick={() => commitAddresses(withoutAddress(savedAddresses, saved.id))}
-                              title="Remove"
-                              className="p-2 bg-white/5 hover:bg-red-500/20 rounded-lg text-stone-400 hover:text-red-400 transition-all cursor-pointer disabled:cursor-not-allowed"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                              <button
+                                type="button"
+                                disabled={addressSaving}
+                                onClick={() => commitAddresses(withoutAddress(savedAddresses, saved.id))}
+                                aria-label={`Remove ${saved.label}`}
+                                className="grid h-9 w-9 place-items-center rounded-md text-brand-text-muted transition-colors duration-200 hover:bg-red-500/10 hover:text-red-300 disabled:cursor-not-allowed"
+                              >
+                                <Trash2 aria-hidden="true" className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
 
                     {savedAddresses.length >= MAX_SAVED_ADDRESSES && !addressDraft && (
-                      <p className="text-[11px] text-stone-500">{ADDRESS_LIMIT_MESSAGE}</p>
+                      <p className="border-t border-white/10 px-5 py-4 text-[13px] text-brand-text-muted">
+                        {ADDRESS_LIMIT_MESSAGE}
+                      </p>
                     )}
 
                     {addressDraft && (
-                      <div className="p-4 bg-black/40 rounded-xl border border-brand-sage/30 space-y-3.5">
-                        <span className="font-mono text-[9px] text-brand-sage uppercase tracking-widest block font-bold">
+                      <div className="space-y-4 border-t border-white/10 px-5 py-5">
+                        <h4 className="text-[15px] font-medium text-white">
                           {savedAddresses.some((saved) => saved.id === addressDraft.id)
-                            ? 'Edit Address'
-                            : 'New Address'}
-                        </span>
+                            ? 'Edit this address'
+                            : 'New address'}
+                        </h4>
 
                         <div className="space-y-1.5">
-                          <label htmlFor="addr-label" className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Label</label>
+                          <label htmlFor="addr-label" className={LABEL}>Name it</label>
                           <input
                             id="addr-label"
                             type="text"
                             value={addressDraft.label}
                             onChange={(e) => setAddressDraft({ ...addressDraft, label: e.target.value })}
                             placeholder="Home, hostel, office…"
-                            className="w-full bg-black text-white text-xs p-3 rounded-xl border border-white/10 font-sans focus:border-brand-sage focus:outline-none"
+                            className={FIELD}
                           />
                         </div>
 
                         <div className="space-y-1.5">
-                          <label htmlFor="addr-line" className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Address or Landmark</label>
+                          <label htmlFor="addr-line" className={LABEL}>Address or landmark</label>
                           {/* The same lookup the booking form uses. Choosing a
                               suggestion also carries the coordinate across, so an
                               address saved here arrives with a pin rather than
@@ -2275,19 +2226,19 @@ export default function ClientPortal({
                               })
                             }
                             placeholder="Evandy Hostel, Block B, Room 304"
-                            className="w-full bg-black text-white text-xs p-3 rounded-xl border border-white/10 font-sans focus:border-brand-sage focus:outline-none"
+                            className={FIELD}
                           />
                         </div>
 
                         <div className="space-y-1.5">
-                          <label htmlFor="addr-suburb" className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Suburb</label>
+                          <label htmlFor="addr-suburb" className={LABEL}>Suburb</label>
                           <select
                             id="addr-suburb"
                             value={addressDraft.suburb}
                             onChange={(e) => setAddressDraft({ ...addressDraft, suburb: e.target.value })}
-                            className="w-full bg-black text-white text-xs p-3 rounded-xl border border-white/10 font-sans focus:border-brand-sage focus:outline-none"
+                            className={FIELD}
                           >
-                            {/* From core, so this list and the one the courier's
+                            {/* From core, so this list and the one the rider's
                                 distances are computed against cannot drift. */}
                             {SERVICE_SUBURBS.map((suburb) => (
                               <option key={suburb} value={suburb}>{suburb}</option>
@@ -2295,28 +2246,24 @@ export default function ClientPortal({
                           </select>
                         </div>
 
-                        <label className="flex items-center gap-2.5 cursor-pointer pt-0.5">
+                        <label className="flex cursor-pointer items-center gap-2.5 text-[14px] text-white">
                           <input
                             type="checkbox"
                             checked={addressDraft.isDefault}
                             onChange={(e) => setAddressDraft({ ...addressDraft, isDefault: e.target.checked })}
-                            className="accent-brand-sage w-3.5 h-3.5 cursor-pointer"
+                            className="h-4 w-4 cursor-pointer accent-brand-sage"
                           />
-                          <span className="text-[11px] text-stone-300">Collect from here by default</span>
+                          Collect from here by default
                         </label>
 
-                        <div className="flex gap-2.5 pt-1">
+                        <div className="flex flex-wrap gap-2">
                           <button
                             type="button"
                             onClick={saveAddressDraft}
                             disabled={addressSaving}
-                            className={`flex-1 py-2.5 rounded-xl text-[10px] font-bold font-sans uppercase tracking-widest transition-all ${
-                              addressSaving
-                                ? 'bg-white/10 text-stone-500 cursor-not-allowed'
-                                : 'bg-brand-sage text-white hover:bg-brand-sage-light cursor-pointer'
-                            }`}
+                            className={`${BTN} ${AS_PRIMARY} ${SIZE_MD}`}
                           >
-                            {addressSaving ? 'Saving…' : 'Save Address'}
+                            {addressSaving ? 'Saving…' : 'Save address'}
                           </button>
                           <button
                             type="button"
@@ -2325,580 +2272,492 @@ export default function ClientPortal({
                               setAddressError('');
                             }}
                             disabled={addressSaving}
-                            className="px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-stone-300 rounded-xl text-[10px] font-bold font-sans uppercase tracking-widest transition-all cursor-pointer disabled:cursor-not-allowed"
+                            className={`${BTN} ${AS_QUIET} ${SIZE_MD}`}
                           >
                             Cancel
                           </button>
                         </div>
                       </div>
                     )}
-                  </div>
+                  </Panel>
+
+                  {/* The way out, at the bottom of the page it belongs to as
+                      well as in the bar — this is where somebody goes looking
+                      for it. */}
+                  <Panel className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
+                    <p className="text-[14px] text-brand-text-muted">
+                      Signed in on this device.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleSignOut}
+                      className={`${BTN} ${AS_QUIET} ${SIZE_SM}`}
+                    >
+                      <LogOut aria-hidden="true" className="h-4 w-4" />
+                      Sign out
+                    </button>
+                  </Panel>
                 </div>
               )}
 
-            </motion.div>
+            </div>
           )}
+      </main>
 
-        </AnimatePresence>
+      {/* ------------------------------------------------------------ move */}
+      {/* Mounted beside the payment sheet rather than in the tracking card, so
+          it overlays the portal instead of scrolling inside a panel. Like the
+          sheets below it, it is a plain conditional render — see the note on
+          `.overlay-in` in index.css for what `AnimatePresence` was doing to
+          these. */}
+        {reschedulingId &&
+          (() => {
+            const booking = userBookings.find((candidate) => candidate.id === reschedulingId);
+            if (!booking) return null;
 
-        {/* The reschedule drawer. Mounted beside the payment one rather than in
-            the tracking card, so it overlays the portal instead of scrolling
-            inside a panel. */}
-        <AnimatePresence>
-          {reschedulingId &&
-            (() => {
-              const booking = userBookings.find((candidate) => candidate.id === reschedulingId);
-              if (!booking) return null;
+            return (
+              <RescheduleDrawer
+                key={booking.id}
+                booking={booking}
+                onClose={() => setReschedulingId(null)}
+              />
+            );
+          })()}
 
-              return (
-                <RescheduleDrawer
-                  key={booking.id}
-                  booking={booking}
-                  onClose={() => setReschedulingId(null)}
-                />
-              );
-            })()}
-        </AnimatePresence>
-
-        {/* Modal 1: Pay Online Now Drawer for a specific booking */}
-        <AnimatePresence>
-          {payModalBooking && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[110] bg-black/80 backdrop-blur-md flex items-center justify-center p-4"
-            >
-              <div className="bg-[#181818] border border-brand-sage/40 rounded-2xl max-w-md w-full p-6 text-left space-y-5 shadow-2xl relative">
+      {/* ------------------------------------------------------------- pay */}
+        {payModalBooking && (
+          <Modal
+            title={`Pay for ${payModalBooking.id}`}
+            note={`₵${displayAmount(payModalBooking).toFixed(2)} due`}
+            onClose={() => setPayModalBooking(null)}
+          >
+            <div className="space-y-5">
+              <div className="grid gap-2 sm:grid-cols-2">
                 <button
                   type="button"
-                  onClick={() => setPayModalBooking(null)}
-                  className="absolute top-4 right-4 text-stone-400 hover:text-white"
+                  onClick={() => setPayMethod('Paystack')}
+                  aria-pressed={payMethod === 'Paystack'}
+                  className={`flex items-center justify-between gap-3 rounded-md border px-4 py-3 text-left transition-colors duration-200 ${
+                    payMethod === 'Paystack'
+                      ? 'border-brand-gold bg-brand-gold/10'
+                      : 'border-white/12 hover:border-white/25'
+                  }`}
                 >
-                  <X className="w-5 h-5" />
+                  <span className="flex items-center gap-2 text-[14px] font-medium text-white">
+                    <PaystackMark className="h-4 w-4 shrink-0" />
+                    Card or mobile money
+                  </span>
                 </button>
 
-                <div className="space-y-1">
-                  <span className="font-mono text-[9px] text-brand-sage uppercase tracking-widest block font-bold">
-                    ONLINE PAYMENT SETTLEMENT
+                <button
+                  type="button"
+                  onClick={() => setPayMethod('Wallet')}
+                  aria-pressed={payMethod === 'Wallet'}
+                  className={`flex items-center justify-between gap-3 rounded-md border px-4 py-3 text-left transition-colors duration-200 ${
+                    payMethod === 'Wallet'
+                      ? 'border-brand-gold bg-brand-gold/10'
+                      : 'border-white/12 hover:border-white/25'
+                  }`}
+                >
+                  <span className="flex items-center gap-2 text-[14px] font-medium text-white">
+                    <Wallet aria-hidden="true" className="h-4 w-4 shrink-0" />
+                    FreshFold wallet
                   </span>
-                  <h3 className="font-serif text-xl text-white">
-                    Settle Order {payModalBooking.id}
-                  </h3>
-                  <p className="text-stone-400 text-xs">
-                    Amount Due: <strong className="text-brand-sage font-mono text-sm font-bold">₵{displayAmount(payModalBooking).toFixed(2)} GHS</strong>
+                  <span className="tnum text-[13px] text-brand-text-muted">
+                    ₵{walletBalance.toFixed(2)}
+                  </span>
+                </button>
+              </div>
+
+              {/* A refused payment — a short balance, a gateway that could not
+                  be reached — says so here rather than nowhere. */}
+              {paystackError && <Banner tone="bad">{paystackError}</Banner>}
+
+              {payMethod === 'Paystack' && (
+                <div className="space-y-3">
+                  <p className="text-[14px] leading-relaxed text-brand-text-muted">
+                    MTN MoMo, Telecel Cash, AT Money, Visa and Mastercard. Paystack takes the
+                    payment; we never see your card.
                   </p>
-                </div>
-
-                {/* Payment Option Selector */}
-                <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => setPayMethod('Paystack')}
-                    className={`p-3 rounded-xl border text-xs font-bold transition-all cursor-pointer flex items-center justify-between ${
-                      payMethod === 'Paystack'
-                        ? 'bg-emerald-500/20 border-emerald-500 text-emerald-400 font-extrabold shadow-lg'
-                        : 'bg-black/50 border-white/10 text-stone-400 hover:text-white'
-                    }`}
+                    onClick={handlePortalPaystackInit}
+                    disabled={paystackLoading}
+                    className={`${BTN} ${AS_MONEY} ${SIZE_MD} w-full`}
                   >
-                    <span>Paystack (MoMo & Cards)</span>
-                    <span className="text-[9px] bg-emerald-500/20 text-emerald-400 px-1.5 py-0.5 rounded font-mono uppercase font-bold">Online</span>
+                    <Lock aria-hidden="true" className="h-4 w-4" />
+                    {paystackLoading
+                      ? 'Opening Paystack…'
+                      : `Pay ₵${displayAmount(payModalBooking).toFixed(2)}`}
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => setPayMethod('Wallet')}
-                    className={`p-3 rounded-xl border text-xs font-bold transition-all cursor-pointer flex items-center justify-between ${
-                      payMethod === 'Wallet'
-                        ? 'bg-brand-gold/20 border-brand-gold text-brand-gold font-extrabold shadow-lg'
-                        : 'bg-black/50 border-white/10 text-stone-400 hover:text-white'
-                    }`}
-                  >
-                    <span>Patron Wallet</span>
-                    <span className="text-[9px] font-mono text-brand-gold">₵{walletBalance.toFixed(2)}</span>
-                  </button>
+                  {paystackAuthUrl && (
+                    <div className="space-y-3 border-t border-white/10 pt-4">
+                      <a
+                        href={paystackAuthUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 text-[14px] font-medium text-brand-gold underline transition-colors duration-200 hover:text-brand-gold-light"
+                      >
+                        Reopen the Paystack window
+                      </a>
+                      {/*
+                        One button, because there is one way to settle this. A
+                        "Mark Paid" sat beside this one and skipped the gateway
+                        entirely — a customer could clear their own bill by
+                        clicking it.
+                      */}
+                      <button
+                        type="button"
+                        onClick={handlePortalPaystackVerify}
+                        disabled={paystackLoading || paying}
+                        className={`${BTN} ${AS_QUIET} ${SIZE_MD} w-full`}
+                      >
+                        {paystackLoading || paying ? 'Checking with Paystack…' : "I've paid — check"}
+                      </button>
+                      <p className="text-[13px] leading-relaxed text-brand-text-muted">
+                        Finish in the Paystack window first. We confirm it with Paystack before
+                        the order is marked paid.
+                      </p>
+                    </div>
+                  )}
                 </div>
+              )}
 
-                {/* Paystack Payment Panel */}
-                {payMethod === 'Paystack' && (
-                  <div className="space-y-3 bg-black/60 p-4 rounded-xl border border-emerald-500/30">
-                    <div className="flex justify-between items-center">
-                      <span className="text-xs font-bold text-emerald-400 font-mono">
-                        Paystack Gateway
-                      </span>
-                      <span className="text-[9px] bg-emerald-500/15 text-emerald-400 px-2 py-0.5 rounded font-mono font-bold">
-                        MTN • Telecel • AT • Cards
-                      </span>
-                    </div>
-
-                    {paystackError && (
-                      <p className="text-xs text-red-400 font-mono">⚠️ {paystackError}</p>
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={handlePortalPaystackInit}
-                      disabled={paystackLoading}
-                      className="w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-500 text-white rounded-xl text-xs font-bold font-mono uppercase tracking-wider hover:from-emerald-500 hover:to-teal-400 transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-lg"
-                    >
-                      <Lock className="w-3.5 h-3.5" />
-                      {paystackLoading ? 'Connecting...' : `Pay ₵${displayAmount(payModalBooking).toFixed(2)} GHS via Paystack`}
-                    </button>
-
-                    {paystackAuthUrl && (
-                      <div className="pt-2 border-t border-white/10 space-y-2">
-                        <a
-                          href={paystackAuthUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="block text-xs font-mono font-bold text-emerald-400 underline"
-                        >
-                          Open Paystack Checkout Window ↗
-                        </a>
-                        {/*
-                          One button, because there is one way to settle this.
-                          A "Mark Paid" sat beside this one and skipped the
-                          gateway entirely — a customer could clear their own
-                          bill by clicking it.
-                        */}
-                        <button
-                          type="button"
-                          onClick={handlePortalPaystackVerify}
-                          disabled={paystackLoading || paying}
-                          className="w-full py-2 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-lg text-xs font-mono font-bold hover:bg-emerald-500/30 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {paystackLoading || paying ? 'Checking with Paystack…' : "I've Paid — Confirm"}
-                        </button>
-                        <p className="text-[10px] text-stone-500 font-mono leading-relaxed">
-                          Finish the transaction in the Paystack window first. We
-                          confirm it with Paystack before marking the order paid.
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Wallet Payment Panel */}
-                {payMethod === 'Wallet' && (
-                  <div className="space-y-3 bg-black/50 p-4 rounded-xl border border-brand-gold/30">
-                    <div className="flex justify-between text-xs">
-                      <span className="text-stone-300">Wallet Balance:</span>
-                      <span className="font-mono text-brand-gold font-bold">₵{walletBalance.toFixed(2)} GHS</span>
-                    </div>
-
-                    {/* A refused debit — a short balance, a server that could not
-                        be reached — says so here rather than nowhere. */}
-                    {paystackError && (
-                      <p className="text-xs text-red-400 font-mono">⚠️ {paystackError}</p>
-                    )}
-
-                    {walletBalance < displayAmount(payModalBooking) ? (
-                      <div className="space-y-2">
-                        <p className="text-[11px] text-red-400 font-mono">
-                          Insufficient wallet balance. Top up your wallet securely via Paystack.
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPayModalBooking(null);
-                            setTopUpModalOpen(true);
-                          }}
-                          className="w-full py-2 bg-brand-gold/20 text-brand-gold border border-brand-gold/40 rounded-xl text-xs font-bold font-mono hover:bg-brand-gold/30 transition-all cursor-pointer"
-                        >
-                          Top Up Wallet via Paystack
-                        </button>
-                      </div>
-                    ) : (
+              {payMethod === 'Wallet' && (
+                <div className="space-y-3">
+                  {walletBalance < displayAmount(payModalBooking) ? (
+                    <>
+                      <p className="text-[14px] leading-relaxed text-brand-text-muted">
+                        Your balance is ₵{walletBalance.toFixed(2)} and this order is ₵
+                        {displayAmount(payModalBooking).toFixed(2)}. Top up first, or pay by card
+                        or mobile money.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPayModalBooking(null);
+                          setTopUpModalOpen(true);
+                        }}
+                        className={`${BTN} ${AS_MONEY} ${SIZE_MD} w-full`}
+                      >
+                        <Plus aria-hidden="true" className="h-4 w-4" />
+                        Top up the wallet
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-[14px] leading-relaxed text-brand-text-muted">
+                        ₵{(walletBalance - displayAmount(payModalBooking)).toFixed(2)} left afterwards.
+                      </p>
                       <button
                         type="button"
                         disabled={paying}
                         onClick={() => settleBooking(payModalBooking.id, 'Wallet')}
-                        className="w-full py-2.5 bg-brand-gold text-black rounded-xl text-xs font-bold font-mono uppercase tracking-wider hover:bg-yellow-400 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                        className={`${BTN} ${AS_MONEY} ${SIZE_MD} w-full`}
                       >
                         {paying
                           ? 'Taking payment…'
-                          : `Deduct ₵${displayAmount(payModalBooking).toFixed(2)} GHS from Wallet`}
+                          : `Pay ₵${displayAmount(payModalBooking).toFixed(2)} from the wallet`}
                       </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Modal 2: Wallet Top Up Modal via Paystack */}
-        <AnimatePresence>
-          {topUpModalOpen && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[110] bg-black/80 backdrop-blur-md flex items-center justify-center p-4"
-            >
-              <div className="bg-[#181818] border border-brand-gold/40 rounded-2xl max-w-md w-full p-6 text-left space-y-5 shadow-2xl relative">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTopUpModalOpen(false);
-                    setTopUpPaystackAuthUrl('');
-                    setTopUpPaystackError('');
-                  }}
-                  className="absolute top-4 right-4 text-stone-400 hover:text-white"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-
-                <div className="space-y-1">
-                  <span className="font-mono text-[9px] text-brand-gold uppercase tracking-widest block font-bold">
-                    FRESHFOLD PATRON WALLET
-                  </span>
-                  <h3 className="font-serif text-xl text-white">
-                    Top Up Wallet Balance
-                  </h3>
-                  <p className="text-stone-400 text-xs">
-                    Current Balance: <strong className="text-brand-gold font-mono text-sm font-bold">₵{walletBalance.toFixed(2)} GHS</strong>
-                  </p>
+                    </>
+                  )}
                 </div>
+              )}
+            </div>
+          </Modal>
+        )}
 
-                <div className="space-y-2">
-                  <label className="block text-[10px] font-mono text-stone-400 uppercase font-bold">Select Amount (GHS)</label>
-                  <div className="grid grid-cols-4 gap-2">
-                    {['50', '100', '200', '500'].map(amt => (
-                      <button
-                        key={amt}
-                        type="button"
-                        onClick={() => setTopUpAmount(amt)}
-                        className={`py-2 rounded-xl border text-xs font-mono font-bold transition-all cursor-pointer ${
-                          topUpAmount === amt
-                            ? 'bg-brand-gold text-black border-brand-gold'
-                            : 'bg-black/50 border-white/10 text-stone-400 hover:text-white'
-                        }`}
-                      >
-                        ₵{amt}
-                      </button>
-                    ))}
-                  </div>
-                  <input
-                    type="number"
-                    value={topUpAmount}
-                    onChange={(e) => setTopUpAmount(e.target.value)}
-                    placeholder="Custom amount"
-                    className="w-full bg-black text-brand-gold text-xs p-3 rounded-xl border border-white/10 font-mono focus:border-brand-gold focus:outline-none"
-                  />
-                </div>
-
-                <div className="bg-emerald-500/10 border border-emerald-500/30 p-3.5 rounded-xl space-y-2">
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs font-bold text-emerald-400 font-mono flex items-center gap-1.5">
-                      <Lock className="w-3.5 h-3.5" /> Paystack Online Gateway
-                    </span>
-                    <span className="text-[9px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded font-mono font-bold">
-                      Ghana MoMo & Cards
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-stone-300">
-                    Top-ups are safely processed using Paystack. Supports MTN MoMo, Telecel Cash, AT Money, Visa, & Mastercard.
-                  </p>
-                </div>
-
-                {topUpPaystackError && (
-                  <div className="p-3 bg-red-500/15 border border-red-500/30 rounded-xl text-red-400 text-xs font-mono">
-                    ⚠️ {topUpPaystackError}
-                  </div>
-                )}
-
-                <button
-                  type="button"
-                  onClick={handleWalletPaystackInit}
-                  disabled={topUpPaystackLoading}
-                  className="w-full py-3.5 bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white rounded-xl text-xs font-bold font-mono uppercase tracking-wider transition-all cursor-pointer shadow-lg flex items-center justify-center gap-2"
-                >
-                  <Lock className="w-4 h-4" />
-                  <span>{topUpPaystackLoading ? 'Connecting to Paystack...' : `Top Up ₵${topUpAmount || '0'}.00 GHS via Paystack`}</span>
-                </button>
-
-                {topUpPaystackAuthUrl && (
-                  <div className="p-3 bg-black/80 rounded-xl border border-white/10 space-y-2 text-left">
-                    <p className="text-[11px] text-stone-300 font-mono">
-                      Paystack payment window initialized:
-                    </p>
-                    <a
-                      href={topUpPaystackAuthUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-block text-xs font-bold text-emerald-400 underline font-mono break-all"
+      {/* ---------------------------------------------------------- top up */}
+        {topUpModalOpen && (
+          <Modal
+            title="Top up your wallet"
+            note={`₵${walletBalance.toFixed(2)} on it now`}
+            onClose={() => {
+              setTopUpModalOpen(false);
+              setTopUpPaystackAuthUrl('');
+              setTopUpPaystackError('');
+            }}
+          >
+            <div className="space-y-5">
+              <fieldset className="space-y-2">
+                <legend className={LABEL}>How much?</legend>
+                <div className="grid grid-cols-4 gap-2">
+                  {['50', '100', '200', '500'].map((amount) => (
+                    <button
+                      key={amount}
+                      type="button"
+                      onClick={() => setTopUpAmount(amount)}
+                      aria-pressed={topUpAmount === amount}
+                      className={`tnum rounded-md border py-2.5 text-[14px] font-medium transition-colors duration-200 ${
+                        topUpAmount === amount
+                          ? 'border-brand-gold bg-brand-gold/10 text-white'
+                          : 'border-white/12 text-brand-text-muted hover:border-white/25 hover:text-white'
+                      }`}
                     >
-                      Open Paystack Top Up Checkout ↗
-                    </a>
-                    <div className="pt-2 flex gap-2">
-                      <button
-                        type="button"
-                        onClick={handleWalletPaystackVerify}
-                        disabled={topUpPaystackLoading}
-                        className="flex-1 py-2.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 rounded-xl text-xs font-mono font-bold hover:bg-emerald-500/30 transition-all cursor-pointer"
-                      >
-                        {topUpPaystackLoading ? 'Checking...' : 'Verify Wallet Top-Up'}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Concierge Desk Drawer Modal */}
-        <AnimatePresence>
-          {conciergeOpen && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[120] bg-black/85 backdrop-blur-md flex items-center justify-center p-4 text-left"
-            >
-              <div className="bg-[#181818] border border-brand-gold/40 rounded-2xl max-w-md w-full p-6 text-left space-y-4 shadow-2xl relative flex flex-col max-h-[85vh]">
-                <button
-                  type="button"
-                  onClick={() => { setConciergeOpen(false); setConciergeSuccess(''); }}
-                  className="absolute top-4 right-4 text-stone-400 hover:text-white"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-
-                <div className="space-y-1 shrink-0">
-                  <span className="font-mono text-[9px] text-brand-gold uppercase tracking-widest block font-bold">
-                    FRESHFOLD PATRON CONCIERGE DESK
-                  </span>
-                  <h3 className="font-serif text-xl text-white">
-                    Direct Artisan Assistance
-                  </h3>
-                  <p className="text-stone-400 text-xs leading-relaxed">
-                    {threadOrderId
-                      ? <>Live thread with your courier and the dispatch desk for order <strong className="text-brand-gold font-mono">{threadOrderId}</strong>. Replies appear here as they are sent.</>
-                      : <>Schedule a pickup to open a live thread with your courier. In the meantime, the desk is reachable on the hotline below.</>}
-                  </p>
+                      ₵{amount}
+                    </button>
+                  ))}
                 </div>
+                <input
+                  type="number"
+                  min="1"
+                  inputMode="numeric"
+                  value={topUpAmount}
+                  onChange={(e) => setTopUpAmount(e.target.value)}
+                  aria-label="Another amount in cedis"
+                  placeholder="Another amount"
+                  className={`${FIELD} tnum`}
+                />
+              </fieldset>
 
-                {conciergeSuccess && (
-                  <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 p-3 rounded-xl text-xs flex items-center gap-2 shrink-0">
-                    <CheckCircle2 className="w-4 h-4 shrink-0" />
-                    <span>{conciergeSuccess}</span>
-                  </div>
-                )}
+              <p className="text-[14px] leading-relaxed text-brand-text-muted">
+                MTN MoMo, Telecel Cash, AT Money, Visa and Mastercard. Paystack takes the payment;
+                we never see your card.
+              </p>
 
-                {threadOrderId && (
-                  <div className="flex-1 min-h-[140px] overflow-y-auto bg-black/50 border border-white/10 rounded-xl p-3 space-y-2.5">
-                    {thread.length === 0 ? (
-                      <p className="text-stone-500 text-[11px] text-center py-8 font-sans">
-                        No messages yet. Send the first note to your courier.
-                      </p>
-                    ) : (
-                      thread.map((message) => {
-                        const mine = message.sender === 'customer';
-                        return (
-                          <div
-                            key={message.id}
-                            className={`flex flex-col max-w-[85%] ${mine ? 'ml-auto items-end' : 'items-start'}`}
-                          >
-                            <span className="font-mono text-[8px] uppercase tracking-widest text-stone-500 mb-1">
-                              {mine ? 'You' : SENDER_LABELS[message.sender]} · {message.timestamp}
-                            </span>
-                            <div
-                              className={`px-3 py-2 rounded-xl text-[11px] leading-relaxed font-sans ${
-                                mine
-                                  ? 'bg-brand-gold text-black rounded-tr-sm'
-                                  : 'bg-[#232323] text-stone-200 border border-white/10 rounded-tl-sm'
-                              }`}
-                            >
-                              {message.text}
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                )}
+              {topUpPaystackError && <Banner tone="bad">{topUpPaystackError}</Banner>}
 
-                <div className="space-y-2 shrink-0">
-                  <label className="block text-[10px] font-mono text-stone-400 uppercase font-bold">
-                    Garment / Dispatch Instruction Note
-                  </label>
-                  <textarea
-                    rows={3}
-                    value={conciergeText}
-                    onChange={(e) => setConciergeText(e.target.value)}
-                    placeholder="e.g., Special care for hand-woven Kente trim, or the buzzer number for the hostel gate..."
-                    className="w-full bg-black text-white text-xs p-3 rounded-xl border border-white/10 font-sans focus:border-brand-gold focus:outline-none"
-                  />
-                </div>
+              <button
+                type="button"
+                onClick={handleWalletPaystackInit}
+                disabled={topUpPaystackLoading}
+                className={`${BTN} ${AS_MONEY} ${SIZE_MD} w-full`}
+              >
+                <Lock aria-hidden="true" className="h-4 w-4" />
+                {topUpPaystackLoading ? 'Opening Paystack…' : `Add ₵${topUpAmount || '0'}`}
+              </button>
 
-                <div className="space-y-2 pt-1 shrink-0">
+              {topUpPaystackAuthUrl && (
+                <div className="space-y-3 border-t border-white/10 pt-4">
+                  <a
+                    href={topUpPaystackAuthUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 text-[14px] font-medium text-brand-gold underline transition-colors duration-200 hover:text-brand-gold-light"
+                  >
+                    Reopen the Paystack window
+                  </a>
                   <button
                     type="button"
-                    disabled={!threadOrderId}
-                    onClick={() => {
-                      const text = conciergeText.trim();
-                      if (!text || !threadOrderId) return;
-
-                      store.sendMessage(text, threadOrderId);
-                      setConciergeText('');
-                      setConciergeSuccess(
-                        store.isOnline()
-                          ? 'Sent to your courier and the dispatch desk.'
-                          : 'Saved — it will send as soon as you are back online.'
-                      );
-                      setTimeout(() => setConciergeSuccess(''), 4000);
-                    }}
-                    className="w-full py-3 bg-brand-gold text-black rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-yellow-400 font-mono transition-all flex items-center justify-center gap-1.5 shadow-lg disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-brand-gold"
+                    onClick={handleWalletPaystackVerify}
+                    disabled={topUpPaystackLoading}
+                    className={`${BTN} ${AS_QUIET} ${SIZE_MD} w-full`}
                   >
-                    <Send className="w-3.5 h-3.5" /> {threadOrderId ? 'Send to Courier & Desk' : 'No Active Order'}
+                    {topUpPaystackLoading ? 'Checking with Paystack…' : "I've paid — check"}
                   </button>
-
-                  {/* WhatsApp HQ shortcut hidden for now — hotline only. */}
-                  <div className="pt-1 text-[10px] font-mono">
-                    <a
-                      href="tel:+233200957165"
-                      className="p-2.5 bg-brand-sage/10 hover:bg-brand-sage/20 text-brand-sage border border-brand-sage/30 rounded-xl text-center font-bold block"
-                    >
-                      📞 Direct Hotline
-                    </a>
-                  </div>
                 </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+              )}
+            </div>
+          </Modal>
+        )}
 
-        {/* Modal: Itemized Receipt Display */}
-        <AnimatePresence>
-          {receiptModalBooking && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-md flex items-center justify-center p-4"
-            >
-              <div className="bg-[#181818] border border-brand-gold/40 rounded-2xl max-w-md w-full p-6 text-left space-y-5 shadow-2xl relative">
+      {/* -------------------------------------------------------- messages */}
+        {conciergeOpen && (
+          <Modal
+            title="Message the shop"
+            note={
+              threadOrderId ? (
+                <>
+                  Your rider and the desk, on order{' '}
+                  <span className="tnum font-medium text-white">{threadOrderId}</span>.
+                </>
+              ) : (
+                <>Book a pickup to open a thread. The shop is on the phone below in the meantime.</>
+              )
+            }
+            onClose={() => {
+              setConciergeOpen(false);
+              setConciergeSuccess('');
+            }}
+            wide
+          >
+            <div className="flex h-full flex-col gap-4">
+              {conciergeSuccess && <Banner tone="ok">{conciergeSuccess}</Banner>}
+
+              {threadOrderId && (
+                <div className="min-h-[160px] flex-1 space-y-3 overflow-y-auto rounded-md border border-white/10 bg-black/30 p-3">
+                  {thread.length === 0 ? (
+                    <p className="py-10 text-center text-[14px] text-brand-text-muted">
+                      No messages yet. Send the first one.
+                    </p>
+                  ) : (
+                    thread.map((message) => {
+                      const mine = message.sender === 'customer';
+                      return (
+                        <div
+                          key={message.id}
+                          className={`flex max-w-[85%] flex-col ${mine ? 'ml-auto items-end' : 'items-start'}`}
+                        >
+                          <span className="mb-1 text-[13px] text-brand-text-muted">
+                            {mine ? 'You' : SENDER_LABELS[message.sender]} · {message.timestamp}
+                          </span>
+                          <div
+                            className={`rounded-md px-3 py-2 text-[14px] leading-relaxed ${
+                              mine
+                                ? 'bg-brand-sage text-white'
+                                : 'border border-white/10 bg-brand-card-light text-white'
+                            }`}
+                          >
+                            {message.text}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <label htmlFor="concierge-note" className={LABEL}>Your message</label>
+                <textarea
+                  id="concierge-note"
+                  rows={3}
+                  value={conciergeText}
+                  onChange={(e) => setConciergeText(e.target.value)}
+                  placeholder="The gate code, a stain to watch for, a change of plan…"
+                  className={FIELD}
+                />
+              </div>
+
+              <div className="space-y-2">
                 <button
                   type="button"
-                  onClick={() => setReceiptModalBooking(null)}
-                  className="absolute top-4 right-4 text-stone-400 hover:text-white"
+                  disabled={!threadOrderId || !conciergeText.trim()}
+                  onClick={() => {
+                    const text = conciergeText.trim();
+                    if (!text || !threadOrderId) return;
+
+                    store.sendMessage(text, threadOrderId);
+                    setConciergeText('');
+                    setConciergeSuccess(
+                      store.isOnline()
+                        ? 'Sent to your rider and the desk.'
+                        : 'Saved — it will send as soon as you are back online.'
+                    );
+                    setTimeout(() => setConciergeSuccess(''), 4000);
+                  }}
+                  className={`${BTN} ${AS_PRIMARY} ${SIZE_MD} w-full`}
                 >
-                  <X className="w-5 h-5" />
+                  <Send aria-hidden="true" className="h-4 w-4" />
+                  {threadOrderId ? 'Send' : 'No order to send about'}
                 </button>
 
-                <div className="text-center space-y-1 pb-3 border-b border-white/10">
-                  <span className="font-mono text-[9px] text-brand-gold uppercase tracking-widest block font-bold">FRESHFOLD BESPOKE TEXTILE CARE</span>
-                  <h3 className="font-serif text-xl text-white">Itemized Receipt</h3>
-                  <p className="text-[10px] font-mono text-stone-400">Order Ref: {receiptModalBooking.id} • Kumasi, Ghana</p>
-                </div>
+                <a
+                  href="tel:+233200957165"
+                  className={`${BTN} ${AS_QUIET} ${SIZE_MD} w-full`}
+                >
+                  Call the shop
+                </a>
+              </div>
+            </div>
+          </Modal>
+        )}
 
-                {/*
-                  Itemised from the booking itself. This block used to print a
-                  "Base Care Package" of the total minus ten and an "Express
-                  Dispatch Fee" of exactly ₵10.00 on every order — a split that
-                  described no booking and no fee this business charges. The
-                  lines below are the ones the quote was actually built from.
-                */}
-                {(() => {
-                  const finish = decodeFinish(receiptModalBooking.specialInstructions);
-                  // See the note on the desk's copy of this: without the
-                  // lines, a three-load order itemises as one and the arithmetic
-                  // on the receipt stops adding up.
-                  const lines = priceBreakdown({
-                    serviceType: receiptModalBooking.serviceType,
-                    scent: finish.scent,
-                    starch: finish.starch,
-                    addonIds: receiptModalBooking.specialtyAddons,
-                    items: receiptModalBooking.items,
-                    quantity: receiptModalBooking.quantity,
-                  });
-                  const total = displayAmount(receiptModalBooking);
-                  // Charged below list price: an included pickup, the member
-                  // rate or a loyalty tier took its cut. Shown as its own line
-                  // rather than folded silently into the base.
-                  const reduction = Math.max(0, lines.gross - total);
+      {/* --------------------------------------------------------- receipt */}
+        {receiptModalBooking && (
+          <Modal
+            title="Receipt"
+            note={
+              <>
+                Order <span className="tnum font-medium text-white">{receiptModalBooking.id}</span>{' '}
+                · FreshFold, Kumasi
+              </>
+            }
+            onClose={() => setReceiptModalBooking(null)}
+          >
+            {/*
+              Itemised from the booking itself. This block used to print a "Base
+              Care Package" of the total minus ten and an "Express Dispatch Fee"
+              of exactly ₵10.00 on every order — a split that described no
+              booking and no fee this business charges. The lines below are the
+              ones the quote was actually built from.
+            */}
+            {(() => {
+              const finish = decodeFinish(receiptModalBooking.specialInstructions);
+              // See the note on the desk's copy of this: without the lines, a
+              // three-load order itemises as one and the arithmetic on the
+              // receipt stops adding up.
+              const lines = priceBreakdown({
+                serviceType: receiptModalBooking.serviceType,
+                scent: finish.scent,
+                starch: finish.starch,
+                addonIds: receiptModalBooking.specialtyAddons,
+                items: receiptModalBooking.items,
+                quantity: receiptModalBooking.quantity,
+              });
+              const total = displayAmount(receiptModalBooking);
+              // Charged below list price: an included pickup, the member rate
+              // or a loyalty tier took its cut. Shown as its own line rather
+              // than folded silently into the base.
+              const reduction = Math.max(0, lines.gross - total);
 
-                  return (
-                <div className="space-y-3 font-sans text-xs">
-                  <div className="flex justify-between text-stone-300">
-                    <span>Service Tier:</span>
-                    <strong className="text-white">
+              return (
+                <div className="space-y-5">
+                  <div className="space-y-2.5">
+                    <Row label="Service">
                       {describeItems(receiptModalBooking) || receiptModalBooking.serviceType}
-                    </strong>
+                    </Row>
+                    <Row label="Collected from">
+                      {receiptModalBooking.address}, {receiptModalBooking.suburb}
+                    </Row>
+                    <Row label="Picked up">
+                      {whenLine(receiptModalBooking.pickupDate, receiptModalBooking.pickupTime) || '—'}
+                    </Row>
+                    {finish.scent && <Row label="Scent">{finish.scent}</Row>}
+                    {!!receiptModalBooking.specialtyAddons?.length && (
+                      <Row label="Extras">{receiptModalBooking.specialtyAddons.join(', ')}</Row>
+                    )}
                   </div>
-                  <div className="flex justify-between text-stone-300">
-                    <span>Pickup Suburb:</span>
-                    <span className="text-stone-200">{receiptModalBooking.suburb} ({receiptModalBooking.address})</span>
-                  </div>
-                  {finish.scent && (
-                    <div className="flex justify-between text-stone-300">
-                      <span>Aroma/Fragrance Choice:</span>
-                      <span className="text-brand-gold font-medium">{finish.scent}</span>
-                    </div>
-                  )}
-                  {!!receiptModalBooking.specialtyAddons?.length && (
-                    <div className="flex justify-between text-stone-300 gap-4">
-                      <span>Specialty Finishes:</span>
-                      <span className="text-stone-200 text-right">{receiptModalBooking.specialtyAddons.join(', ')}</span>
-                    </div>
-                  )}
 
-                  <div className="pt-3 border-t border-white/10 space-y-2 font-mono text-xs">
-                    <div className="flex justify-between text-stone-400">
-                      <span>Base Care Package:</span>
-                      <span>₵{lines.base.toFixed(2)} GHS</span>
-                    </div>
+                  <div className="space-y-2.5 border-t border-white/10 pt-4">
+                    <Row label="Wash"><span className="tnum">₵{lines.base.toFixed(2)}</span></Row>
                     {lines.finishes > 0 && (
-                      <div className="flex justify-between text-stone-400">
-                        <span>Scent &amp; Starch Finish:</span>
-                        <span>₵{lines.finishes.toFixed(2)} GHS</span>
-                      </div>
+                      <Row label="Scent and starch">
+                        <span className="tnum">₵{lines.finishes.toFixed(2)}</span>
+                      </Row>
                     )}
                     {lines.addons > 0 && (
-                      <div className="flex justify-between text-stone-400">
-                        <span>Specialty Add-ons:</span>
-                        <span>₵{lines.addons.toFixed(2)} GHS</span>
-                      </div>
+                      <Row label="Extras">
+                        <span className="tnum">₵{lines.addons.toFixed(2)}</span>
+                      </Row>
                     )}
                     {reduction > 0 && (
-                      <div className="flex justify-between text-emerald-400">
-                        <span>Membership &amp; Loyalty:</span>
-                        <span>−₵{reduction.toFixed(2)} GHS</span>
+                      <div className="flex items-baseline justify-between gap-6 text-[14px]">
+                        <span className="text-brand-text-muted">Plan and points</span>
+                        <span className="tnum text-emerald-300">−₵{reduction.toFixed(2)}</span>
                       </div>
                     )}
-                    <div className="flex justify-between text-white font-bold pt-2 border-t border-white/10 text-sm">
-                      <span>Total Paid/Due:</span>
-                      <span className="text-brand-gold">₵{total.toFixed(2)} GHS</span>
-                    </div>
                   </div>
 
-                  <div className="p-3 bg-black/50 rounded-xl border border-white/5 text-[10px] font-mono text-stone-400 flex justify-between items-center">
-                    <span>Payment Status:</span>
-                    <span className={`px-2 py-0.5 rounded font-bold uppercase ${receiptModalBooking.paymentStatus === 'Paid' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}`}>
-                      {receiptModalBooking.paymentStatus || 'Pending / COD'}
+                  <div className="flex items-baseline justify-between gap-6 border-t border-white/10 pt-4">
+                    <span className="text-[15px] font-medium text-white">Total</span>
+                    <span className="tnum text-[21px] font-semibold text-brand-gold">
+                      ₵{total.toFixed(2)}
                     </span>
                   </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/10 pt-4">
+                    <span className="text-[14px] text-brand-text-muted">
+                      {paymentLabel(receiptModalBooking.paymentMethod)}
+                    </span>
+                    <PaymentPill booking={receiptModalBooking} />
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    className={`${BTN} ${AS_QUIET} ${SIZE_MD} w-full`}
+                  >
+                    <Receipt aria-hidden="true" className="h-4 w-4" />
+                    Print or save as PDF
+                  </button>
                 </div>
-                  );
-                })()}
+              );
+            })()}
+          </Modal>
+        )}
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    window.print();
-                  }}
-                  className="w-full py-2.5 bg-brand-sage text-white rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-brand-sage-light transition-all cursor-pointer font-mono flex items-center justify-center gap-1.5"
-                >
-                  <Receipt className="w-4 h-4" /> Print / Save PDF Receipt
-                </button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-      </div>
     </div>
   );
 }

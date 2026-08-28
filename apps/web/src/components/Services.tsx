@@ -1,181 +1,239 @@
 import { useState } from 'react';
-import { motion } from 'motion/react';
+import { serviceById } from '@freshfold/core';
 import { SERVICES } from '../data';
 import { ServiceItem } from '../types';
-import {
-  Armchair,
-  Bed,
-  Briefcase,
-  Car,
-  ChevronRight,
-  Crown,
-  Droplet,
-  Feather,
-  GraduationCap,
-  Hand,
-  Home,
-  Ruler,
-  ShieldCheck,
-  Shirt,
-  Sparkles,
-  Truck,
-  Wind,
-  Zap,
-  type LucideIcon,
-} from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
+import Reveal from './ui/Reveal';
+import Estimator from './ui/Estimator';
+import { useIntent } from '../intent';
 
 interface ServicesProps {
-  onSelectService: (serviceName: string) => void;
+  /** Opens the booking form, which reads the order out of the shared intent. */
+  onOpenBooking: () => void;
 }
 
+const CATEGORIES = [
+  { id: 'all', label: 'Everything' },
+  { id: 'core', label: 'Laundry' },
+  { id: 'specialized', label: 'Specialist' },
+  { id: 'express', label: 'Express' },
+] as const;
+
+type CategoryId = (typeof CATEGORIES)[number]['id'];
+
 /**
- * The icons a service card can ask for, by the name in `SERVICE_PRESENTATION`.
+ * The price list.
  *
- * An explicit map, and it has to stay one. This was
- * `import * as Lucide from 'lucide-react'` with a `(Lucide as any)[name]`
- * lookup, which reads as harmless and was the single largest thing on the site:
- * a namespace import indexed by a runtime string cannot be tree-shaken, so the
- * bundler had no choice but to include *every* icon Lucide ships — around
- * fifteen hundred of them — in the chunk the marketing page loads first, to
- * render the thirteen below.
+ * This was eleven identical photo cards in a four-column grid, which is the
+ * shape a landing page reaches for when it has not decided what the section is.
+ * A laundry has a price list — a column of names against a column of prices —
+ * so that is what this is: rows, ruled, with the money aligned down the right
+ * edge. The photographs did not have to go; there is one of them, large, and it
+ * follows whichever row the reader is on.
  *
- * The cost of the explicit version is that adding an icon means adding it here
- * as well as in `data.ts`. That is the trade, and it is the right way round:
- * forgetting falls back to `Sparkles` exactly as the old lookup did, and the
- * failure is a wrong icon on one card rather than a megabyte on every visit.
+ * Every price is `priceLabel()` from `@freshfold/core`, the same string the
+ * checkout quotes.
  */
-const SERVICE_ICONS: Record<string, LucideIcon> = {
-  Armchair,
-  Bed,
-  Briefcase,
-  Car,
-  Crown,
-  Droplet,
-  Feather,
-  GraduationCap,
-  Hand,
-  Home,
-  Ruler,
-  ShieldCheck,
-  Shirt,
-  Sparkles,
-  Truck,
-  Wind,
-  Zap,
-};
+export default function Services({ onOpenBooking }: ServicesProps) {
+  const [category, setCategory] = useState<CategoryId>('all');
+  const [activeIndex, setActiveIndex] = useState(0);
+  const { addItem } = useIntent();
 
-const IconRenderer = ({ name, className }: { name: string; className: string }) => {
-  const IconComponent = SERVICE_ICONS[name] ?? Sparkles;
-  return <IconComponent className={className} />;
-};
+  /**
+   * Pressing Book on a row puts that service on the order and opens the form.
+   *
+   * It used to pass the name through `App` as a preselection prop, which meant
+   * the row *replaced* whatever the estimator had been used to build. Adding it
+   * instead is both the smaller surprise and the more useful one: a reader who
+   * priced two loads and then spots ironing in the list means to send both.
+   */
+  const book = (serviceName: string) => {
+    addItem(serviceName);
+    onOpenBooking();
+  };
 
-export default function Services({ onSelectService }: ServicesProps) {
-  const [selectedCategory, setSelectedCategory] = useState<'all' | 'core' | 'specialized' | 'express'>('all');
+  const services =
+    category === 'all' ? SERVICES : SERVICES.filter((service) => service.category === category);
 
-  const filteredServices = selectedCategory === 'all'
-    ? SERVICES
-    : SERVICES.filter(service => service.category === selectedCategory);
-
-  const categories = [
-    { id: 'all', label: 'All Offerings' },
-    { id: 'core', label: 'Core Fabric Care' },
-    { id: 'specialized', label: 'Specialized Restoration' },
-    { id: 'express', label: 'Express Logistics' }
-  ];
+  // Clamped rather than reset in an effect: the filter can shorten the list
+  // under a hover that has already happened, and a stale index would blank the
+  // photograph for a frame.
+  const active = services[Math.min(activeIndex, services.length - 1)] ?? services[0];
 
   return (
-    <section id="services" className="py-24 bg-brand-charcoal relative border-b border-white/5">
-      {/* Decorative ambient gradient */}
-      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[70%] h-[40%] rounded-full bg-brand-sage/5 blur-[160px] pointer-events-none" />
+    <section
+      id="services"
+      className="border-b border-white/10 bg-brand-charcoal py-20 font-ui sm:py-28"
+    >
+      <div className="mx-auto max-w-[88rem] px-5 sm:px-8">
+        <Reveal className="grid gap-6 lg:grid-cols-12 lg:items-end">
+          <h2 className="font-display text-section font-medium text-white text-balance lg:col-span-6">
+            What we clean, and what it costs.
+          </h2>
+          <p className="max-w-[52ch] text-lead text-brand-text-muted lg:col-span-5 lg:col-start-8">
+            One price list, the same one the booking form charges from. Pickup and delivery are
+            free on every line of it.
+          </p>
+        </Reveal>
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
-        {/* Editorial Section Header */}
-        <div className="text-center md:text-left md:flex md:items-end md:justify-between mb-16">
-          <div className="max-w-2xl text-left">
-            <span className="font-sans text-[11px] uppercase tracking-[0.4em] text-brand-sage font-bold">
-              Bespoke Portfolio
-            </span>
-            <h2 className="font-serif text-3xl sm:text-5xl text-white font-light tracking-tight mt-3">
-              Curated Care <span className="font-serif italic text-brand-sage">for Every Thread</span>
-            </h2>
-            <p className="font-sans text-stone-400 text-sm mt-4 font-light tracking-wide max-w-xl">
-              We approach laundry through traditional high-end craftsmanship principles paired with cutting-edge textile chemistry. Your garments receive isolated, individual attention.
-            </p>
-          </div>
-
-          {/* Luxury Filter Controls - Sharp & Blocky corrected to curved */}
-          <div className="mt-8 md:mt-0 flex flex-wrap gap-2 justify-start" id="services-filter">
-            {categories.map((cat) => (
+        {/* Filter. A quiet text row, not four filled pills — the categories are
+            a way to shorten the list, not four competing calls to action. */}
+        <div
+          className="mt-10 flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-white/10 pb-4"
+          id="services-filter"
+          role="group"
+          aria-label="Filter services"
+        >
+          {CATEGORIES.map((option) => {
+            const isActive = category === option.id;
+            return (
               <button
-                key={cat.id}
-                onClick={() => setSelectedCategory(cat.id as any)}
-                className={`px-5 py-2.5 text-xs uppercase tracking-widest font-bold rounded-xl transition-all duration-300 border cursor-pointer ${
-                  selectedCategory === cat.id
-                    ? 'bg-brand-sage border-brand-sage text-white'
-                    : 'bg-transparent border-white/10 text-[#8E9299] hover:text-white hover:border-white/30'
+                key={option.id}
+                onClick={() => {
+                  setCategory(option.id);
+                  setActiveIndex(0);
+                }}
+                aria-pressed={isActive}
+                className={`-mb-[17px] border-b-2 pb-3.5 text-[15px] font-medium transition-colors duration-200 ${
+                  isActive
+                    ? 'border-brand-gold text-white'
+                    : 'border-transparent text-brand-text-muted hover:text-white'
                 }`}
               >
-                {cat.label}
+                {option.label}
               </button>
-            ))}
-          </div>
+            );
+          })}
+          {/* Hidden on a phone: the four filters already fill the row there,
+              and a wrapped count drags the active underline off the rule it is
+              supposed to sit on. */}
+          <span className="ml-auto hidden text-body text-brand-text-muted tnum sm:inline">
+            {services.length} {services.length === 1 ? 'service' : 'services'}
+          </span>
         </div>
 
-        {/* Services Grid with elegant cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6" id="services-grid">
-          {filteredServices.map((service: ServiceItem, index: number) => (
-            <motion.div
-              layout
-              key={service.id}
-              initial={{ opacity: 0, y: 15 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5, delay: index * 0.05 }}
-              className="bg-[#161616] border border-white/10 rounded-2xl overflow-hidden flex flex-col group min-h-[420px] transition-all duration-300 hover:border-brand-sage/50"
-            >
-              {/* Card Image Cover with delicate hover scale */}
-              <div className="relative h-48 overflow-hidden bg-stone-900 shrink-0">
+        <div className="mt-10 grid gap-10 lg:grid-cols-12 lg:gap-14">
+          {/* The photograph, following the list. Hidden below `lg`, where the
+              rows carry their own thumbnail instead — a sticky panel needs a
+              column beside it to be sticky against. */}
+          <div className="hidden lg:col-span-5 lg:block">
+            <div className="sticky top-28">
+              <div className="relative aspect-[4/5] overflow-hidden rounded-lg bg-brand-card">
                 <img
-                  src={service.imageUrl}
-                  alt={service.name}
-                  className="w-full h-full object-cover grayscale transition-all duration-700 ease-out group-hover:scale-110 group-hover:grayscale-0"
+                  key={active.id}
+                  src={active.imageUrl}
+                  alt={active.name}
+                  className="panel-swap absolute inset-0 h-full w-full object-cover"
+                  loading="lazy"
                   referrerPolicy="no-referrer"
                 />
-                <div className="absolute inset-0 bg-gradient-to-t from-[#161616] via-[#161616]/20 to-transparent" />
-                <div className="absolute top-4 left-4 p-2 bg-black border-2 border-white rounded-xl">
-                  <IconRenderer name={service.iconName} className="w-4 h-4 text-white group-hover:text-brand-sage transition-colors duration-300" />
-                </div>
-                <div className="absolute bottom-3 right-4 bg-brand-sage text-white text-[10px] font-bold tracking-widest uppercase px-3 py-1.5 rounded-lg border border-white/10">
-                  {service.priceInfo}
-                </div>
               </div>
-
-              {/* Card Contents */}
-              <div className="p-6 flex flex-col flex-grow text-left">
-                <h3 className="font-serif text-lg text-white font-medium group-hover:text-brand-sage transition-colors duration-300">
-                  {service.name}
-                </h3>
-                
-                <p className="font-sans text-[#8E9299] text-xs font-light mt-3 leading-relaxed flex-grow">
-                  {service.description}
+              <div className="mt-4 flex items-baseline justify-between gap-4">
+                <p className="text-[15px] font-medium text-white">{active.name}</p>
+                <p className="shrink-0 text-[15px] font-semibold text-brand-gold tnum">
+                  {active.priceInfo}
                 </p>
-
-                {/* Card CTA Trigger */}
-                <div className="mt-6 pt-4 border-t border-white/10 flex items-center justify-between">
-                  <span className="font-sans text-[10px] uppercase text-[#8E9299]/50 tracking-wider font-semibold">
-                    Luxury Standard
-                  </span>
-                  <button
-                    onClick={() => onSelectService(service.name)}
-                    className="text-brand-sage hover:text-white font-sans text-xs uppercase tracking-widest font-semibold flex items-center space-x-1 transition-colors group/btn cursor-pointer"
-                  >
-                    <span>Book Care</span>
-                    <ChevronRight className="w-3 h-3 transform group-hover/btn:translate-x-1 transition-transform" />
-                  </button>
-                </div>
               </div>
-            </motion.div>
-          ))}
+            </div>
+          </div>
+
+          {/* The list itself. */}
+          <ul className="lg:col-span-7" id="services-grid">
+            {services.map((service: ServiceItem, index) => {
+              const bookable = serviceById(service.id)?.bookable ?? false;
+              const isActive = active.id === service.id;
+
+              return (
+                <li
+                  key={service.id}
+                  className="group border-b border-white/10 transition-colors duration-300 first:border-t first:border-white/10 hover:bg-white/[0.03]"
+                  onMouseEnter={() => setActiveIndex(index)}
+                >
+                  <div className="flex items-start gap-4 py-6 transition-[padding] duration-300 group-hover:sm:pl-3 sm:gap-6">
+                    {/* The thumbnail the sticky panel replaces on wide screens. */}
+                    <img
+                      src={service.imageUrl}
+                      alt=""
+                      aria-hidden="true"
+                      loading="lazy"
+                      referrerPolicy="no-referrer"
+                      className="h-16 w-16 shrink-0 rounded-md object-cover lg:hidden"
+                    />
+
+                    <div className="min-w-0 flex-1">
+                      <h3
+                        className={`font-display text-[25px] font-medium leading-tight transition-colors duration-200 sm:text-[27px] ${
+                          isActive ? 'text-white' : 'text-white/90'
+                        }`}
+                      >
+                        {service.name}
+                      </h3>
+                      <p className="mt-2 max-w-[58ch] text-body text-brand-text-muted">
+                        {service.description}
+                      </p>
+
+                      <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 lg:hidden">
+                        <span className="text-[15px] font-semibold text-brand-gold tnum">
+                          {service.priceInfo}
+                        </span>
+                        {bookable ? (
+                          <button
+                            onClick={() => book(service.name)}
+                            className="inline-flex items-center gap-1.5 text-[15px] font-medium text-white underline decoration-white/30 underline-offset-4 transition-colors hover:decoration-brand-gold"
+                          >
+                            Book this <ArrowRight className="h-3.5 w-3.5" />
+                          </button>
+                        ) : (
+                          <a
+                            href="#contact"
+                            className="text-[15px] font-medium text-brand-text-muted underline decoration-white/20 underline-offset-4 hover:text-white"
+                          >
+                            Ask us about it
+                          </a>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Wide screens: price and action in their own columns, so
+                        the money runs down one straight edge. */}
+                    <div className="hidden w-44 shrink-0 text-right lg:block">
+                      <span className="text-[15px] font-semibold text-brand-gold tnum">
+                        {service.priceInfo}
+                      </span>
+                    </div>
+
+                    <div className="hidden w-24 shrink-0 text-right lg:block">
+                      {bookable ? (
+                        <button
+                          onClick={() => book(service.name)}
+                          onFocus={() => setActiveIndex(index)}
+                          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[15px] font-medium text-white transition-colors duration-200 hover:text-brand-gold"
+                        >
+                          Book
+                          <ArrowRight className="h-3.5 w-3.5" />
+                        </button>
+                      ) : (
+                        <a
+                          href="#contact"
+                          onFocus={() => setActiveIndex(index)}
+                          className="inline-block rounded-md px-2 py-1 text-[15px] font-medium text-brand-text-muted transition-colors duration-200 hover:text-white"
+                        >
+                          Ask us
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
         </div>
+
+        {/* The price list answers "what does a wash cost". This answers "what
+            does *mine* cost", which is the question underneath it. */}
+        <Reveal className="mt-14">
+          <Estimator onBook={onOpenBooking} />
+        </Reveal>
       </div>
     </section>
   );

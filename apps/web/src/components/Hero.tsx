@@ -1,155 +1,188 @@
-import { motion } from 'motion/react';
-import { Sparkles, Calendar, ChevronDown, Award, Users, ShieldCheck } from 'lucide-react';
+import { useEffect, useRef } from 'react';
+import { ChevronDown } from 'lucide-react';
+import { Enter, motionAllowed } from './ui/Reveal';
 
 interface HeroProps {
   onOpenBooking: () => void;
   onExplorePlans: () => void;
 }
 
+/**
+ * The three facts a first-time visitor is actually here for.
+ *
+ * Every one of them is a number this business can stand behind: the wash price
+ * and the express surcharge come from `packages/core`'s catalogue, the address
+ * is the shop. What used to sit here — "Certified Fabric Experts", "Over 12,000
+ * pristine deliveries" — was three adjectives and an invented statistic.
+ */
+const FACTS = [
+  { label: 'A wash', value: '₵30', note: 'per load, pickup and delivery free' },
+  { label: 'Back to you', value: 'Tomorrow', note: 'same day for ₵50 more' },
+  { label: 'We collect from', value: 'Kumasi', note: 'Ayeduase-Kotei and around' },
+];
+
 export default function Hero({ onOpenBooking, onExplorePlans }: HeroProps) {
+  const backdrop = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * The photograph drifts a little slower than the page.
+   *
+   * `transform` only — nothing here reads or writes layout, so the browser can
+   * keep it on the compositor and the scroll stays smooth on the mid-range
+   * Android this page is mostly read on. The work is coalesced into one frame
+   * per scroll burst rather than run per event.
+   *
+   * The element is in its correct position before this ever runs, and the
+   * effect simply never starts where motion is unwelcome; there is no state in
+   * which the hero depends on it.
+   */
+  useEffect(() => {
+    const node = backdrop.current;
+    if (!node || !motionAllowed) return;
+
+    let queued = false;
+    const apply = () => {
+      queued = false;
+      const shift = Math.min(window.scrollY, 900) * 0.18;
+      node.style.transform = `translate3d(0, ${shift}px, 0)`;
+    };
+    const onScroll = () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(apply);
+    };
+
+    apply();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      node.style.transform = '';
+    };
+  }, []);
+
   return (
     <section
       id="hero"
-      className="relative min-h-screen flex items-center justify-center bg-brand-charcoal pt-24 overflow-hidden"
+      className="relative isolate flex min-h-[min(100svh,54rem)] items-center overflow-hidden border-b border-white/10 font-ui"
     >
-      {/* Editorial Sophisticated Background Layer with Lifestyle Image */}
-      <div className="absolute inset-0 z-0">
+      {/*
+        The photograph, full bleed, behind everything.
+
+        The old hero did this too and the picture never survived it: grayscale,
+        `opacity-20`, then two blurred colour blobs on top. What reached the
+        screen was mud with a texture rumour in it.
+
+        Three layers instead, each with one job. The image keeps most of its
+        colour — a light desaturation only, so the linen stays warm next to the
+        brass accent. The flat scrim is the contrast guarantee: at 68% over even
+        a pure-white pixel the ground computes to L*≈0.10, which holds white
+        body copy at 6.2:1, so the type is legible over any frame of any crop at
+        any viewport rather than over the one the design was checked against.
+        The gradient then sinks the top and bottom edges into the page colour so
+        the section has no seam at the header or at the price list below.
+      */}
+      <div ref={backdrop} className="absolute inset-0 -z-10 will-change-transform">
         <img
-          src="https://images.unsplash.com/photo-1582719508461-905c673771fd?auto=format&fit=crop&q=80&w=1920"
-          alt="Immaculately clean folded white garments and linens"
-          className="w-full h-full object-cover opacity-20 filter grayscale contrast-125"
+          src="https://images.unsplash.com/photo-1524404794194-16bae22718c0?auto=format&fit=crop&q=80&w=2000"
+          alt="Laundered sheets and towels, washed, pressed and folded into squared-off stacks"
+          fetchPriority="high"
+          className="h-[125%] w-full object-cover saturate-[0.72]"
           referrerPolicy="no-referrer"
         />
-        {/* Subtle earth-tone and olive-gray circular custom gradients */}
-        <div className="absolute inset-0 bg-gradient-to-t from-brand-charcoal via-brand-charcoal/90 to-transparent" />
-        <div className="absolute -top-[20%] -left-[10%] w-[60%] h-[60%] rounded-full bg-brand-sage/5 blur-[120px] pointer-events-none" />
-        <div className="absolute top-[30%] -right-[10%] w-[50%] h-[50%] rounded-full bg-brand-gold/5 blur-[150px] pointer-events-none" />
+        <div className="absolute inset-0 bg-brand-charcoal/[0.68]" />
+        <div className="absolute inset-0 bg-gradient-to-b from-brand-charcoal via-transparent to-brand-charcoal" />
       </div>
 
-      <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 sm:py-24 text-center">
-        {/* Dynamic Tagline Banner */}
-        <motion.div
-          initial={{ opacity: 0, y: 15 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8 }}
-          className="mb-6"
-          id="hero-badge"
-        >
-          <span className="font-sans text-[11px] uppercase tracking-[0.4em] text-brand-sage font-bold">
-            Concierge Care • Bespoke Fabric Hospitality
+      <div className="mx-auto w-full max-w-4xl px-5 pb-24 pt-28 text-center sm:px-8 sm:pb-28 sm:pt-32">
+        {/* The one kicker on the page. A single named line above the headline is
+            a brand's voice; the same device above all eight sections is the
+            scaffolding this redesign took out. */}
+        <Enter as="p" y={14}>
+          {/* Gold-light rather than gold. Against the brightest pixel the crop
+              could ever put behind it, `--color-brand-gold` measures 3.05:1 and
+              this measures 4.62:1 — the ring of legibility has to hold for any
+              frame of this photograph at any viewport, not just the one the
+              design was checked against. */}
+          <span className="text-[11.5px] font-medium uppercase tracking-[0.16em] text-brand-gold-light sm:text-[12.5px] sm:tracking-[0.2em]">
+            Kumasi · Free pickup &amp; delivery
           </span>
-        </motion.div>
+        </Enter>
 
-        {/* Large Italic Serif Bold Headline */}
-        <motion.h1
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 0.15 }}
-          className="font-serif text-5xl sm:text-7xl lg:text-8xl font-light leading-[0.9] tracking-tighter text-white"
+        <Enter
+          as="h1"
+          delay={0.08}
+          className="mx-auto mt-6 max-w-[19ch] font-display text-hero font-medium text-white text-balance"
           id="hero-headline"
         >
-          Laundry <br />
-          <span className="italic font-serif font-light text-brand-text-light">Reimagined.</span>
-        </motion.h1>
+          Laundry, collected and returned.
+        </Enter>
 
-        {/* Sophisticated Subheadline */}
-        <motion.p
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 0.3 }}
-          className="mt-8 font-sans text-brand-text-muted text-base sm:text-lg max-w-2xl mx-auto leading-relaxed font-light tracking-wide"
+        <Enter
+          as="p"
+          delay={0.16}
+          className="mx-auto mt-6 max-w-[54ch] text-lead text-white/85"
           id="hero-subheadline"
         >
-          Professional garment care for modern living. Designed for those who value time and precision. We collect, clean, and deliver—elevating your daily routine.
-        </motion.p>
+          We pick it up from your place in Kumasi, wash and press it properly, and bring it back the
+          next day — folded, sorted, and never mixed with anyone else&rsquo;s.
+        </Enter>
 
-        {/* CTA Button Group - Sharp corners & High contrast block styles */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 0.45 }}
-          className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4"
+        <Enter
+          delay={0.24}
+          className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row"
           id="hero-buttons"
         >
           <button
             onClick={onOpenBooking}
-            className="w-full sm:w-auto px-10 py-5 bg-white text-black hover:bg-brand-sage hover:text-white text-xs font-bold uppercase tracking-widest rounded-xl transition-all duration-300 cursor-pointer flex items-center justify-center space-x-2"
+            className="w-full rounded-md bg-brand-gold px-8 py-4 text-[15px] font-semibold text-brand-charcoal transition-colors duration-200 hover:bg-brand-gold-light sm:w-auto"
           >
-            <Calendar className="w-4 h-4" />
-            <span>Schedule Pickup</span>
+            Book a pickup
           </button>
-          
           <button
             onClick={onExplorePlans}
-            className="w-full sm:w-auto px-10 py-5 bg-transparent hover:bg-white/10 text-white text-xs font-bold tracking-widest uppercase rounded-xl border border-white/20 transition-all duration-300 cursor-pointer flex items-center justify-center space-x-2"
+            className="w-full rounded-md border border-white/30 bg-white/5 px-8 py-4 text-[15px] font-medium text-white backdrop-blur-sm transition-colors duration-200 hover:border-white/50 hover:bg-white/10 sm:w-auto"
           >
-            <span>Explore Plans</span>
+            See the monthly plans
           </button>
-        </motion.div>
+        </Enter>
 
-        {/* Micro highlights block (3 Trust factors) */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 1.2, delay: 0.7 }}
-          className="mt-20 grid grid-cols-1 md:grid-cols-3 gap-8 max-w-4xl mx-auto pt-10 border-t border-white/5 text-left"
+        {/* The facts, under a single rule. Centred with the rest of the
+            composition, and no icons: a shield and a laurel wreath add nothing
+            to a number that can speak for itself. */}
+        <Enter
+          as="dl"
+          delay={0.32}
+          className="mt-12 grid divide-y divide-white/20 border-t border-white/20 pt-7 sm:grid-cols-3 sm:divide-x sm:divide-y-0 sm:divide-white/20"
           id="hero-stats"
         >
-          <div className="flex items-start space-x-3">
-            <ShieldCheck className="w-5 h-5 text-brand-sage shrink-0 mt-0.5" />
-            <div>
-              <h4 className="font-sans text-xs font-semibold uppercase tracking-wider text-white">
-                Certified Fabric Experts
-              </h4>
-              <p className="font-sans text-xs text-stone-400 mt-1 font-light leading-relaxed">
-                Eco-safe botanical washes tuned to individual garment threads.
-              </p>
+          {FACTS.map((fact) => (
+            <div key={fact.label} className="px-4 py-5 first:pt-0 sm:py-0">
+              <dt className="text-label font-medium text-white/80">{fact.label}</dt>
+              {/* Archivo, not the serif. Cormorant sets old-style figures by
+                  default, so `₵30` came out with a descending 3 and a dwarf
+                  zero — charming in running prose, wrong for a price, and out
+                  of step with every other number on the page. The serif carries
+                  the voice here; the grotesque carries the data. */}
+              <dd className="mt-1.5 text-[26px] font-semibold leading-none tracking-[-0.02em] text-white tnum fs-semi">
+                {fact.value}
+              </dd>
+              <dd className="mx-auto mt-2 max-w-[24ch] text-body text-white/80">{fact.note}</dd>
             </div>
-          </div>
-
-          <div className="flex items-start space-x-3">
-            <Award className="w-5 h-5 text-brand-gold shrink-0 mt-0.5" />
-            <div>
-              <h4 className="font-sans text-xs font-semibold uppercase tracking-wider text-white">
-                Concierge Delivery
-              </h4>
-              <p className="font-sans text-xs text-stone-400 mt-1 font-light leading-relaxed">
-                Contactless doorstep drop off in beautiful luxury garment shield cases.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-start space-x-3">
-            <Users className="w-5 h-5 text-brand-sage shrink-0 mt-0.5" />
-            <div>
-              <h4 className="font-sans text-xs font-semibold uppercase tracking-wider text-white">
-                5-Star Rated Care
-              </h4>
-              <p className="font-sans text-xs text-stone-400 mt-1 font-light leading-relaxed">
-                Over 12,000 pristine deliveries made for local boutique partners and estates.
-              </p>
-            </div>
-          </div>
-        </motion.div>
-
-        {/* Scroll Indicator */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1, y: [0, 8, 0] }}
-          transition={{ duration: 2, repeat: Infinity, delay: 1 }}
-          className="absolute bottom-6 left-1/2 transform -translate-x-1/2 flex flex-col items-center cursor-pointer opacity-70 hover:opacity-100 transition-opacity"
-          onClick={() => {
-            const el = document.getElementById('services');
-            if (el) el.scrollIntoView({ behavior: 'smooth' });
-          }}
-          id="hero-scroll-indicator"
-        >
-          <span className="font-sans text-[9px] uppercase tracking-[0.3em] text-stone-500 mb-2">
-            Scroll to discover
-          </span>
-          <ChevronDown className="w-4 h-4 text-brand-sage" />
-        </motion.div>
+          ))}
+        </Enter>
       </div>
+
+      {/* Scroll cue. Kept from the old hero, but pointing somewhere: it says
+          what is below rather than "Scroll to discover", and it is a button, so
+          it works from the keyboard. */}
+      <button
+        onClick={() => document.getElementById('services')?.scrollIntoView({ behavior: 'smooth' })}
+        className="absolute inset-x-0 bottom-6 mx-auto flex w-fit flex-col items-center gap-1.5 rounded-md px-4 py-2 text-white/60 transition-colors duration-200 hover:text-white"
+        id="hero-scroll-indicator"
+      >
+        <span className="text-[11px] font-medium uppercase tracking-[0.2em]">Prices</span>
+        <ChevronDown className="scroll-cue h-4 w-4" />
+      </button>
     </section>
   );
 }

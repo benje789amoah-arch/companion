@@ -1,106 +1,151 @@
-import { Shirt, Shield, Heart } from 'lucide-react';
+import { useState } from 'react';
+import { ArrowRight } from 'lucide-react';
+import { SHOP } from '../shop';
+
+const SITEMAP = [
+  { href: '#services', label: 'Prices' },
+  { href: '#subscriptions', label: 'Monthly plans' },
+  { href: '#how-it-works', label: 'How it works' },
+  { href: '#membership', label: 'Rewards' },
+  { href: '#target-customers', label: 'Who we serve' },
+  { href: '#contact', label: 'Contact' },
+];
+
+/** Booking ids are six digits. See the portal, which is what this opens. */
+const ORDER_ID = /^\d{6}$/;
 
 export default function Footer() {
   const currentYear = new Date().getFullYear();
+  const [orderId, setOrderId] = useState('');
+  const [error, setError] = useState('');
+
+  const track = (event: React.FormEvent) => {
+    event.preventDefault();
+    const id = orderId.trim();
+    if (!ORDER_ID.test(id)) {
+      setError('An order number is six digits.');
+      return;
+    }
+    setError('');
+    // The same route the emailed link uses; `App` reads the id off the hash and
+    // hands it to the portal.
+    window.location.hash = `#portal?bookingId=${id}`;
+  };
 
   return (
-    <footer className="bg-brand-charcoal pt-16 pb-12 border-t border-white/5 relative z-10 text-left">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        
-        {/* Footer Top Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-12 pb-12 border-b border-white/10">
-          
-          {/* Column 1: Brand & Bio (Span: 5) */}
-          <div className="md:col-span-5 space-y-6">
-            <div className="flex items-center space-x-3">
-              <div className="flex w-9 h-9 rounded-xl bg-brand-sage items-center justify-center">
-                <Shirt className="w-4.5 h-4.5 text-white" />
-              </div>
-              <div className="flex flex-col text-left">
-                <span className="font-serif text-[15px] tracking-[0.2em] text-white font-medium uppercase">
-                  FRESHFOLD
-                </span>
-                <span className="font-sans text-[8px] tracking-[0.4em] text-brand-sage uppercase font-semibold">
-                  LAUNDRY CO.
-                </span>
-              </div>
-            </div>
+    /*
+      The footer's job, and what it stopped doing.
 
-            <p className="font-sans text-[#8E9299] text-xs font-light leading-relaxed max-w-sm">
-              We operate an eco-harmonious laundry concierge. FreshFold Laundry Co. substitutes toxic chemicals with botanical oils, pH-balanced rain filters, and meticulous hand-finishing blocks.
+      It used to print the address, the phone number and the email a second
+      time, a few hundred pixels below the contact section that had just
+      printed all three. Repeating a block does not make it easier to find; it
+      makes the page look padded and gives the details two places to go out of
+      date. Reaching the shop belongs to Contact.
+
+      What is left is what a footer is for: where else to go on the page, one
+      last thing to *do* — pick up an order already in flight, which is the most
+      common reason a returning customer is here at all — and the single line of
+      identification a local business closes with. All of it reads `SHOP`, so
+      there is one address on this site rather than two.
+    */
+    <footer className="bg-brand-charcoal py-16 font-ui sm:py-20">
+      <div className="mx-auto max-w-[88rem] px-5 sm:px-8">
+        <div className="grid gap-12 border-b border-white/10 pb-12 lg:grid-cols-12 lg:gap-14">
+          {/* Brand */}
+          <div className="lg:col-span-4">
+            <div className="flex items-center gap-2.5">
+              <span className="grid h-9 w-9 place-items-center rounded-md bg-brand-sage text-[15px] font-bold text-white fs-expanded">
+                FF
+              </span>
+              <span className="text-[17px] font-semibold tracking-[-0.02em] text-white fs-semi">
+                FreshFold Laundry Co.
+              </span>
+            </div>
+            <p className="mt-6 max-w-[40ch] text-body text-brand-text-muted">
+              We collect laundry across Kumasi, wash and press it at the shop in Ayeduase-Kotei, and
+              bring it back the next day. Pickup and delivery are free on every order.
             </p>
-
-            <div className="flex items-center space-x-2 text-[10px] text-[#8E9299]/70 font-mono">
-              <Shield className="w-4 h-4 text-brand-sage" />
-              <span>Certified Luxury Garment Care Society #1902</span>
-            </div>
           </div>
 
-          {/* Column 2: Quick Navigation Links (Span: 3) */}
-          <div className="md:col-span-3 space-y-4 text-left">
-            <h5 className="font-sans text-[10px] uppercase font-bold tracking-widest text-white">
-              Sitemap Navigation
-            </h5>
-            <ul className="space-y-2.5 font-sans text-xs text-[#8E9299] font-light">
-              <li>
-                <a href="#services" className="hover:text-brand-sage transition-colors">Curated Offerings</a>
-              </li>
-              <li>
-                <a href="#subscriptions" className="hover:text-brand-sage transition-colors">Membership Pricing</a>
-              </li>
-              <li>
-                <a href="#membership" className="hover:text-brand-sage transition-colors">Patron Digital Pass</a>
-              </li>
-              <li>
-                <a href="#why-choose-us" className="hover:text-brand-sage transition-colors">The FreshFold Codex</a>
-              </li>
-              <li>
-                <a href="#how-it-works" className="hover:text-brand-sage transition-colors">Operational Timeline</a>
-              </li>
+          {/* Sitemap */}
+          <nav className="lg:col-span-3" aria-label="Footer">
+            <h2 className="text-[13px] font-medium text-brand-text-muted">On this page</h2>
+            <ul className="mt-4 space-y-2.5">
+              {SITEMAP.map((item) => (
+                <li key={item.href}>
+                  <a
+                    href={item.href}
+                    className="text-[15px] text-brand-text-light transition-colors duration-200 hover:text-brand-gold"
+                  >
+                    {item.label}
+                  </a>
+                </li>
+              ))}
               {/*
-                No Supervisor Desk link here on purpose. The desk is staff-only
+                No supervisor-desk link here on purpose. The desk is staff-only
                 and has no business advertising itself in a customer's footer;
                 `#admin` still opens it for anyone who types it. That is not a
                 security measure — the password is — it just keeps an internal
                 tool out of the shopfront.
               */}
             </ul>
-          </div>
+          </nav>
 
-          {/* Column 3: Sustainability Statement (Span: 4) */}
-          <div className="md:col-span-4 space-y-4 text-left">
-            <h5 className="font-sans text-[10px] uppercase font-bold tracking-widest text-white">
-              Environmental Codex
-            </h5>
-            <p className="font-sans text-[#8E9299] text-xs font-light leading-relaxed">
-              We pledge to preserve local water ecology. FreshFold strictly rejects traditional perchloroethylene solvent formulas. Instead, our cycles harness organic, biodegradable soap enzymes delicate on skin microflora and fabric threads.
+          {/* The one action a returning customer wants. */}
+          <div className="lg:col-span-4 lg:col-start-9">
+            <h2 className="font-display text-[25px] font-medium text-white">
+              Already sent us a bag?
+            </h2>
+            <p className="mt-2 max-w-[38ch] text-body text-brand-text-muted">
+              Put in the six-digit order number from your confirmation and we will open its
+              tracking page.
             </p>
-            <div className="flex items-center space-x-2 text-[10px] text-brand-sage font-semibold uppercase tracking-wider">
-              <span className="w-1.5 h-1.5 rounded-full bg-brand-sage" />
-              <span>100% Zero-Carbon Logistic Deliveries by 2028</span>
-            </div>
+            <form onSubmit={track} noValidate className="mt-4 flex gap-2">
+              <label htmlFor="footer-order" className="sr-only">
+                Order number
+              </label>
+              <input
+                id="footer-order"
+                inputMode="numeric"
+                autoComplete="off"
+                maxLength={6}
+                value={orderId}
+                onChange={(event) => {
+                  setOrderId(event.target.value.replace(/\D/g, ''));
+                  if (error) setError('');
+                }}
+                placeholder="123456"
+                className="w-full rounded-md border border-white/15 bg-brand-card px-4 py-3 text-[15px] text-white placeholder:text-brand-text-muted transition-colors duration-200 focus:border-brand-gold focus:outline-none tnum"
+              />
+              <button
+                type="submit"
+                className="inline-flex shrink-0 items-center gap-2 rounded-md border border-white/20 px-5 py-3 text-[15px] font-medium text-white transition-colors duration-200 hover:border-white/40 hover:bg-white/5"
+              >
+                Track
+                <ArrowRight aria-hidden="true" className="h-4 w-4" />
+              </button>
+            </form>
+            <p aria-live="polite" className="mt-2 min-h-[1.25rem] text-body text-brand-gold">
+              {error}
+            </p>
           </div>
-
         </div>
 
-        {/* Footer Bottom Block */}
-        <div className="pt-8 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="text-left">
-            <p className="font-sans text-[11px] text-[#8E9299]/70 font-light">
-              &copy; {currentYear} FreshFold Laundry Co. All intellectual properties protected.
-            </p>
-            <p className="font-mono text-[9px] text-[#8E9299]/50 mt-1 uppercase tracking-tight">
-              Crafted in bespoke workspace with organic coordinates.
-            </p>
-          </div>
-
-          <div className="flex items-center space-x-2 text-[11px] text-[#8E9299]/70 font-light">
-            <span>Delivered with care</span>
-            <Heart className="w-3 h-3 text-brand-sage fill-brand-sage" />
-            <span>worldwide.</span>
-          </div>
+        {/* One line of identification, not a second contact card. */}
+        <div className="flex flex-col gap-3 pt-8 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-body text-brand-text-muted">
+            &copy; {currentYear} FreshFold Laundry Co., Kumasi.
+          </p>
+          <p className="text-body text-brand-text-muted">
+            {SHOP.addressShort} ·{' '}
+            <a
+              href={`tel:${SHOP.phone}`}
+              className="text-brand-gold underline decoration-brand-gold/40 underline-offset-4 hover:decoration-brand-gold tnum"
+            >
+              {SHOP.phoneLabel}
+            </a>
+          </p>
         </div>
-
       </div>
     </footer>
   );

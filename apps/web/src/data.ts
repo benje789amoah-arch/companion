@@ -91,64 +91,72 @@ export const BOOKABLE_SERVICE_ITEMS: ServiceItem[] = SERVICES.filter(
  *    month" and "Special discounted rates for bulk employee vouchers" are not
  *    features; no code has ever granted them. What a plan actually buys is a
  *    number of included pickups and a member rate on everything past them, both
- *    of which core enforces — so that is what the bullets say, matching the
- *    customer app word for word.
+ *    of which core enforces — so that is what the bullets say. They are worded
+ *    for the marketing page rather than copied from the customer app; the
+ *    numbers are the part that has to agree, and those come from core.
  *
  * Icon names are the one genuinely local field: these are `lucide-react`, and
  * the app's are `lucide-react-native`, which is why `Home` here is `House`
  * there.
+ *
+ * **The order of `benefits` is a contract.** The first entry is always the
+ * included-pickup allowance and the last is always the member rate past it,
+ * because the plans table on the marketing page gives both of those a row of
+ * their own and lists `benefits.slice(1, -1)` underneath as everything else.
+ * It used to work that out with a regular expression over the sentences, which
+ * held right up until somebody rephrased one. Add a new bullet in the middle.
  */
 const PLAN_PRESENTATION: Record<
   MembershipPlanId,
   Omit<SubscriptionPlan, 'id' | 'name' | 'price' | 'billing'>
 > = {
   student: {
-    tagline: 'Worry-free fabric care built around class schedules.',
+    tagline: 'For a hall room and a tight budget. Two collections a month.',
     iconName: 'GraduationCap',
-    capacity: '20 lbs / month of laundry',
-    turnaround: 'Next-day turnaround standard',
+    capacity: '20 lbs a month',
+    turnaround: 'Next day',
     benefits: [
-      '2 scheduled pickups per month, laundry included',
-      'Complimentary organic hypoallergenic soap',
-      '10% member rate once the two are used',
-      'Digital laundry history log'
+      '2 pickups a month, with the washing included',
+      'Hypoallergenic soap at no extra charge',
+      'Every order kept in your history, priced and dated',
+      '10% off once the two are used'
     ]
   },
   professional: {
-    tagline: 'Always-pristine formal shirts, business ensembles and suits.',
+    tagline: 'Shirts and suits pressed and back before the week starts.',
     popular: true,
     iconName: 'Briefcase',
-    capacity: '45 lbs / month + 10 ironed items',
-    turnaround: 'Next-day turnaround standard',
+    capacity: '45 lbs a month, plus 10 ironed items',
+    turnaround: 'Next day',
     benefits: [
-      'Weekly door-side pickups — 4 a month, laundry included',
-      'Complimentary delicate handwashing for custom knits',
-      'Boutique hanger delivery with garment shielding',
-      '15% member rate on anything beyond the four'
+      '4 pickups a month — one a week, washing included',
+      'Delicates and knits washed by hand',
+      'Shirts returned on hangers and covered',
+      '15% off anything past the four'
     ]
   },
   family: {
-    tagline: 'Large bulk handling with individual-level garment separation.',
+    tagline: 'Household volume, kept separate and collected twice a week.',
     iconName: 'Home',
-    capacity: '100 lbs / month of heavy cycles',
-    turnaround: 'Standard 24-hour delivery',
+    capacity: '100 lbs a month',
+    turnaround: 'Next day',
     benefits: [
-      '8 pickups/month (twice per week), laundry included',
-      'Strict fabric and household division rules',
-      'Free plush duvet and bed sheet washing & ironing',
-      '20% member rate on anything beyond the eight'
+      '8 pickups a month — twice a week, washing included',
+      'Loads kept apart by household and by fabric',
+      'Duvets and bed sheets washed and pressed, included',
+      '20% off anything past the eight'
     ]
   },
   corporate: {
-    tagline: 'Custom high-frequency care for premium enterprises.',
+    tagline: 'Standing collections for a business that cannot run out.',
     iconName: 'Crown',
-    capacity: '200 lbs / month + customizable setups',
-    turnaround: 'Same-day turnaround prioritized',
+    capacity: '200 lbs a month, or whatever we agree',
+    turnaround: 'Same day, prioritised',
     benefits: [
-      'Daily pickups — 30 a month, laundry included',
-      'White-glove quality assurance reports',
-      'Dedicated account manager and express stain restoration',
-      '25% member rate on anything beyond the thirty'
+      '30 pickups a month — daily if the volume needs it, washing included',
+      'A written check on every order before it leaves',
+      'One person on your account, and priority on stains',
+      '25% off anything past the thirty'
     ]
   }
 };

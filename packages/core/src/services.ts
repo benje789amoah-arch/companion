@@ -85,7 +85,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
     garment: true,
     name: 'Washing (Machine & Hand Wash)',
     description:
-      'Bespoke hand-care treatments for fine silks and cashmere, alongside temperature-regulated drum-washing for designer garments.',
+      'Machine or hand wash, whichever the fabric asks for. Sorted by colour and weight, and your load runs on its own.',
     category: 'core',
     price: 30,
     unit: 'load',
@@ -96,7 +96,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
     garment: true,
     name: 'Gentle Air drying',
     description:
-      'Controlled low-heat dehydration that prevents thermal shrinkage, restoring original fabric lift and wool elasticity.',
+      'Low heat, so nothing shrinks and nothing sets. Part of every wash rather than a line you pay for.',
     category: 'core',
     price: 0,
     unit: 'load',
@@ -108,7 +108,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
     garment: true,
     name: 'Ironing & Folding',
     description:
-      'Crisp hand-pressed steam finishes and pristine laser-line boutique folding, ready for direct closet placement.',
+      'Pressed and folded flat, or returned on hangers if you say so. Shirts, trousers, uniforms and dresses.',
     category: 'core',
     price: 25,
     unit: 'order',
@@ -119,7 +119,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
     garment: true,
     name: 'Advanced Stain Removal',
     description:
-      'Targeted eco-friendly enzyme treatment of individual spots that safely releases red wine, oil, and coffee stains.',
+      'Spot treatment for oil, ink, sweat marks and drink stains. If it does not lift first time it goes back through.',
     category: 'specialized',
     price: 25,
     unit: 'order',
@@ -130,7 +130,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
     garment: true,
     name: 'Bed Sheets & Linens Care',
     description:
-      'Sanitizing hot-water cycles paired with ultra-soft, organic floral-extract formulas for high-thread-count sheets.',
+      'Sheets, duvet covers, pillowcases and towels washed hot and pressed. Priced by the set, not by the item.',
     category: 'specialized',
     price: 45,
     unit: 'set',
@@ -141,7 +141,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
     garment: true,
     name: 'Express Same-Day Laundry',
     description:
-      'A dedicated expedited sequence. Collected from your home by 9:00 AM, delivered freshly pressed by 7:30 PM.',
+      'Collected by 9:00 in the morning, back at your door by 19:30 the same evening. For when the next day is too late.',
     category: 'express',
     price: 50,
     unit: 'order',
@@ -152,7 +152,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
     garment: false,
     name: 'Fast Pickup & Delivery',
     description:
-      'Convenient, reliable, on time, every time. Direct real-time GPS-tracked logistics ensuring your orders are received and returned exactly on your clock.',
+      'A rider comes to your door and brings it back to your door, in the window you picked. Free on every order.',
     category: 'express',
     price: 0,
     unit: 'order',
@@ -164,7 +164,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
     garment: false,
     name: 'Bespoke Car Detailing',
     description:
-      'We restore, shine and protect your ride. High-end hand steam, polymer sealant wax coating, and deep interior/exterior detailing.',
+      'Washed, waxed and sealed outside; seats, mats and dashboard cleaned inside. Priced per vehicle.',
     category: 'specialized',
     price: 150,
     unit: 'ride',
@@ -175,7 +175,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
     garment: false,
     name: 'Home & Office Cleaning',
     description:
-      'Spotless spaces, and healthier living. Deep-steam surface sanitizing, precise dust eradication, and natural aromatherapy allergen-free deodorizing.',
+      'A full clean of a room, a flat or an office — floors, surfaces, bathroom and kitchen. Priced per space.',
     category: 'specialized',
     price: 180,
     unit: 'space',
@@ -186,7 +186,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
     garment: false,
     name: 'Sofa & Carpet Cleaning',
     description:
-      'Deep clean for a fresher, safer home. Heavy-duty hot water extraction, stain neutralization, and antibacterial fabric protectants for all upholstery.',
+      'Hot-water extraction for sofas, armchairs and rugs. Lifts the stain and the smell that came with it.',
     category: 'specialized',
     price: 90,
     unit: 'unit',
@@ -197,7 +197,7 @@ export const SERVICE_CATALOGUE: ServiceDefinition[] = [
     garment: false,
     name: 'Corporate Contracts',
     description:
-      'Continuous logistics and custom care protocols for boutique hotels, premium spas, high-end fitness studios, and corporate offices.',
+      'Standing collections for salons, guest houses, gyms, clinics and offices. Quoted against what you actually go through in a week.',
     category: 'specialized',
     price: 0,
     unit: 'contract',

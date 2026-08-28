@@ -1,6 +1,15 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { X, Calendar, MapPin, Sparkles, Clock, ShieldCheck, CheckCircle, Smartphone, CreditCard, Wallet, Banknote, Lock, CheckCircle2, QrCode } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import {
+  X,
+  Check,
+  Wallet,
+  Banknote,
+  ArrowLeft,
+  ArrowRight,
+  Minus,
+  Plus,
+  AlertCircle,
+} from 'lucide-react';
 import {
   DEFAULT_SCENT,
   DEFAULT_STARCH,
@@ -36,18 +45,87 @@ import { ApiError } from '@freshfold/core';
 import { Booking } from '../types';
 import * as store from '../services/store';
 import { BOOKABLE_SERVICE_ITEMS } from '../data';
+import { useIntent } from '../intent';
 import AddressAutocomplete from './AddressAutocomplete';
 import PickupPinField, { type PinOrigin } from './PickupPinField';
 import { usePaystackReturn } from './PaystackReturn';
+import { paymentLabel, windowLabel } from './ui/slots';
+import PaystackMark from './ui/PaystackMark';
 
 interface BookingModalProps {
   isOpen: boolean;
   onClose: () => void;
-  preselectedService?: string;
   onBookingCreated: (booking: Booking) => void;
 }
 
-export default function BookingModal({ isOpen, onClose, preselectedService = '', onBookingCreated }: BookingModalProps) {
+/**
+ * The three questions a collection actually needs answered.
+ *
+ * This was one 80vh scroll containing every field the form has — contact
+ * details, an address, a map, three time pickers, scents, starch, a promo box
+ * and four payment panels — and on a phone that is roughly nine screenfuls
+ * between "Book a pickup" and a button that books one. A form that long reads
+ * as an application rather than an order, and the reader cannot see how much of
+ * it is left, which is the specific thing that makes people abandon.
+ *
+ * Split the way a counter conversation splits: what are we washing, where and
+ * when do we fetch it, how are you paying. Each step fits a phone screen, the
+ * price stays pinned at the bottom throughout, and the header says which of the
+ * three you are on — so the end is always in sight.
+ */
+const STEPS = [
+  { id: 'order', label: 'Your order' },
+  { id: 'when', label: 'Where & when' },
+  { id: 'pay', label: 'Payment' },
+] as const;
+
+/** Which step a given field lives on, so a failed submit lands on it. */
+const FIELD_STEP: Record<string, number> = {
+  name: 1,
+  phone: 1,
+  email: 1,
+  address: 1,
+  pickupDate: 1,
+  wallet: 2,
+};
+
+/** One field style for the whole form, from the site's tokens. */
+const FIELD =
+  'w-full rounded-md border border-white/15 bg-brand-charcoal px-4 py-3 text-[15px] text-white placeholder:text-brand-text-muted transition-colors duration-200 focus:border-brand-gold focus:outline-none';
+const LABEL = 'block text-[13px] font-medium text-brand-text-light';
+
+/** Money, once, everywhere. */
+const cedis = (amount: number) => `₵${amount.toFixed(2)}`;
+
+export default function BookingModal({
+  isOpen,
+  onClose,
+  onBookingCreated,
+}: BookingModalProps) {
+  /**
+   * What the landing page already knows, rather than two preselection props.
+   *
+   * The form used to be handed a service name and a count, which was everything
+   * `App` had to give it. The marketing page now collects a whole order and a
+   * collection zone before anyone reaches this form, and re-asking for what has
+   * already been said is the friction this modal exists to remove.
+   */
+  const { intent, clearItems } = useIntent();
+
+  const [step, setStep] = useState(0);
+  /**
+   * What is wrong, per field, rather than in a browser dialog.
+   *
+   * This form reported every validation failure through `alert()` — four of
+   * them in `handleSubmit` and two more around the card payment. `Contact.tsx`
+   * had already written down why that is wrong and fixed it there: an alert
+   * steals focus, cannot be styled, cannot be associated with the field it is
+   * about, and on some mobile browsers arrives after the keyboard has closed
+   * over the answer. It also cannot say *which* of four fields is the problem
+   * without spelling it out in prose.
+   */
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
@@ -72,6 +150,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
    * reconciled them.
    */
   const suburb = useMemo(() => deriveSuburb(pickupPin, address), [pickupPin, address]);
+
   /**
    * The services on this order, and how many of each.
    *
@@ -130,6 +209,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
   // Never below one line: an order with no service is not an order.
   const removeItem = (index: number) =>
     setItems((current) => (current.length <= 1 ? current : current.filter((_, i) => i !== index)));
+
   const [pickupDate, setPickupDate] = useState('');
   const [pickupTimeSlot, setPickupTimeSlot] = useState<string>(PICKUP_TIME_SLOTS[0]);
 
@@ -229,6 +309,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
     const open = PICKUP_TIME_SLOTS.find((slot) => !slotState[slot]?.full);
     if (open) setPickupTimeSlot(open);
   }, [slotState, pickupTimeSlot]);
+
   const [specialScent, setSpecialScent] = useState(DEFAULT_SCENT);
   const [starchLevel, setStarchLevel] = useState(DEFAULT_STARCH);
   const [specialInstructions, setSpecialInstructions] = useState('');
@@ -270,10 +351,20 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
   const [paystackAuthUrl, setPaystackAuthUrl] = useState('');
   const [paystackRef, setPaystackRef] = useState('');
   const [paystackError, setPaystackError] = useState('');
+  /**
+   * What the last verify came back with, said on the panel rather than popped.
+   *
+   * "Still pending" is a real answer to a question the customer just asked, and
+   * it used to arrive as an `alert()` — a modal dialog on top of a modal form,
+   * which on a phone lands after the keyboard has closed and cannot be read by
+   * anything pointing at the panel it is about.
+   */
+  const [paystackNotice, setPaystackNotice] = useState('');
 
   const handlePaystackInit = async () => {
     setPaystackLoading(true);
     setPaystackError('');
+    setPaystackNotice('');
     try {
       // No invented fallback. This ran with `'patron@freshfold.com'` when the
       // form and the session were both blank, and that address is wrong twice
@@ -283,7 +374,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
       // `reference-not-yours`. Asked for here rather than discovered there.
       const userEmail = email.trim() || loggedInUser?.email || '';
       if (!userEmail) {
-        throw new Error('Add your email address above before paying — the receipt is sent there.');
+        throw new Error('Add your email address on the previous step — the receipt is sent there.');
       }
       const res = await fetch('/api/paystack/initialize', {
         method: 'POST',
@@ -320,7 +411,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
       setPaystackAuthUrl(data.authorization_url);
       setPaystackRef(data.reference);
       setTransactionRef(data.reference);
-      
+
       // Open Paystack authorization URL
       window.open(data.authorization_url, '_blank', 'width=600,height=750');
     } catch (err: any) {
@@ -338,13 +429,14 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
    * including "still pending", which is the one that tells them the checkout is
    * not finished. The automatic call from `usePaystackReturn` is not a
    * question: the redirect fires for an abandoned checkout as readily as a paid
-   * one, so a pending result there is the ordinary case and popping an alert
-   * over it would be scolding somebody for closing a window.
+   * one, so a pending result there is the ordinary case and announcing it would
+   * be scolding somebody for closing a window.
    */
   const runPaystackVerify = async (announce: boolean) => {
     if (!paystackRef) return;
     setPaystackLoading(true);
     setPaystackError('');
+    setPaystackNotice('');
     try {
       const res = await fetch(`/api/paystack/verify/${encodeURIComponent(paystackRef)}`);
       const data = await res.json();
@@ -354,9 +446,11 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
       if (data.data && data.data.status === 'success') {
         setIsPaid(true);
         setTransactionRef(data.data.reference || paystackRef);
-        if (announce) alert('Paystack payment verified successfully!');
+        if (announce) setPaystackNotice('Payment confirmed.');
       } else if (announce) {
-        alert(`Paystack transaction status: ${data.data?.status || 'pending'}. Please complete payment on Paystack checkout and try again.`);
+        setPaystackNotice(
+          `Paystack says this payment is ${data.data?.status || 'pending'}. Finish it in the checkout window, then check again.`
+        );
       }
     } catch (err: any) {
       // Surfaced on the panel either way — it is the one outcome the customer
@@ -373,7 +467,7 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
   // Gated on there being a reference at all, so this window is not listening
   // for messages before it has opened anything.
   usePaystackReturn(useCallback(() => void runPaystackVerify(false), [paystackRef]), !!paystackRef);
-  
+
   const [isSuccess, setIsSuccess] = useState(false);
   const [createdBooking, setCreatedBooking] = useState<Booking | null>(null);
   /**
@@ -427,6 +521,9 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
       setPaystackRef('');
       setPaystackAuthUrl('');
       setSettleError('');
+      setPaystackNotice('');
+      setStep(0);
+      setErrors({});
 
       try {
         const user = store.readCurrentUser();
@@ -439,8 +536,8 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
           // Look for past bookings under this email or phone to pre-fill address, city, suburb
           const allBookings: Booking[] = store.readBookings();
           const matched = allBookings.filter(
-            b => 
-              (b.email && user.email && b.email.toLowerCase() === user.email.toLowerCase()) || 
+            b =>
+              (b.email && user.email && b.email.toLowerCase() === user.email.toLowerCase()) ||
               samePhone(b.phone, user.phone)
           );
           if (matched.length > 0) {
@@ -473,37 +570,50 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
     }
   }, [isOpen]);
 
-  // Sync preselected services on open
+  /**
+   * Open on the order the visitor built upstairs.
+   *
+   * Whole lines, not a service and a count: someone who priced two loads, a
+   * duvet and a press has said all of that already, and the old single
+   * preselection could only carry the first third of it.
+   *
+   * Clamped on the way in even though `intent` clamps on the way out — this is
+   * a form, and a form is not the only thing that can put a line on an order.
+   * An empty basket leaves the default line alone, which is what opening the
+   * form from the header or the portal means.
+   *
+   * Read when the form opens rather than on every change to `intent`, so that
+   * editing lines *inside* the form is not fought by the basket outside it.
+   */
   useEffect(() => {
-    if (preselectedService) {
-      // Replaces the first line rather than appending: this is the card the
-      // visitor clicked on the marketing page, so it is the order's subject.
-      setItemService(0, preselectedService);
-    }
-  }, [preselectedService, isOpen]);
+    if (!isOpen || intent.items.length === 0) return;
+
+    setItems(
+      intent.items.slice(0, MAX_ITEMS).map((item) => ({
+        serviceType: item.serviceType,
+        quantity: clampQuantity(item.quantity, item.serviceType),
+      }))
+    );
+    // `intent.items` is deliberately not a dependency: this seeds the form on
+    // open and then gets out of the way.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
 
   /**
-   * The quote, from the shared table.
+   * And in the zone the area check confirmed, when nothing better is known.
    *
-   * This used to be a cascade of `service.includes(…)` branches with the scent
-   * and starch surcharges bolted on, duplicating the customer app's
-   * `priceBreakdown` — and disagreeing with it, because the test for the
-   * unscented option was `specialScent !== 'Fragrance-Free'` while the option's
-   * value is `'Fragrance-Free (Pure Hypoallergenic Soap)'`. The two are never
-   * equal, so the website charged ₵5 for the one scent that is free and the app
-   * did not. Same selections, two prices, depending on where you booked.
-   *
-   * `quoteBooking` rather than `priceBreakdown`, and with the same two arguments
-   * the server passes: this showed the list price while the server recorded the
-   * discounted total, so a member was quoted one number and billed another. It
-   * was not only cosmetic — `handlePaystackInit` sends this figure to Paystack,
-   * so a member paying by card was charged the gross for a booking the ledger
-   * had already marked down.
-   *
-   * The plan and the points come off the signed-in account, which is where the
-   * server reads them too. Signed out, neither is passed and the answer is the
-   * list price, which is what a guest pays.
+   * Functional rather than a plain `setCity`, because the account prefill above
+   * runs in the same commit and a stored address is the better answer — this
+   * only fills a blank. The suburb the booking is actually filed under is still
+   * derived from the pin and the typed address; this is a starting point, not
+   * the record.
    */
+  useEffect(() => {
+    if (!isOpen || !intent.suburb) return;
+    setCity((current) => current || intent.suburb);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
+
   /**
    * A promo code the customer has typed, and what the server said it is worth.
    *
@@ -520,6 +630,20 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
   const [promoError, setPromoError] = useState('');
   const [promoChecking, setPromoChecking] = useState(false);
 
+  /**
+   * What this booking costs, from the shared table.
+   *
+   * `quoteBooking` rather than `priceBreakdown`, and with the same two arguments
+   * the server passes: this showed the list price while the server recorded the
+   * discounted total, so a member was quoted one number and billed another. It
+   * was not only cosmetic — `handlePaystackInit` sends this figure to Paystack,
+   * so a member paying by card was charged the gross for a booking the ledger
+   * had already marked down.
+   *
+   * The plan and the points come off the signed-in account, which is where the
+   * server reads them too. Signed out, neither is passed and the answer is the
+   * list price, which is what a guest pays.
+   */
   const estimate = useMemo(
     () =>
       quoteBooking({
@@ -602,43 +726,146 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
     setPickupDate(isoDaysFromNow(1));
   }, [isOpen]);
 
+  const dialog = useRef<HTMLDivElement | null>(null);
+  const body = useRef<HTMLDivElement | null>(null);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name || !phone || !address || !pickupDate) {
-      alert('Please fill out all required physical details to coordinate transport.');
-      return;
-    }
+  /**
+   * The three things a dialog owes anyone not using a mouse.
+   *
+   * This had none of them: no `role`, no `aria-modal`, no Escape, no focus
+   * trap, and the page behind kept scrolling — so tabbing out of the form
+   * landed silently in the marketing page underneath while the overlay still
+   * covered it, with no way back and no way out short of a click on the
+   * backdrop. The header's own drawer has done Escape and the scroll lock
+   * properly since it was written; there was no reason this had not.
+   */
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const restoreTo = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+
+      const node = dialog.current;
+      if (!node) return;
+      const focusable = node.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusable.length === 0) return;
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', onKey);
+    dialog.current?.focus();
+
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = previousOverflow;
+      restoreTo?.focus?.();
+    };
+  }, [isOpen, onClose]);
+
+  // A new step is a new screenful; start it at the top rather than wherever the
+  // last one was scrolled to.
+  useEffect(() => {
+    body.current?.scrollTo({ top: 0 });
+  }, [step]);
+
+  /**
+   * Everything the collection cannot go ahead without.
+   *
+   * Returned as a map rather than thrown one at a time, so a reader who left
+   * three fields blank is told about three fields instead of discovering them
+   * one alert at a time.
+   */
+  const checkDetails = useCallback((): Record<string, string> => {
+    const found: Record<string, string> = {};
+
+    if (!name.trim()) found.name = 'We need a name for the courier to ask for.';
+
+    if (!phone.trim()) found.phone = 'The courier rings this from your door.';
+    // A partial number is worse than none: it looks like a contact and reaches
+    // nobody.
+    else if (!isCompletePhone(phone)) found.phone = PHONE_LENGTH_MESSAGE;
 
     // The confirmation — and with it the link that sets the portal password —
     // is emailed, so a booking without an address to send it to leaves the
-    // patron with no way into their own tracking terminal.
-    if (!email.trim()) {
-      alert('Please add your email address. Your booking receipt and portal setup link are sent there.');
-      return;
-    }
+    // customer with no way into their own tracking page.
+    if (!email.trim()) found.email = 'Your receipt and portal link are sent here.';
 
-    // The courier rings this number from the doorstep, so a partial one is
-    // worse than none: it looks like a contact and reaches nobody.
-    if (!isCompletePhone(phone)) {
-      alert(PHONE_LENGTH_MESSAGE);
-      return;
+    if (!address.trim()) found.address = 'Tell us where to collect from.';
+    if (!pickupDate) found.pickupDate = 'Pick a day for the collection.';
+
+    return found;
+  }, [name, phone, email, address, pickupDate]);
+
+  /** Puts the cursor on the first thing that is wrong. */
+  const focusFirstError = (found: Record<string, string>) => {
+    const first = Object.keys(found)[0];
+    if (!first) return;
+    window.setTimeout(() => document.getElementById(`booking-${first}`)?.focus(), 60);
+  };
+
+  const goToStep = (next: number) => {
+    // Forward past the details step is the only move that has to be earned.
+    if (next > 1 && step <= 1) {
+      const found = checkDetails();
+      setErrors(found);
+      if (Object.keys(found).length > 0) {
+        setStep(1);
+        focusFirstError(found);
+        return;
+      }
     }
+    setErrors({});
+    setStep(Math.max(0, Math.min(STEPS.length - 1, next)));
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    const found = checkDetails();
 
     /**
      * A wallet that cannot cover it is worth saying up front.
      *
-     * Advisory only now — the server checks the balance again when it takes the
-     * money, on a locked row, against the price it worked out itself. This is here
-     * so the customer is told before they commit rather than after.
+     * Advisory only — the server checks the balance again when it takes the
+     * money, on a locked row, against the price it worked out itself. This is
+     * here so the customer is told before they commit rather than after.
      */
     if (paymentMethod === 'Wallet' && walletBalance < estimatedPrice) {
-      alert(
-        `Insufficient wallet balance (₵${walletBalance.toFixed(2)} GHS) for this ₵${estimatedPrice.toFixed(2)} booking. ` +
-          'Top up from the patron portal, or pay by card or mobile money.'
-      );
+      found.wallet =
+        `Your wallet holds ${cedis(walletBalance)} and this comes to ${cedis(estimatedPrice)}. ` +
+        'Top up from your order page, or pay by card or on pickup.';
+    }
+
+    if (Object.keys(found).length > 0) {
+      setErrors(found);
+      // The earliest step carrying a fault, so the reader is put in front of
+      // the first thing to fix rather than the last.
+      setStep(Math.min(...Object.keys(found).map((field) => FIELD_STEP[field] ?? 1)));
+      focusFirstError(found);
       return;
     }
+
+    setErrors({});
 
     const newBooking: Booking = {
       id: bookingId,
@@ -684,7 +911,16 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
       }),
       riderNote: riderNote.trim() || undefined,
       address,
-      city: city || 'Boutique Care District',
+      /**
+       * The town, and `Kumasi` when nobody said otherwise.
+       *
+       * This defaulted to `'Boutique Care District'`, which is not a place. It
+       * was written onto the record, printed on the courier's card and shown
+       * back to the customer on their own order — an invented address component
+       * on a real booking. The shop is in Kumasi and every collection zone is
+       * inside it, so that is the honest default.
+       */
+      city: city.trim() || 'Kumasi',
       suburb,
       // Optional by design. The server falls back to a pin derived from the
       // address when there is none, and refuses one outside the service area.
@@ -712,6 +948,10 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
     onBookingCreated(newBooking);
     setCreatedBooking(newBooking);
     setIsSuccess(true);
+
+    // The basket has become an order. Leaving it filled would reopen the form
+    // on a duplicate of the booking that was just placed.
+    clearItems();
 
     /**
      * Now settle it, if anything is owed up front.
@@ -743,967 +983,1089 @@ export default function BookingModal({ isOpen, onClose, preselectedService = '',
       setSettleError(
         error instanceof ApiError
           ? error.message
-          : 'Your pickup is booked, but we could not take the payment just now. Settle it from the patron portal.'
+          : 'Your pickup is booked, but we could not take the payment just now. Settle it from your order page.'
       );
     } finally {
       setSubmitting(false);
     }
   };
 
-  // Compile WhatsApp redirect URL based on form data.
-  //
-  // Hidden for now, along with the button on the success screen. The confirmation
-  // email already carries this detail, so nothing is lost while it is switched off.
-  //
-  // A note to the desk about the order, and nothing more. The portal setup link
-  // used to ride along in this message; it is emailed now, so it no longer sits
-  // in a chat thread that anyone holding the phone can scroll back through.
-  // const triggerWhatsAppRedirect = () => {
-  //   if (!createdBooking) return;
-  //   const formatMsg = [
-  //     'Hi FreshFold Laundry Co.! I would like to confirm my premium clothing pickup:',
-  //     `• Booking ID: ${createdBooking.id}`,
-  //     `• Patron: ${createdBooking.name}`,
-  //     `• Fabric Treatment: ${createdBooking.serviceType}`,
-  //     `• Pickup: ${createdBooking.pickupDate} @ ${createdBooking.pickupTime}`,
-  //     `• Scent: ${specialScent}`,
-  //     `• Delivery: ${createdBooking.deliveryDate}`,
-  //     `• Surcharges Estimate: ₵${estimatedPrice}.00 GHS`,
-  //     `• Address: ${createdBooking.address}, ${createdBooking.suburb}`,
-  //     createdBooking.riderNote ? `• Note for Rider: ${createdBooking.riderNote}` : '',
-  //   ].filter(Boolean).join('\n');
-  //
-  //   const encoded = encodeURIComponent(formatMsg);
-  //   window.open(`https://wa.me/233200957165?text=${encoded}`, '_blank');
-  // };
-
   if (!isOpen) return null;
 
+  /** One field-level error, under the field it is about. */
+  const Fault = ({ field }: { field: string }) =>
+    errors[field] ? (
+      <p id={`booking-${field}-error`} className="mt-1.5 flex items-start gap-1.5 text-body text-brand-gold">
+        <AlertCircle aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <span>{errors[field]}</span>
+      </p>
+    ) : null;
+
+  const faulted = (field: string) =>
+    errors[field]
+      ? { 'aria-invalid': true, 'aria-describedby': `booking-${field}-error`, className: `${FIELD} border-brand-gold` }
+      : { className: FIELD };
+
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-y-auto">
+    <div className="fixed inset-0 z-[100] flex items-end justify-center sm:items-center sm:p-4">
       {/* Backdrop */}
-      <div 
-        className="absolute inset-0 bg-brand-charcoal/90 backdrop-blur-sm transition-opacity" 
-        onClick={onClose} 
+      <div
+        className="absolute inset-0 bg-brand-charcoal/90 backdrop-blur-sm"
+        onClick={onClose}
+        aria-hidden="true"
       />
 
-      {/* Modal Dialog Frame - Curved block container matching the premium theme */}
-      <div className="relative w-full max-w-2xl bg-[#0C0C0C] rounded-2xl border border-white/10 shadow-[0_25px_60px_-15px_rgba(0,0,0,0.9)] overflow-hidden z-10 text-left">
-        
-        {/* Modal Brand Border Line */}
-        <div className="h-1.5 bg-brand-sage" />
+      <div
+        ref={dialog}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="booking-title"
+        className="relative z-10 flex max-h-[94svh] w-full flex-col overflow-hidden rounded-t-2xl border border-white/10 bg-brand-card text-left font-ui shadow-[0_25px_60px_-15px_rgba(0,0,0,0.9)] focus:outline-none sm:max-h-[92svh] sm:max-w-3xl sm:rounded-2xl"
+      >
+        {/*
+          The swap between the form and the confirmation, in CSS.
 
-        {/* Modal Header */}
-        <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between">
-          <div className="text-left">
-            <span className="font-mono text-[9px] tracking-[0.25em] text-brand-sage uppercase font-bold">
-              Secure Scheduling Engine
-            </span>
-            <h3 className="font-serif text-lg text-white font-medium">
-              Schedule Garment Concierge Pickup
-            </h3>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 text-stone-400 hover:text-white transition-colors cursor-pointer"
-            aria-label="Close modal"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+          This was `AnimatePresence mode="wait"`, which holds the incoming panel
+          back until the outgoing one's tween has finished — and that tween runs
+          on `requestAnimationFrame`. Throttle the frames (a backgrounded tab, a
+          busy main thread, a mid-range Android under load) and the exit never
+          completes, so the confirmation never arrives: the booking is created,
+          the payment is taken, and the customer is still looking at the form
+          they just submitted. The obvious thing to do next is press Confirm
+          again, which is a second real booking.
 
-        <AnimatePresence mode="wait">
+          `index.css` already carries this lesson for the marketing page's
+          panels, and `Reveal` carries it for the section entrances. The rule
+          both follow applies here most of all — **the resting state is the
+          visible one**. `panel-swap` animates *from* transparent, so a frame
+          budget of zero still leaves the right panel on screen; `key` is what
+          makes React remount and restart it.
+        */}
           {!isSuccess ? (
-            <motion.form 
+            <form
               key="booking-form"
               onSubmit={handleSubmit}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              className="p-6 space-y-5 max-h-[80vh] overflow-y-auto"
+              /*
+                Enter moves to the next step rather than doing nothing.
+                
+                A three-step form inside one `<form>` has a submit button only
+                on the last step, so on the first two Enter is swallowed and the
+                keyboard user is stranded — they have to reach for the mouse to
+                get past a screen they have finished typing into. Textareas keep
+                Enter, because there it means a new line.
+              */
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter') return;
+                if (step >= STEPS.length - 1) return;
+                const target = event.target as HTMLElement;
+                if (target.tagName === 'TEXTAREA' || target.tagName === 'BUTTON') return;
+                event.preventDefault();
+                goToStep(step + 1);
+              }}
+              noValidate
+              className="panel-swap flex min-h-0 flex-1 flex-col"
             >
-              
-              {/* Form segment - Personal Credentials */}
-              <div className="space-y-3">
-                <h4 className="font-sans text-[10px] uppercase tracking-wider text-stone-500 font-bold">
-                  01. Patron Credentials
-                </h4>
-                {loggedInUser ? (
-                  <div className="bg-[#161616]/70 border border-brand-sage/20 rounded-xl p-4 flex items-center justify-between shadow-sm">
-                    <div className="flex items-center space-x-3.5 text-left">
-                      <div className="p-2.5 rounded-lg bg-brand-sage/10 text-brand-sage border border-brand-sage/20 shrink-0">
-                        <ShieldCheck className="w-5 h-5 text-brand-sage" />
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-serif text-xs font-semibold text-white uppercase tracking-wider">{loggedInUser.name}</span>
-                          <span className="text-[7.5px] tracking-widest uppercase bg-brand-sage/20 text-brand-sage px-1.5 py-0.5 rounded border border-brand-sage/30 font-mono font-black">
-                            Portal Patron Linked
-                          </span>
-                        </div>
-                        <div className="text-[10px] text-stone-400 font-mono mt-0.5">
-                          {loggedInUser.email} • {loggedInUser.phone}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <span className="text-[7.5px] text-stone-500 uppercase font-mono tracking-[0.15em] block">Status: Verified</span>
-                      <span className="text-[9.5px] text-brand-sage font-sans font-light">Credentials locked</span>
-                    </div>
+              {/* Header, with the end in sight. */}
+              <div className="shrink-0 border-b border-white/10 px-5 py-4 sm:px-7">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h2 id="booking-title" className="font-display text-[25px] font-medium leading-tight text-white">
+                      Book a pickup
+                    </h2>
+                    <p className="mt-0.5 text-body text-brand-text-muted">
+                      Step {step + 1} of {STEPS.length} &middot; {STEPS[step].label}
+                    </p>
                   </div>
-                ) : (
-                  <>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
-                          Full Name *
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          value={name}
-                          onChange={(e) => setName(e.target.value)}
-                          placeholder="e.g. Paapa Cobbold"
-                          className="w-full bg-[#161616] text-white placeholder-[#8E9299]/50 rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
-                          Phone Number (for Courier SMS) *
-                        </label>
-                        <input
-                          type="tel"
-                          required
-                          inputMode="numeric"
-                          maxLength={PHONE_DIGITS}
-                          value={phone}
-                          onChange={(e) => setPhone(limitPhoneInput(e.target.value))}
-                          placeholder={`${PHONE_DIGITS} digits — e.g. 0244000000`}
-                          className="w-full bg-[#161616] text-white placeholder-[#8E9299]/50 rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors"
-                        />
-                      </div>
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
-                        Email Address (for Receipt & Portal Password Link) *
-                      </label>
-                      <input
-                        type="email"
-                        required
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        placeholder="e.g. PCobbold@yahoo.com"
-                        className="w-full bg-[#161616] text-white placeholder-[#8E9299]/50 rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors"
-                      />
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {/* Form segment - Pickup Logistics */}
-              <div className="space-y-3 pt-2">
-                <h4 className="font-sans text-[10px] uppercase tracking-wider text-stone-500 font-bold">
-                  02. Transit Logistics
-                </h4>
-                <div>
-                  <label
-                    htmlFor="booking-address"
-                    className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5"
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="-mr-1.5 grid h-9 w-9 shrink-0 place-items-center rounded-md text-brand-text-muted transition-colors duration-200 hover:bg-white/5 hover:text-white"
+                    aria-label="Close"
                   >
-                    Contactless Doorstep / Locker Pickup Address *
-                  </label>
-                  {/* Choosing a suggestion places the pin on the building, so
-                      the room number gets typed onto an address that is
-                      already in the right place. Typing straight past the list
-                      still works — it is a text field first. */}
-                  <AddressAutocomplete
-                    id="booking-address"
-                    value={address}
-                    onChange={setAddress}
-                    onPlaceSelected={(detail) => {
-                      setAddress(detail.address);
-                      setPickupPin(detail.coords);
-                      setPinOrigin('place');
-                    }}
-                    placeholder="e.g. Victory Towers Hostel (Tabua's Court)"
-                    className="w-full bg-[#161616] text-white placeholder-[#8E9299]/50 rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors"
-                  />
-                </div>
-                {/* The suburb used to be a required box here. It is derived
-                    from the pin now — see `suburb` above — because a customer
-                    who has chosen a building or dropped a pin has already said
-                    where they are, and asking them to also sort it into a
-                    collection zone was asking them to do our filing. */}
-                <div>
-                  <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
-                    City
-                  </label>
-                  <input
-                    type="text"
-                    value={city}
-                    onChange={(e) => setCity(e.target.value)}
-                    placeholder="Kumasi"
-                    className="w-full bg-[#161616] text-white placeholder-[#8E9299]/50 rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors"
-                  />
+                    <X className="h-5 w-5" />
+                  </button>
                 </div>
 
-                {/* The doorstep itself, which the typed address above cannot
-                    give us: a hostel block and room number is something no
-                    geocoder knows. */}
-                <PickupPinField
-                  value={pickupPin}
-                  onChange={setPickupPin}
-                  suburb={suburb}
-                  address={address}
-                  origin={pinOrigin}
-                  onOriginChange={setPinOrigin}
-                />
-
-                {/* Short note for the rider */}
-                <div>
-                  <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5 flex items-center justify-between">
-                    <span>Short Note for Courier Rider (Optional)</span>
-                    <span className="text-[9.5px] font-mono text-brand-gold uppercase tracking-wider font-semibold">Courier Navigation Tip</span>
-                  </label>
-                  <textarea
-                    rows={2}
-                    value={riderNote}
-                    onChange={(e) => setRiderNote(e.target.value)}
-                    placeholder="e.g. Call when outside hostel gate, ask for Kwame, leave with security at reception, or door 4B."
-                    className="w-full bg-[#161616] text-white placeholder-[#8E9299]/40 rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors resize-none"
-                  />
-                </div>
+                {/* The three stages, as a row you can walk back through. */}
+                <ol className="mt-4 flex gap-1.5">
+                  {STEPS.map((entry, index) => {
+                    const done = index < step;
+                    const here = index === step;
+                    return (
+                      <li key={entry.id} className="flex-1">
+                        <button
+                          type="button"
+                          onClick={() => goToStep(index)}
+                          aria-current={here ? 'step' : undefined}
+                          className="w-full text-left"
+                        >
+                          <span
+                            className={`block h-1 rounded-full transition-colors duration-300 ${
+                              here ? 'bg-brand-gold' : done ? 'bg-brand-sage-light' : 'bg-white/15'
+                            }`}
+                          />
+                          <span
+                            className={`mt-2 block text-[13px] font-medium transition-colors duration-200 ${
+                              here ? 'text-white' : 'text-brand-text-muted'
+                            }`}
+                          >
+                            {entry.label}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ol>
               </div>
 
-              {/* Form segment - Fabric Selection and custom variables */}
-              <div className="space-y-3 pt-2">
-                <h4 className="font-sans text-[10px] uppercase tracking-wider text-stone-500 font-bold">
-                  03. Garment specifications & Scent matching
-                </h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/*
-                    One row per service. A single-service order is the common
-                    case and looks like one row; "two loads and a set of linen"
-                    is two, and travels as one collection rather than two
-                    bookings for one doorstep.
-                  */}
-                  <div className="md:col-span-2 space-y-3">
-                    {items.map((item, index) => {
-                      const itemUnit = serviceUnit(item.serviceType);
-                      const itemCountable = serviceTakesQuantity(item.serviceType);
+              {/* The step itself. */}
+              <div ref={body} className="min-h-0 flex-1 overflow-y-auto px-5 py-6 sm:px-7">
+                {step === 0 && (
+                  <div className="space-y-7">
+                    <section>
+                      <h3 className="text-[13px] font-medium text-brand-text-light">
+                        What are we washing?
+                      </h3>
 
-                      return (
-                        <div
-                          key={index}
-                          className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 items-end"
-                        >
-                          <div>
-                            <label
-                              htmlFor={`booking-service-${index}`}
-                              className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5"
-                            >
-                              {index === 0 ? 'Primary Service Treatment' : `Service ${index + 1}`}
-                            </label>
-                            <select
-                              id={`booking-service-${index}`}
-                              value={item.serviceType}
-                              onChange={(e) => setItemService(index, e.target.value)}
-                              className="w-full bg-[#161616] text-white rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors text-left"
-                            >
-                              {BOOKABLE_SERVICE_ITEMS.map((srv) => (
-                                <option key={srv.id} value={srv.name}>
-                                  {srv.name} ({srv.priceInfo})
-                                </option>
-                              ))}
-                            </select>
-                          </div>
+                      <ul className="mt-3 space-y-3">
+                        {items.map((item, index) => {
+                          const itemUnit = serviceUnit(item.serviceType);
+                          const itemCountable = serviceTakesQuantity(item.serviceType);
 
-                          <div className="flex items-end gap-2">
-                            {/* The stepper, only for a service priced per
-                                countable thing — an order is one order however
-                                much of it there is. */}
-                            {itemCountable && (
-                              <div>
-                                <label
-                                  htmlFor={`booking-quantity-${index}`}
-                                  className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5"
-                                >
-                                  {pluraliseUnit(itemUnit, 2)}
+                          return (
+                            <li
+                              key={index}
+                              className="rounded-md border border-white/10 bg-brand-charcoal/60 p-3"
+                            >
+                              <div className="flex items-center gap-2">
+                                <label htmlFor={`booking-service-${index}`} className="sr-only">
+                                  {index === 0 ? 'Service' : `Service ${index + 1}`}
                                 </label>
-                                <div className="flex items-center gap-1.5">
+                                <select
+                                  id={`booking-service-${index}`}
+                                  value={item.serviceType}
+                                  onChange={(e) => setItemService(index, e.target.value)}
+                                  className={`${FIELD} flex-1`}
+                                >
+                                  {BOOKABLE_SERVICE_ITEMS.map((srv) => (
+                                    <option key={srv.id} value={srv.name}>
+                                      {srv.name} ({srv.priceInfo})
+                                    </option>
+                                  ))}
+                                </select>
+
+                                {/* Never on the first row: an order needs a service. */}
+                                {items.length > 1 && index > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => removeItem(index)}
+                                    aria-label={`Remove ${item.serviceType}`}
+                                    className="grid h-11 w-11 shrink-0 place-items-center rounded-md border border-white/15 text-brand-text-muted transition-colors duration-200 hover:border-white/30 hover:text-white"
+                                  >
+                                    <X className="h-4 w-4" />
+                                  </button>
+                                )}
+                              </div>
+
+                              {/* The stepper, only for a service priced per
+                                  countable thing — an order is one order however
+                                  much of it there is. */}
+                              {itemCountable ? (
+                                <div className="mt-3 flex items-center gap-1">
                                   <button
                                     type="button"
                                     onClick={() => setItemQuantity(index, item.quantity - 1)}
                                     disabled={item.quantity <= 1}
                                     aria-label={`One fewer ${itemUnit}`}
-                                    className={`w-10 h-11 shrink-0 rounded-xl border text-lg font-bold transition-colors ${
-                                      item.quantity <= 1
-                                        ? 'bg-white/5 border-white/5 text-stone-600 cursor-not-allowed'
-                                        : 'bg-[#161616] border-white/10 text-white hover:border-brand-sage cursor-pointer'
-                                    }`}
+                                    className="grid h-10 w-10 place-items-center rounded-md border border-white/15 text-white transition-colors duration-200 hover:bg-white/10 disabled:opacity-35 disabled:hover:bg-transparent"
                                   >
-                                    &minus;
+                                    <Minus className="h-4 w-4" />
                                   </button>
-                                  <input
-                                    id={`booking-quantity-${index}`}
-                                    type="number"
-                                    inputMode="numeric"
-                                    min={1}
-                                    max={MAX_QUANTITY}
-                                    value={item.quantity}
-                                    onChange={(e) => setItemQuantity(index, Number(e.target.value))}
-                                    className="w-16 bg-[#161616] text-white rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs text-center font-mono"
-                                  />
+                                  <span
+                                    aria-live="polite"
+                                    className="min-w-[6rem] text-center text-[15px] text-white tnum"
+                                  >
+                                    {item.quantity} {pluraliseUnit(itemUnit, item.quantity)}
+                                  </span>
                                   <button
                                     type="button"
                                     onClick={() => setItemQuantity(index, item.quantity + 1)}
                                     disabled={item.quantity >= MAX_QUANTITY}
                                     aria-label={`One more ${itemUnit}`}
-                                    className={`w-10 h-11 shrink-0 rounded-xl border text-lg font-bold transition-colors ${
-                                      item.quantity >= MAX_QUANTITY
-                                        ? 'bg-white/5 border-white/5 text-stone-600 cursor-not-allowed'
-                                        : 'bg-[#161616] border-white/10 text-white hover:border-brand-sage cursor-pointer'
-                                    }`}
+                                    className="grid h-10 w-10 place-items-center rounded-md border border-white/15 text-white transition-colors duration-200 hover:bg-white/10 disabled:opacity-35 disabled:hover:bg-transparent"
                                   >
-                                    +
+                                    <Plus className="h-4 w-4" />
                                   </button>
                                 </div>
-                              </div>
-                            )}
+                              ) : (
+                                <p className="mt-2 text-body text-brand-text-muted">
+                                  Priced per order
+                                </p>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
 
-                            {/* Never on the first row: an order needs a service. */}
-                            {items.length > 1 && index > 0 && (
+                      {items.length < MAX_ITEMS && (
+                        <button
+                          type="button"
+                          onClick={addItem}
+                          className="mt-3 rounded-md border border-white/25 px-4 py-2.5 text-[15px] font-medium text-white transition-colors duration-200 hover:border-brand-gold hover:text-brand-gold"
+                        >
+                          Add another service
+                        </button>
+                      )}
+                    </section>
+
+                    {/*
+                      A car detail and an office clean take no fabric finish, and
+                      the app hides these pickers for them. The website used to
+                      show them, charge for them, and write "Organic Lavender
+                      scent, None starch" onto the courier's card for a car.
+                    */}
+                    {isGarmentService(service) && (
+                      <section className="space-y-5 border-t border-white/10 pt-6">
+                        <h3 className="text-[13px] font-medium text-brand-text-light">
+                          How would you like it finished?
+                        </h3>
+
+                        <div>
+                          <label htmlFor="booking-scent" className={LABEL}>
+                            Scent
+                          </label>
+                          <select
+                            id="booking-scent"
+                            value={specialScent}
+                            onChange={(e) => setSpecialScent(e.target.value)}
+                            className={`${FIELD} mt-2`}
+                          >
+                            {SCENTS.map((option) => (
+                              <option key={option.id} value={option.id}>
+                                {option.label}
+                                {option.surcharge > 0
+                                  ? ` — +${cedis(option.surcharge)} a unit`
+                                  : ' — no charge'}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <span className={LABEL}>Starch, on anything ironed</span>
+                          <div className="mt-2 flex gap-2">
+                            {STARCH_LEVELS.map((level) => (
                               <button
                                 type="button"
-                                onClick={() => removeItem(index)}
-                                aria-label={`Remove ${item.serviceType}`}
-                                className="w-10 h-11 shrink-0 rounded-xl border border-white/10 bg-[#161616] text-stone-400 hover:text-red-400 hover:border-red-400/40 transition-colors cursor-pointer"
+                                key={level.id}
+                                onClick={() => setStarchLevel(level.id)}
+                                aria-pressed={starchLevel === level.id}
+                                className={`flex-1 rounded-md border px-3 py-3 text-[15px] transition-colors duration-200 ${
+                                  starchLevel === level.id
+                                    ? 'border-brand-sage-light bg-brand-sage text-white'
+                                    : 'border-white/15 text-brand-text-muted hover:border-white/30 hover:text-white'
+                                }`}
                               >
-                                &times;
+                                {level.label}
+                                {level.surcharge > 0 && (
+                                  <span className="mt-0.5 block text-body text-white/70 tnum">
+                                    +{cedis(level.surcharge)}
+                                  </span>
+                                )}
                               </button>
-                            )}
+                            ))}
                           </div>
                         </div>
-                      );
-                    })}
+                      </section>
+                    )}
 
-                    {items.length < MAX_ITEMS && (
+                    <section className="border-t border-white/10 pt-6">
+                      <label htmlFor="booking-instructions" className={LABEL}>
+                        Anything we should know? <span className="text-brand-text-muted">(optional)</span>
+                      </label>
+                      <input
+                        id="booking-instructions"
+                        type="text"
+                        value={specialInstructions}
+                        onChange={(e) => setSpecialInstructions(e.target.value)}
+                        placeholder="The white shirt has an ink stain on the cuff"
+                        className={`${FIELD} mt-2`}
+                      />
+                    </section>
+                  </div>
+                )}
+
+                {step === 1 && (
+                  <div className="space-y-7">
+                    <section>
+                      <h3 className="text-[13px] font-medium text-brand-text-light">
+                        Who is the courier meeting?
+                      </h3>
+
+                      {loggedInUser ? (
+                        <div className="mt-3 flex items-start gap-3 rounded-md border border-brand-sage-light/40 bg-brand-charcoal/60 p-4">
+                          <Check aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-brand-sage-light" />
+                          <div className="min-w-0">
+                            <p className="text-[15px] font-medium text-white">{loggedInUser.name}</p>
+                            <p className="mt-0.5 break-words text-body text-brand-text-muted">
+                              {loggedInUser.email} &middot; {loggedInUser.phone}
+                            </p>
+                            <p className="mt-1.5 text-body text-brand-text-muted">
+                              Signed in, so this order goes onto your account.
+                            </p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-3 space-y-5">
+                          <div className="grid gap-5 sm:grid-cols-2">
+                            <div>
+                              <label htmlFor="booking-name" className={LABEL}>
+                                Your name
+                              </label>
+                              <input
+                                id="booking-name"
+                                type="text"
+                                value={name}
+                                onChange={(e) => setName(e.target.value)}
+                                placeholder="Paapa Cobbold"
+                                {...faulted('name')}
+                                className={`${faulted('name').className} mt-2`}
+                              />
+                              <Fault field="name" />
+                            </div>
+                            <div>
+                              <label htmlFor="booking-phone" className={LABEL}>
+                                Phone
+                              </label>
+                              <input
+                                id="booking-phone"
+                                type="tel"
+                                inputMode="numeric"
+                                maxLength={PHONE_DIGITS}
+                                value={phone}
+                                onChange={(e) => setPhone(limitPhoneInput(e.target.value))}
+                                placeholder="0244000000"
+                                {...faulted('phone')}
+                                className={`${faulted('phone').className} mt-2`}
+                              />
+                              <Fault field="phone" />
+                            </div>
+                          </div>
+                          <div>
+                            <label htmlFor="booking-email" className={LABEL}>
+                              Email
+                            </label>
+                            <input
+                              id="booking-email"
+                              type="email"
+                              value={email}
+                              onChange={(e) => setEmail(e.target.value)}
+                              placeholder="you@example.com"
+                              {...faulted('email')}
+                              className={`${faulted('email').className} mt-2`}
+                            />
+                            <Fault field="email" />
+                            <p className="mt-1.5 text-body text-brand-text-muted">
+                              Your receipt goes here, with a link for setting up order tracking.
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                    </section>
+
+                    <section className="space-y-5 border-t border-white/10 pt-6">
+                      <h3 className="text-[13px] font-medium text-brand-text-light">
+                        Where are we collecting from?
+                      </h3>
+
+                      <div>
+                        <label htmlFor="booking-address" className={LABEL}>
+                          Address
+                        </label>
+                        {/* Choosing a suggestion places the pin on the building, so
+                            the room number gets typed onto an address that is
+                            already in the right place. Typing straight past the list
+                            still works — it is a text field first. */}
+                        <div className="mt-2">
+                          <AddressAutocomplete
+                            id="booking-address"
+                            value={address}
+                            onChange={setAddress}
+                            onPlaceSelected={(detail) => {
+                              setAddress(detail.address);
+                              setPickupPin(detail.coords);
+                              setPinOrigin('place');
+                            }}
+                            placeholder="Victory Towers Hostel, room 4B"
+                            className={faulted('address').className}
+                          />
+                        </div>
+                        <Fault field="address" />
+                      </div>
+
+                      {/* The suburb used to be a required box here. It is derived
+                          from the pin now — see `suburb` above — because a customer
+                          who has chosen a building or dropped a pin has already said
+                          where they are, and asking them to also sort it into a
+                          collection zone was asking them to do our filing. */}
+                      <div>
+                        <label htmlFor="booking-city" className={LABEL}>
+                          Town <span className="text-brand-text-muted">(optional)</span>
+                        </label>
+                        <input
+                          id="booking-city"
+                          type="text"
+                          value={city}
+                          onChange={(e) => setCity(e.target.value)}
+                          placeholder="Kumasi"
+                          className={`${FIELD} mt-2`}
+                        />
+                      </div>
+
+                      {/* The doorstep itself, which the typed address above cannot
+                          give us: a hostel block and room number is something no
+                          geocoder knows. */}
+                      <PickupPinField
+                        value={pickupPin}
+                        onChange={setPickupPin}
+                        suburb={suburb}
+                        address={address}
+                        origin={pinOrigin}
+                        onOriginChange={setPinOrigin}
+                      />
+
+                      <div>
+                        <label htmlFor="booking-rider-note" className={LABEL}>
+                          A note for the courier{' '}
+                          <span className="text-brand-text-muted">(optional)</span>
+                        </label>
+                        <textarea
+                          id="booking-rider-note"
+                          rows={2}
+                          value={riderNote}
+                          onChange={(e) => setRiderNote(e.target.value)}
+                          placeholder="Call when you reach the hostel gate and ask for Kwame."
+                          className={`${FIELD} mt-2 resize-none`}
+                        />
+                      </div>
+                    </section>
+
+                    <section className="space-y-5 border-t border-white/10 pt-6">
+                      <h3 className="text-[13px] font-medium text-brand-text-light">
+                        When suits you?
+                      </h3>
+
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        <div>
+                          <label htmlFor="booking-pickupDate" className={LABEL}>
+                            Collection day
+                          </label>
+                          <input
+                            id="booking-pickupDate"
+                            type="date"
+                            min={isoDaysFromNow(1)}
+                            value={pickupDate}
+                            onChange={(e) => setPickupDate(e.target.value)}
+                            {...faulted('pickupDate')}
+                            className={`${faulted('pickupDate').className} mt-2`}
+                          />
+                          <Fault field="pickupDate" />
+                        </div>
+                        <div>
+                          <label htmlFor="booking-pickup-slot" className={LABEL}>
+                            Collection window
+                          </label>
+                          <select
+                            id="booking-pickup-slot"
+                            value={pickupTimeSlot}
+                            onChange={(e) => setPickupTimeSlot(e.target.value)}
+                            className={`${FIELD} mt-2`}
+                          >
+                            {PICKUP_TIME_SLOTS.map((slot) => {
+                              const state = slotState[slot];
+                              return (
+                                <option key={slot} value={slot} disabled={state?.full}>
+                                  {windowLabel(slot)}
+                                  {state?.full
+                                    ? ' — full'
+                                    : state && state.remaining <= 3
+                                      ? ` — ${state.remaining} left`
+                                      : ''}
+                                </option>
+                              );
+                            })}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label htmlFor="booking-return-slot" className={LABEL}>
+                          Return window
+                          {pickupDate && (
+                            <span className="ml-1.5 font-normal text-brand-text-muted">
+                              — back to you on {deliveryDate}
+                            </span>
+                          )}
+                        </label>
+                        <select
+                          id="booking-return-slot"
+                          value={deliveryTimeSlot}
+                          onChange={(e) => setDeliveryTimeSlot(e.target.value)}
+                          className={`${FIELD} mt-2`}
+                        >
+                          {DELIVERY_TIME_SLOTS.map((slot) => {
+                            const state = deliveryState[slot];
+                            // Unreachable and full are different refusals, and
+                            // saying which is more use than one word for both.
+                            const reachable = returnOptions.some((option) => option.label === slot);
+
+                            return (
+                              <option key={slot} value={slot} disabled={!reachable || state?.full}>
+                                {windowLabel(slot)}
+                                {!reachable
+                                  ? ' — too early'
+                                  : state?.full
+                                    ? ' — full'
+                                    : state && state.remaining <= 3
+                                      ? ` — ${state.remaining} left`
+                                      : ''}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+                    </section>
+                  </div>
+                )}
+
+                {step === 2 && (
+                  <div className="space-y-7">
+                    <section>
+                      <h3 className="text-[13px] font-medium text-brand-text-light">
+                        How would you like to pay?
+                      </h3>
+
+                      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                        {([
+                          {
+                            id: 'Paystack' as const,
+                            // Paystack's own mark rather than a generic card
+                            // glyph: this is the option that hands the customer
+                            // to Paystack's checkout on Paystack's domain, and
+                            // seeing the same mark on both sides of that jump is
+                            // what makes it read as one flow rather than as a
+                            // redirect somewhere unexpected.
+                            icon: null,
+                            title: 'Card or mobile money',
+                            note: 'MTN, Telecel, AT and cards',
+                          },
+                          {
+                            id: 'Wallet' as const,
+                            icon: Wallet as typeof Wallet | null,
+                            title: 'Your wallet',
+                            note: `${cedis(walletBalance)} available`,
+                          },
+                          {
+                            id: 'Pay on Pickup' as const,
+                            icon: Banknote,
+                            title: 'Cash on pickup',
+                            note: 'Pay the courier at the door',
+                          },
+                        ]).map((option) => {
+                          const chosen = paymentMethod === option.id;
+                          return (
+                            <button
+                              key={option.id}
+                              type="button"
+                              onClick={() => {
+                                setPaymentMethod(option.id);
+                                setIsPaid(false);
+                                setErrors(({ wallet, ...rest }) => rest);
+                              }}
+                              aria-pressed={chosen}
+                              className={`rounded-md border p-4 text-left transition-colors duration-200 ${
+                                chosen
+                                  ? 'border-brand-gold bg-brand-gold/10'
+                                  : 'border-white/15 hover:border-white/30'
+                              }`}
+                            >
+                              {option.icon ? (
+                                <option.icon
+                                  aria-hidden="true"
+                                  className={`h-4 w-4 ${chosen ? 'text-brand-gold' : 'text-brand-text-muted'}`}
+                                />
+                              ) : (
+                                <PaystackMark className="h-4 w-4" />
+                              )}
+                              <p className="mt-2.5 text-[15px] font-medium text-white">{option.title}</p>
+                              <p className="mt-0.5 text-body text-brand-text-muted">{option.note}</p>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <Fault field="wallet" />
+                    </section>
+
+                    {paymentMethod === 'Paystack' && (
+                      <section className="rounded-md border border-white/10 bg-brand-charcoal/60 p-4">
+                        {isPaid ? (
+                          <p className="flex items-start gap-2 text-[15px] text-white">
+                            <Check aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-brand-sage-light" />
+                            <span>
+                              Paid — {cedis(estimatedPrice)}.{' '}
+                              <span className="text-brand-text-muted">Reference {transactionRef}</span>
+                            </span>
+                          </p>
+                        ) : (
+                          <>
+                            <p className="text-body text-brand-text-muted">
+                              You can pay now, or leave this and pay the courier — the pickup is
+                              booked either way.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={handlePaystackInit}
+                              disabled={paystackLoading}
+                              className="mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-brand-gold px-6 py-3.5 text-[15px] font-semibold text-brand-charcoal transition-colors duration-200 hover:bg-brand-gold-light disabled:opacity-60"
+                            >
+                              {/* Monochrome here: the button is already brass,
+                                  and a cyan mark on it is two brands shouting.
+                                  The colour version sits on the option above,
+                                  where the choice is actually made. */}
+                              <PaystackMark className="h-4 w-4" monochrome />
+                              {paystackLoading ? 'Opening checkout…' : `Pay ${cedis(estimatedPrice)} now`}
+                            </button>
+
+                            {paystackAuthUrl && (
+                              <div className="mt-3 space-y-2 rounded-md border border-white/10 p-3">
+                                <p className="text-body text-brand-text-muted">
+                                  The checkout opened in another window. If it was blocked, open it
+                                  here:
+                                </p>
+                                <a
+                                  href={paystackAuthUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="flex items-center gap-2 break-all text-body text-brand-gold underline decoration-brand-gold/40 underline-offset-4"
+                                >
+                                  <PaystackMark className="h-3.5 w-3.5 shrink-0" />
+                                  Open the Paystack checkout
+                                </a>
+                                {/*
+                                  "Check" asks Paystack. There used to be a
+                                  "Mark Paid" button beside it that simply set
+                                  the flag, and the flag went out as
+                                  `paymentStatus: 'Paid'` — a settled booking on
+                                  nobody's word at all. Asking is the only
+                                  option now, and the server asks again before
+                                  it takes anything.
+                                */}
+                                <button
+                                  type="button"
+                                  onClick={handlePaystackVerify}
+                                  disabled={paystackLoading}
+                                  className="w-full rounded-md border border-white/25 px-4 py-2.5 text-[15px] font-medium text-white transition-colors duration-200 hover:border-brand-gold hover:text-brand-gold disabled:opacity-60"
+                                >
+                                  {paystackLoading ? 'Checking…' : "I've paid — check"}
+                                </button>
+                              </div>
+                            )}
+                          </>
+                        )}
+
+                        <div aria-live="polite">
+                          {paystackNotice && (
+                            <p className="mt-3 text-body text-brand-text-light">{paystackNotice}</p>
+                          )}
+                          {paystackError && (
+                            <p className="mt-3 flex items-start gap-1.5 text-body text-brand-gold">
+                              <AlertCircle aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                              <span>{paystackError}</span>
+                            </p>
+                          )}
+                        </div>
+                      </section>
+                    )}
+
+                    {paymentMethod === 'Wallet' && (
+                      <section className="rounded-md border border-white/10 bg-brand-charcoal/60 p-4">
+                        <div className="flex items-baseline justify-between gap-4 text-[15px]">
+                          <span className="text-brand-text-muted">Your wallet</span>
+                          <span className="text-white tnum">{cedis(walletBalance)}</span>
+                        </div>
+                        <div className="mt-2 flex items-baseline justify-between gap-4 border-t border-white/10 pt-2 text-[15px]">
+                          <span className="text-brand-text-muted">This order</span>
+                          <span className="text-white tnum">&minus;{cedis(estimatedPrice)}</span>
+                        </div>
+                        <p className="mt-2.5 text-body text-brand-text-muted">
+                          Taken from your wallet once the booking is confirmed.
+                        </p>
+                      </section>
+                    )}
+
+                    {/* ------------------------------------------------ promo code */}
+                    <section className="border-t border-white/10 pt-6">
+                      <label htmlFor="booking-promo" className={LABEL}>
+                        Promo or referral code{' '}
+                        <span className="text-brand-text-muted">(optional)</span>
+                      </label>
+                      <div className="mt-2 flex gap-2">
+                        <input
+                          id="booking-promo"
+                          type="text"
+                          value={promoInput}
+                          onChange={(e) => setPromoInput(e.target.value.toUpperCase())}
+                          placeholder="FRESHERS24"
+                          className={`${FIELD} flex-1 uppercase`}
+                        />
+                        {promo ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPromo(null);
+                              setPromoInput('');
+                              setPromoError('');
+                            }}
+                            className="shrink-0 rounded-md border border-white/25 px-5 text-[15px] font-medium text-white transition-colors duration-200 hover:border-white/40"
+                          >
+                            Remove
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={promoChecking || !promoInput.trim()}
+                            onClick={() => void applyPromo(promoInput)}
+                            className="shrink-0 rounded-md border border-white/25 px-5 text-[15px] font-medium text-white transition-colors duration-200 hover:border-brand-gold hover:text-brand-gold disabled:opacity-40 disabled:hover:border-white/25 disabled:hover:text-white"
+                          >
+                            {promoChecking ? 'Checking…' : 'Apply'}
+                          </button>
+                        )}
+                      </div>
+                      <div aria-live="polite">
+                        {promo && (
+                          <p className="mt-2 text-body text-brand-sage-light">
+                            {promo.code} applied — {promo.label}, {cedis(estimate.promoDiscount)} off.
+                          </p>
+                        )}
+                        {!!promoError && <p className="mt-2 text-body text-brand-gold">{promoError}</p>}
+                      </div>
+                    </section>
+
+                    {/* The receipt, before it is a receipt. */}
+                    <section className="border-t border-white/10 pt-6">
+                      <h3 className="text-[13px] font-medium text-brand-text-light">
+                        What you are booking
+                      </h3>
+                      <dl className="mt-3 space-y-2 text-[15px]">
+                        <div className="flex items-baseline justify-between gap-4">
+                          <dt className="text-brand-text-muted">
+                            {describeItems({ items: estimate.items, serviceType: service })}
+                          </dt>
+                          <dd className="shrink-0 text-white tnum">{cedis(estimate.gross)}</dd>
+                        </div>
+
+                        {/*
+                          The reductions, named. A member used to see a smaller
+                          total than the price list with nothing on screen to say
+                          why — the quote has carried these three figures all
+                          along and the form showed none of them.
+                        */}
+                        {estimate.waived > 0 && (
+                          <div className="flex items-baseline justify-between gap-4">
+                            <dt className="text-brand-sage-light">
+                              Covered by your plan
+                              {estimate.remainingPickups > 0 && (
+                                <span className="text-brand-text-muted">
+                                  {' '}
+                                  ({estimate.remainingPickups} left this month)
+                                </span>
+                              )}
+                            </dt>
+                            <dd className="shrink-0 text-brand-sage-light tnum">
+                              &minus;{cedis(estimate.waived)}
+                            </dd>
+                          </div>
+                        )}
+                        {estimate.memberDiscount > 0 && (
+                          <div className="flex items-baseline justify-between gap-4">
+                            <dt className="text-brand-sage-light">Member rate</dt>
+                            <dd className="shrink-0 text-brand-sage-light tnum">
+                              &minus;{cedis(estimate.memberDiscount)}
+                            </dd>
+                          </div>
+                        )}
+                        {estimate.tierDiscount > 0 && (
+                          <div className="flex items-baseline justify-between gap-4">
+                            <dt className="text-brand-sage-light">Loyalty discount</dt>
+                            <dd className="shrink-0 text-brand-sage-light tnum">
+                              &minus;{cedis(estimate.tierDiscount)}
+                            </dd>
+                          </div>
+                        )}
+                        {estimate.promoDiscount > 0 && (
+                          <div className="flex items-baseline justify-between gap-4">
+                            <dt className="text-brand-sage-light">{estimate.promoCode}</dt>
+                            <dd className="shrink-0 text-brand-sage-light tnum">
+                              &minus;{cedis(estimate.promoDiscount)}
+                            </dd>
+                          </div>
+                        )}
+
+                        <div className="flex items-baseline justify-between gap-4">
+                          <dt className="text-brand-text-muted">Pickup and delivery</dt>
+                          <dd className="shrink-0 text-brand-text-muted">Free</dd>
+                        </div>
+
+                        <div className="flex items-baseline justify-between gap-4 border-t border-white/15 pt-3">
+                          <dt className="font-medium text-white">Total</dt>
+                          <dd className="shrink-0 text-[19px] font-semibold text-brand-gold tnum">
+                            {cedis(estimatedPrice)}
+                          </dd>
+                        </div>
+
+                        {/*
+                          The tax already inside that figure.
+
+                          Disclosed rather than added: prices in this product
+                          have always been quoted to customers as the number they
+                          pay, so the default mode is inclusive and this is the
+                          extraction.
+                        */}
+                        {estimate.tax.tax > 0 && (
+                          <p className="text-body text-brand-text-muted">
+                            Includes {cedis(estimate.tax.tax)} tax (
+                            {estimate.tax.lines.map((line) => line.label).join(' + ')})
+                          </p>
+                        )}
+                      </dl>
+                    </section>
+                  </div>
+                )}
+              </div>
+
+              {/*
+                The total, and the way forward — pinned.
+
+                The price used to sit in a panel near the bottom of a very long
+                scroll, so for most of the form the reader could not see what
+                they were agreeing to. It is the number the whole screen is
+                about; it belongs where it is always visible.
+              */}
+              <div className="shrink-0 border-t border-white/10 bg-brand-card px-5 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-7">
+                <div className="flex items-center gap-4">
+                  <div className="min-w-0">
+                    <p className="text-[13px] text-brand-text-muted">
+                      {step === 2 ? 'You pay' : 'So far'}
+                    </p>
+                    <p className="text-[21px] font-semibold leading-none text-brand-gold tnum fs-semi">
+                      {cedis(estimatedPrice)}
+                    </p>
+                  </div>
+
+                  <div className="ml-auto flex shrink-0 items-center gap-2">
+                    {step > 0 && (
                       <button
                         type="button"
-                        onClick={addItem}
-                        className="text-[11px] font-semibold uppercase tracking-wider text-brand-sage hover:text-brand-sage-light transition-colors cursor-pointer"
+                        onClick={() => goToStep(step - 1)}
+                        className="flex items-center gap-1.5 rounded-md border border-white/25 px-4 py-3 text-[15px] font-medium text-white transition-colors duration-200 hover:border-white/40"
                       >
-                        + Add another service
+                        <ArrowLeft aria-hidden="true" className="h-4 w-4" />
+                        <span className="hidden sm:inline">Back</span>
+                      </button>
+                    )}
+
+                    {step < STEPS.length - 1 ? (
+                      <button
+                        type="button"
+                        onClick={() => goToStep(step + 1)}
+                        className="flex items-center gap-2 rounded-md bg-brand-gold px-6 py-3 text-[15px] font-semibold text-brand-charcoal transition-colors duration-200 hover:bg-brand-gold-light"
+                      >
+                        Continue
+                        <ArrowRight aria-hidden="true" className="h-4 w-4" />
+                      </button>
+                    ) : (
+                      <button
+                        type="submit"
+                        className="rounded-md bg-brand-gold px-6 py-3 text-[15px] font-semibold text-brand-charcoal transition-colors duration-200 hover:bg-brand-gold-light"
+                      >
+                        Confirm the pickup
                       </button>
                     )}
                   </div>
-                  {/*
-                    A car detail and an office clean take no fabric finish, and
-                    the app hides these pickers for them. The website used to
-                    show them, charge for them, and write "Organic Lavender
-                    scent, None starch" onto the courier's card for a car.
-                  */}
-                  {isGarmentService(service) && (
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
-                      Earthy Essential Oil Scent
-                    </label>
-                    <select
-                      value={specialScent}
-                      onChange={(e) => setSpecialScent(e.target.value)}
-                      className="w-full bg-[#161616] text-white rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors text-left"
-                    >
-                      {SCENTS.map((option) => (
-                        <option key={option.id} value={option.id}>
-                          {option.id}
-                          {option.surcharge > 0 ? ` (+ ₵${option.surcharge.toFixed(2)})` : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  )}
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
-                      Urgency Timeline
-                    </label>
-                    <input
-                      type="date"
-                      required
-                      value={pickupDate}
-                      onChange={(e) => setPickupDate(e.target.value)}
-                      className="w-full bg-[#161616] text-white rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
-                      Pickup Window Timeslot
-                    </label>
-                    <select
-                      value={pickupTimeSlot}
-                      onChange={(e) => setPickupTimeSlot(e.target.value)}
-                      className="w-full bg-[#161616] text-white rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors text-left"
-                    >
-                      {PICKUP_TIME_SLOTS.map((slot) => {
-                        const state = slotState[slot];
-                        return (
-                          <option key={slot} value={slot} disabled={state?.full}>
-                            {slot}
-                            {state?.full
-                              ? ' — full'
-                              : state && state.remaining <= 3
-                                ? ` — ${state.remaining} left`
-                                : ''}
-                          </option>
-                        );
-                      })}
-                    </select>
-                  </div>
-                  <div className="md:col-span-2">
-                    <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
-                      Return Window
-                      {pickupDate && (
-                        <span className="ml-2 normal-case font-normal tracking-normal text-stone-500">
-                          back to you on {deliveryDate}
-                        </span>
-                      )}
-                    </label>
-                    <select
-                      value={deliveryTimeSlot}
-                      onChange={(e) => setDeliveryTimeSlot(e.target.value)}
-                      className="w-full bg-[#161616] text-white rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors text-left"
-                    >
-                      {DELIVERY_TIME_SLOTS.map((slot) => {
-                        const state = deliveryState[slot];
-                        // Unreachable and full are different refusals, and
-                        // saying which is more use than one word for both.
-                        const reachable = returnOptions.some((option) => option.label === slot);
-
-                        return (
-                          <option key={slot} value={slot} disabled={!reachable || state?.full}>
-                            {slot}
-                            {!reachable
-                              ? ' — too early'
-                              : state?.full
-                                ? ' — full'
-                                : state && state.remaining <= 3
-                                  ? ` — ${state.remaining} left`
-                                  : ''}
-                          </option>
-                        );
-                      })}
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {isGarmentService(service) && (
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
-                      Starch Level Treatment (Ironed items)
-                    </label>
-                    <div className="flex gap-2.5">
-                      {STARCH_LEVELS.map((level) => (
-                        <button
-                          type="button"
-                          key={level.id}
-                          onClick={() => setStarchLevel(level.id)}
-                          className={`flex-1 py-2 text-xs rounded-xl border cursor-pointer transition-all duration-300 ${
-                            starchLevel === level.id
-                              ? 'bg-brand-sage border-brand-sage text-white font-bold'
-                              : 'bg-[#161616] border-white/10 text-[#8E9299] hover:text-white'
-                          }`}
-                        >
-                          {level.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  )}
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5">
-                      Special Garment instructions ?
-                    </label>
-                    <input
-                      type="text"
-                      value={specialInstructions}
-                      onChange={(e) => setSpecialInstructions(e.target.value)}
-                      placeholder="e.g. Leave bag inside locker 12, code 1902"
-                      className="w-full bg-[#161616] text-white placeholder-[#8E9299]/40 rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs transition-colors"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Form segment - 04. Payment Method Integration */}
-              <div className="space-y-3 pt-3 border-t border-white/10">
-                <div className="flex justify-between items-center">
-                  <h4 className="font-sans text-[10px] uppercase tracking-wider text-stone-500 font-bold flex items-center gap-1.5">
-                    <Lock className="w-3 h-3 text-brand-sage" />
-                    <span>04. Payment Settlement & Guarantee</span>
-                  </h4>
-                  {isPaid ? (
-                    <span className="text-[10px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-lg font-mono font-bold flex items-center gap-1">
-                      <CheckCircle2 className="w-3 h-3" /> PAID ON-THE-FLY ({transactionRef})
-                    </span>
-                  ) : (
-                    <span className="text-[9.5px] font-mono text-brand-gold uppercase tracking-wider">
-                      Ghana MoMo & Cards Supported
-                    </span>
-                  )}
-                </div>
-
-                {/* Payment Option Selector Grid */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => { setPaymentMethod('Paystack'); setIsPaid(false); }}
-                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                      paymentMethod === 'Paystack'
-                        ? 'bg-emerald-500/20 border-emerald-500 text-white shadow-lg'
-                        : 'bg-[#161616] border-white/10 text-stone-400 hover:text-white'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-1.5">
-                      <CreditCard className="w-4 h-4 text-emerald-400" />
-                      <span className="text-[7.5px] bg-emerald-500/20 text-emerald-400 font-mono px-1 rounded font-bold uppercase">Online</span>
-                    </div>
-                    <div>
-                      <p className="font-bold text-[11px] leading-tight text-emerald-400">Paystack</p>
-                      <p className="text-[8.5px] text-stone-400 font-mono">MoMo & Cards</p>
-                    </div>
-                  </button>
-
-                  {/*
-                    Selecting the wallet tab used to set `isPaid`, which then went
-                    out as `paymentStatus: 'Paid'` — so choosing how to pay was
-                    the same act as having paid. The debit happens in
-                    `payForBooking`, after the booking exists.
-                  */}
-                  <button
-                    type="button"
-                    onClick={() => { setPaymentMethod('Wallet'); setIsPaid(false); }}
-                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                      paymentMethod === 'Wallet'
-                        ? 'bg-brand-sage/15 border-brand-sage text-white'
-                        : 'bg-[#161616] border-white/10 text-stone-400 hover:text-white'
-                    }`}
-                  >
-                    <Wallet className="w-4 h-4 text-brand-gold mb-1.5" />
-                    <div>
-                      <p className="font-bold text-[11px] leading-tight">Patron Wallet</p>
-                      <p className="text-[8.5px] text-brand-gold font-mono">Bal: ₵{walletBalance}.00</p>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => { setPaymentMethod('Pay on Pickup'); setIsPaid(false); }}
-                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between col-span-2 sm:col-span-1 ${
-                      paymentMethod === 'Pay on Pickup'
-                        ? 'bg-brand-sage/15 border-brand-sage text-white'
-                        : 'bg-[#161616] border-white/10 text-stone-400 hover:text-white'
-                    }`}
-                  >
-                    <Banknote className="w-4 h-4 text-amber-400 mb-1.5" />
-                    <div>
-                      <p className="font-bold text-[11px] leading-tight">Pay on Pickup</p>
-                      <p className="text-[8.5px] text-stone-400 font-mono">Cash/Rider</p>
-                    </div>
-                  </button>
-                </div>
-
-                {/* Sub-Panel for Paystack Online Gateway */}
-                {paymentMethod === 'Paystack' && (
-                  <div className="bg-[#161616] p-4 rounded-xl border border-emerald-500/30 space-y-3">
-                    <div className="flex justify-between items-center">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                        <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">
-                          Paystack Ghana Live Gateway
-                        </span>
-                      </div>
-                      <span className="text-[9.5px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded font-mono font-bold">
-                        MTN • Telecel • AT • Cards
-                      </span>
-                    </div>
-
-                    <p className="text-xs text-stone-300">
-                      Amount to settle via Paystack: <strong className="text-emerald-400 font-mono font-bold">₵{estimatedPrice.toFixed(2)} GHS</strong>
+                {/* One live region for whatever went wrong, so a failed submit
+                    is announced rather than only drawn three steps away. */}
+                <div aria-live="polite">
+                  {Object.keys(errors).length > 0 && (
+                    <p className="mt-2.5 text-body text-brand-gold">
+                      {Object.keys(errors).length === 1
+                        ? 'One thing needs fixing before we can book this.'
+                        : `${Object.keys(errors).length} things need fixing before we can book this.`}
                     </p>
-
-                    {paystackError && (
-                      <div className="p-3 bg-red-500/15 border border-red-500/30 rounded-xl text-red-400 text-xs font-mono">
-                        ⚠️ {paystackError}
-                      </div>
-                    )}
-
-                    {!isPaid ? (
-                      <div className="space-y-2">
-                        <button
-                          type="button"
-                          onClick={handlePaystackInit}
-                          disabled={paystackLoading}
-                          className="w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer shadow-lg flex items-center justify-center gap-2"
-                        >
-                          <Lock className="w-4 h-4 text-white" />
-                          <span>{paystackLoading ? 'Connecting to Paystack...' : `Pay ₵${estimatedPrice.toFixed(2)} GHS via Paystack`}</span>
-                        </button>
-
-                        {paystackAuthUrl && (
-                          <div className="p-3 bg-black/60 rounded-xl border border-white/10 space-y-2 text-left">
-                            <p className="text-[11px] text-stone-300 font-mono">
-                              Checkout page opened! If pop-up was blocked, click below:
-                            </p>
-                            <a
-                              href={paystackAuthUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-block text-xs font-bold text-emerald-400 underline font-mono break-all"
-                            >
-                              Open Paystack Checkout Link ↗
-                            </a>
-                            <div className="pt-2 flex gap-2">
-                              {/*
-                                "Verify" asks Paystack. There used to be a
-                                "Mark Paid" button beside it that simply set the
-                                flag, and the flag went out as
-                                `paymentStatus: 'Paid'` — a settled booking on
-                                nobody's word at all. Asking is the only option
-                                now, and the server asks again before it takes
-                                anything.
-                              */}
-                              <button
-                                type="button"
-                                onClick={handlePaystackVerify}
-                                disabled={paystackLoading}
-                                className="flex-1 py-2 bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 rounded-xl text-xs font-mono font-bold hover:bg-emerald-500/30 transition-all cursor-pointer"
-                              >
-                                {paystackLoading ? 'Checking...' : 'Verify Paystack Payment'}
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="p-3 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 font-mono">
-                        <CheckCircle2 className="w-4.5 h-4.5 text-emerald-400" />
-                        <span>Paystack Payment Approved ({transactionRef})</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-
-                {/* Sub-Panel for Mobile Money Details */}
-                {paymentMethod === 'Wallet' && (
-                  <div className="bg-[#161616] p-4 rounded-xl border border-brand-gold/30 space-y-2 text-left">
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-stone-300 font-medium">FreshFold Digital Wallet Balance:</span>
-                      <span className="font-mono font-bold text-brand-gold">₵{walletBalance.toFixed(2)} GHS</span>
-                    </div>
-                    <div className="flex justify-between items-center text-xs pt-1 border-t border-white/10">
-                      <span className="text-stone-400">Amount to deduct:</span>
-                      <span className="font-mono font-bold text-brand-sage">- ₵{estimatedPrice.toFixed(2)} GHS</span>
-                    </div>
-                    <p className="text-[10px] text-stone-400 pt-1">
-                      Payment will be automatically debited from your patron wallet balance on confirmation.
-                    </p>
-                  </div>
-                )}
-              </div>
-
-
-              {/* Cost Preview estimation panel */}
-              <div className="p-4 bg-[#161616] rounded-xl border border-white/10 text-left flex justify-between items-center">
-                <div>
-                  <span className="font-mono text-[9px] uppercase tracking-wider text-stone-500 block">
-                    Estimated Transit & Soap Charges *
-                  </span>
-                  <span className="font-serif text-lg text-white font-medium mt-1 inline-flex items-center gap-1">
-                    <Sparkles className="w-4 h-4 text-brand-sage" />
-                    Estimated: <span className="text-brand-sage font-bold">₵{estimatedPrice.toFixed(2)} GHS</span>
-                  </span>
-                  {/* What the total is *for*, itemised — a customer who set a
-                      stepper three screens ago can see it is still counted, and
-                      one who added a second service can see both lines. Silent
-                      for the ordinary single-unit order, where it would only
-                      repeat the service name above. */}
-                  {(estimate.items.length > 1 || estimate.quantity > 1) && (
-                    <span className="block font-mono text-[9px] text-stone-400 mt-1">
-                      {describeItems({ items: estimate.items, serviceType: service })}
-                    </span>
-                  )}
-
-                  {/*
-                    The tax already inside that figure.
-                    
-                    Disclosed rather than added: prices in this product have
-                    always been quoted to customers as the number they pay, so
-                    the default mode is inclusive and this is the extraction.
-                    Before it existed, no price anywhere in the product carried a
-                    tax line at all.
-                  */}
-                  {estimate.tax.tax > 0 && (
-                    <span className="block font-mono text-[9px] text-stone-500 mt-1">
-                      includes ₵{estimate.tax.tax.toFixed(2)} tax
-                      {' ('}
-                      {estimate.tax.lines.map((line) => line.label).join(' + ')}
-                      {')'}
-                    </span>
-                  )}
-
-                  {estimate.promoDiscount > 0 && (
-                    <span className="block font-mono text-[9px] text-brand-sage mt-1">
-                      {estimate.promoCode} — ₵{estimate.promoDiscount.toFixed(2)} off
-                    </span>
                   )}
                 </div>
-                <div className="text-right">
-                  <span className={`font-sans text-[9px] px-2.5 py-1 rounded-lg uppercase border font-bold ${
-                    isPaid || paymentMethod === 'Wallet'
-                      ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                      : 'bg-brand-sage/10 text-brand-sage border-brand-sage/20'
-                  }`}>
-                    {isPaid || paymentMethod === 'Wallet' ? '✓ Instant Online Paid' : `Payment: ${paymentMethod}`}
-                  </span>
-                </div>
               </div>
-
-              {/* ------------------------------------------------ promo code */}
-              <div className="pt-4 border-t border-white/10 space-y-2">
-                <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider">
-                  Promo or referral code
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={promoInput}
-                    onChange={(e) => setPromoInput(e.target.value.toUpperCase())}
-                    placeholder="FRESHERS24"
-                    className="flex-1 bg-[#161616] text-white placeholder-[#8E9299]/40 rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs font-mono uppercase transition-colors"
-                  />
-                  {promo ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPromo(null);
-                        setPromoInput('');
-                        setPromoError('');
-                      }}
-                      className="px-4 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-stone-300 text-[10px] font-bold uppercase tracking-widest transition-all cursor-pointer"
-                    >
-                      Remove
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      disabled={promoChecking || !promoInput.trim()}
-                      onClick={() => void applyPromo(promoInput)}
-                      className={`px-4 rounded-xl border text-[10px] font-bold uppercase tracking-widest transition-all ${
-                        promoChecking || !promoInput.trim()
-                          ? 'border-white/10 bg-white/5 text-stone-500 cursor-not-allowed'
-                          : 'border-brand-sage bg-brand-sage text-white hover:bg-brand-sage-light cursor-pointer'
-                      }`}
-                    >
-                      {promoChecking ? 'Checking…' : 'Apply'}
-                    </button>
-                  )}
-                </div>
-
-                {promo && (
-                  <p className="text-[11px] text-brand-sage">
-                    {promo.code} applied — {promo.label}, ₵{estimate.promoDiscount.toFixed(2)} off
-                    this order.
-                  </p>
-                )}
-                {!!promoError && <p className="text-[11px] text-red-400">{promoError}</p>}
-              </div>
-
-              {/* Form submission CTAs */}
-              <div className="pt-4 border-t border-white/10 flex flex-col sm:flex-row gap-3">
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="px-6 py-3.5 rounded-xl font-sans text-xs font-semibold tracking-wider uppercase bg-white/5 hover:bg-white/10 text-stone-300 hover:text-white transition-all cursor-pointer w-full sm:w-1/3 text-center border border-white/5"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-6 py-3.5 rounded-xl font-sans text-xs font-bold tracking-widest uppercase bg-white text-black hover:bg-brand-sage hover:text-white hover:border-brand-sage transition-all cursor-pointer w-full sm:w-2/3 border border-white/10"
-                >
-                  Confirm & Schedule Pickup
-                </button>
-              </div>
-
-            </motion.form>
+            </form>
           ) : (
-            <motion.div 
-              key="booking-success"
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0 }}
-              className="p-8 text-center space-y-6"
-            >
-              <div className="inline-flex p-4 bg-brand-sage/15 rounded-full border border-brand-sage/20 mb-2">
-                <CheckCircle className="w-12 h-12 text-brand-sage" />
-              </div>
-
-              <div className="space-y-2">
-                <span className="font-mono text-[9px] tracking-[0.3em] text-brand-sage uppercase font-bold">
-                  Receipt Codified
-                </span>
-                <h4 className="font-serif text-2xl text-white font-light">
-                  Garment Concierge Confirmed!
-                </h4>
-                <p className="font-sans text-stone-400 text-xs sm:text-sm font-light max-w-md mx-auto leading-relaxed">
-                  Your pickup booking is recorded in our local ledger. We have generated a secure tracking ID: <strong className="text-brand-sage font-mono">{createdBooking?.id}</strong>.
-                </p>
-              </div>
-
-              {/* Booking receipt */}
-              <div className="max-w-md mx-auto bg-[#161616] p-5 rounded-2xl border border-white/10 text-left text-xs space-y-2.5">
-                <div className="flex justify-between border-b border-white/10 pb-2 text-[10px] text-stone-500 font-mono">
-                  <span>ORDER LEDGER REPORT</span>
-                  <span>{createdBooking?.createdAt.substring(0, 10)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-stone-400">Patron Name:</span>
-                  <span className="text-white font-medium">{createdBooking?.name}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-stone-400">Garment Treatment:</span>
-                  <span className="text-white font-medium">
-                    {(createdBooking && describeItems(createdBooking)) || createdBooking?.serviceType}
+            <div key="booking-success" className="panel-swap flex min-h-0 flex-1 flex-col">
+              <div className="min-h-0 flex-1 overflow-y-auto px-5 py-8 sm:px-7">
+                <div className="mx-auto max-w-lg">
+                  <span className="grid h-11 w-11 place-items-center rounded-full bg-brand-sage">
+                    <Check aria-hidden="true" className="h-5 w-5 text-white" />
                   </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-stone-400">Pickup Schedule:</span>
-                  <span className="text-brand-sage font-semibold">{createdBooking?.pickupDate} during slot</span>
-                </div>
-                <div className="flex justify-between text-[11px] text-stone-400 pl-4">
-                  <span>↳ Timeslot:</span>
-                  <span className="text-white">{createdBooking?.pickupTime.split(' ')[0]} {createdBooking?.pickupTime.split(' ')[1]}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-stone-400">Address Location:</span>
-                  <span className="text-white font-medium max-w-[200px] text-right truncate">{createdBooking?.address}</span>
-                </div>
-                {createdBooking?.riderNote && (
-                  <div className="flex justify-between">
-                    <span className="text-stone-400">Note for Rider:</span>
-                    <span className="text-brand-gold font-medium max-w-[220px] text-right truncate">{createdBooking.riderNote}</span>
-                  </div>
-                )}
-                <div className="flex justify-between border-t border-white/10 pt-2">
-                  <span className="text-stone-400">Payment Channel:</span>
-                  <span className="text-stone-200 font-mono font-medium">{createdBooking?.paymentMethod || 'Pay on Pickup'}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-stone-400">Payment Status:</span>
-                  {/*
-                    Read off the record the server returned, not off what this
-                    form intended. It used to say PAID whenever the browser had
-                    set its own flag, and anything else was labelled
-                    "PAY ON PICKUP" — including a card payment that was still
-                    pending, and a wallet debit that had never happened.
-                  */}
-                  <span className={`font-mono font-bold ${createdBooking?.paymentStatus === 'Paid' ? 'text-emerald-400' : 'text-amber-400'}`}>
-                    {submitting
-                      ? 'SETTLING…'
-                      : createdBooking?.paymentStatus === 'Paid'
-                        ? `PAID (${createdBooking.transactionRef || 'ONLINE'})`
-                        : (createdBooking?.paymentStatus ?? 'PENDING').toUpperCase()}
-                  </span>
-                </div>
-                <div className="flex justify-between border-t border-white/10 pt-2 font-serif text-sm">
-                  <span className="text-stone-400">Total:</span>
-                  {/*
-                    The server's figure once it has answered. `estimatedPrice` is
-                    this form's arithmetic, and the two agree — same
-                    `quoteBooking` — but only one of them is what the customer
-                    owes, and a member's discount is applied server-side.
-                  */}
-                  <span className="text-brand-sage font-bold">
-                    ₵{(createdBooking?.amount ?? estimatedPrice).toFixed(2)} GHS
-                  </span>
-                </div>
-              </div>
 
-              {settleError && (
-                <div className="mt-3 p-3 bg-amber-500/15 border border-amber-500/40 rounded-xl text-left">
-                  <p className="text-[11px] font-bold uppercase tracking-wider text-amber-400 mb-1">
-                    Pickup booked — payment outstanding
+                  <h2 className="mt-5 font-display text-[29px] font-medium leading-tight text-white">
+                    Booked. We will see you {createdBooking?.pickupDate}.
+                  </h2>
+                  <p className="mt-3 text-lead text-brand-text-muted">
+                    Your order number is{' '}
+                    <span className="font-medium text-brand-gold tnum">{createdBooking?.id}</span>.
+                    Keep it — it is how you track the bag.
                   </p>
-                  <p className="text-[11px] leading-relaxed text-amber-200/90">{settleError}</p>
-                </div>
-              )}
 
-              {/* Portal setup link section */}
-              <div className="max-w-md mx-auto bg-brand-sage/5 border border-brand-sage/20 rounded-2xl p-4 text-xs text-left space-y-2 mt-4">
-                <span className="font-mono text-[9px] text-brand-gold uppercase tracking-widest block font-bold">DIGITAL CLIENT PORTAL DISPATCH</span>
-                <div className="text-[#8E9299] font-light leading-relaxed text-[11px]">
-                  {awaitingServer ? (
-                    /* The email is sent by the dispatch server once it has the
-                       booking, so while the write is still queued there is
-                       nothing in any inbox to look for. Saying "check your
-                       email" here sends the customer hunting for a message that
-                       was never sent. */
-                    <p>
-                      Saved on this device, but we have not been able to reach FreshFold yet — so{' '}
-                      <strong className="text-brand-gold">no email has gone out</strong>. Keep this tab
-                      open and it will send itself the moment the connection is back. Your booking is not
-                      lost.
-                    </p>
-                  ) : loggedInUser ? (
-                    <p>This pickup order is saved under your patron profile. You can view and track it here:</p>
-                  ) : (
-                    /* No shortcut into the password screen from here: the link
-                       in the email carries a single-use token, and it is the
-                       only thing that opens one. A button on this panel could
-                       only be a booking id in a URL, which is what anybody
-                       could have typed. */
-                    <p>
-                      Your receipt and a secure link for setting your portal password are on their way to{' '}
-                      <strong className="text-brand-sage font-mono">{createdBooking?.email}</strong>. Open it from
-                      your inbox to choose a password and follow your courier live.
-                    </p>
+                  {/* The receipt */}
+                  <dl className="mt-7 border-t border-white/15">
+                    {[
+                      { label: 'Name', value: createdBooking?.name },
+                      {
+                        label: 'What we are washing',
+                        value: (createdBooking && describeItems(createdBooking)) || createdBooking?.serviceType,
+                      },
+                      {
+                        label: 'Collection',
+                        value: `${createdBooking?.pickupDate} · ${windowLabel(createdBooking?.pickupTime)}`,
+                      },
+                      {
+                        label: 'Back to you',
+                        value: createdBooking?.deliveryTime
+                          ? `${createdBooking?.deliveryDate} · ${windowLabel(createdBooking.deliveryTime)}`
+                          : createdBooking?.deliveryDate,
+                      },
+                      { label: 'Address', value: createdBooking?.address },
+                      ...(createdBooking?.riderNote
+                        ? [{ label: 'Note for the courier', value: createdBooking.riderNote }]
+                        : []),
+                      { label: 'Paying by', value: paymentLabel(createdBooking?.paymentMethod) },
+                    ].map((row) => (
+                      <div
+                        key={row.label}
+                        className="flex items-baseline justify-between gap-6 border-b border-white/10 py-3"
+                      >
+                        <dt className="shrink-0 text-body text-brand-text-muted">{row.label}</dt>
+                        <dd className="text-right text-[15px] text-white">{row.value}</dd>
+                      </div>
+                    ))}
+
+                    <div className="flex items-baseline justify-between gap-6 border-b border-white/10 py-3">
+                      <dt className="shrink-0 text-body text-brand-text-muted">Payment</dt>
+                      {/*
+                        Read off the record the server returned, not off what this
+                        form intended. It used to say PAID whenever the browser had
+                        set its own flag, and anything else was labelled
+                        "PAY ON PICKUP" — including a card payment that was still
+                        pending, and a wallet debit that had never happened.
+                      */}
+                      <dd
+                        className={`text-right text-[15px] ${
+                          createdBooking?.paymentStatus === 'Paid'
+                            ? 'text-brand-sage-light'
+                            : 'text-brand-gold'
+                        }`}
+                      >
+                        {submitting
+                          ? 'Taking payment…'
+                          : createdBooking?.paymentStatus === 'Paid'
+                            ? `Paid${createdBooking.transactionRef ? ` · ${createdBooking.transactionRef}` : ''}`
+                            : 'Due on pickup'}
+                      </dd>
+                    </div>
+
+                    <div className="flex items-baseline justify-between gap-6 py-4">
+                      <dt className="shrink-0 font-medium text-white">Total</dt>
+                      {/*
+                        The server's figure once it has answered. `estimatedPrice`
+                        is this form's arithmetic, and the two agree — same
+                        `quoteBooking` — but only one of them is what the customer
+                        owes, and a member's discount is applied server-side.
+                      */}
+                      <dd className="text-[21px] font-semibold text-brand-gold tnum">
+                        {cedis(createdBooking?.amount ?? estimatedPrice)}
+                      </dd>
+                    </div>
+                  </dl>
+
+                  {settleError && (
+                    <div className="mt-5 rounded-md border border-brand-gold/40 bg-brand-gold/5 p-4">
+                      <p className="text-[15px] font-medium text-brand-gold">
+                        Pickup booked — the payment did not go through
+                      </p>
+                      <p className="mt-1.5 text-body text-brand-text-light">{settleError}</p>
+                    </div>
                   )}
+
+                  <div className="mt-6 rounded-md border border-white/10 bg-brand-charcoal/60 p-4">
+                    {awaitingServer ? (
+                      /* The email is sent by the dispatch server once it has the
+                         booking, so while the write is still queued there is
+                         nothing in any inbox to look for. Saying "check your
+                         email" here sends the customer hunting for a message that
+                         was never sent. */
+                      <p className="text-body text-brand-text-light">
+                        Saved on this device, but we have not reached FreshFold yet — so{' '}
+                        <strong className="font-medium text-brand-gold">no email has gone out</strong>.
+                        Keep this tab open and it will send itself when the connection is back. Your
+                        booking is not lost.
+                      </p>
+                    ) : loggedInUser ? (
+                      <p className="text-body text-brand-text-light">
+                        This order is on your account. You can follow the courier from your order
+                        page.
+                      </p>
+                    ) : (
+                      /* No shortcut into the password screen from here: the link
+                         in the email carries a single-use token, and it is the
+                         only thing that opens one. A button on this panel could
+                         only be a booking id in a URL, which is what anybody
+                         could have typed. */
+                      <p className="text-body text-brand-text-light">
+                        Your receipt is on its way to{' '}
+                        <strong className="font-medium text-white">{createdBooking?.email}</strong>,
+                        with a link for setting a password. Open it to follow the courier live.
+                      </p>
+                    )}
+                  </div>
                 </div>
-                <button
-                  onClick={() => {
-                    setIsSuccess(false);
-                    onClose();
-                    window.location.hash = '#portal';
-                  }}
-                  className="w-full mt-1 px-4 py-2.5 bg-brand-sage hover:bg-brand-sage-light text-white text-[10px] font-bold uppercase tracking-widest rounded-xl flex items-center justify-center space-x-1 transition-all cursor-pointer border border-white/5"
-                >
-                  <span>{loggedInUser ? 'Go directly to active portal' : 'Open the patron portal'}</span>
-                </button>
               </div>
 
-              {/* WhatsApp routing call link — hidden for now. */}
-              <div className="space-y-3 max-w-sm mx-auto pt-2">
-                <div className="pt-2">
+              <div className="shrink-0 border-t border-white/10 px-5 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-7">
+                <div className="mx-auto flex max-w-lg flex-col gap-2 sm:flex-row-reverse">
                   <button
+                    type="button"
+                    onClick={() => {
+                      setIsSuccess(false);
+                      onClose();
+                      window.location.hash = '#portal';
+                    }}
+                    className="w-full rounded-md bg-brand-gold px-6 py-3.5 text-[15px] font-semibold text-brand-charcoal transition-colors duration-200 hover:bg-brand-gold-light sm:w-auto"
+                  >
+                    {loggedInUser ? 'Go to my orders' : 'Open order tracking'}
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => {
                       setIsSuccess(false);
                       onClose();
                     }}
-                    className="text-stone-400 hover:text-white text-xs font-sans tracking-wide cursor-pointer uppercase font-semibold"
+                    className="w-full rounded-md border border-white/25 px-6 py-3.5 text-[15px] font-medium text-white transition-colors duration-200 hover:border-white/40 sm:w-auto"
                   >
-                    Done & Return to Site
+                    Done
                   </button>
                 </div>
               </div>
-
-            </motion.div>
+            </div>
           )}
-        </AnimatePresence>
-
       </div>
     </div>
   );

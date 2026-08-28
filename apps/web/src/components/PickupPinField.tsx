@@ -291,16 +291,18 @@ export default function PickupPinField({
   const originNote = origin && origin !== 'map' ? ORIGIN_NOTE[origin] : null;
 
   return (
-    <div className="space-y-2">
-      <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider mb-1.5 flex items-center justify-between">
-        <span>Exact Pickup Pin (Optional)</span>
-        <span className="text-[9.5px] font-mono text-brand-gold uppercase tracking-wider font-semibold">
-          Doorstep Accuracy
-        </span>
-      </label>
+    <div className="space-y-2.5">
+      {/* Sized and worded like every other field in the booking form. This
+          was an 11px tracked-uppercase label with a 9.5px monospace
+          "DOORSTEP ACCURACY" badge beside it — two type scales and a register
+          the rest of the product has stopped using, on the one control whose
+          instructions actually have to be read. */}
+      <span className="block text-[13px] font-medium text-brand-text-light">
+        Drop a pin on your door <span className="text-brand-text-muted">(optional)</span>
+      </span>
 
       {hasValidKey && (
-        <div className="relative w-full h-[210px] rounded-xl overflow-hidden border border-white/10 bg-[#0e0e0e]">
+        <div className="relative w-full h-[210px] rounded-md overflow-hidden border border-white/15 bg-brand-charcoal">
           <APIProvider apiKey={API_KEY} version="weekly">
             <Map
               defaultCenter={initialCentre}
@@ -337,7 +339,7 @@ export default function PickupPinField({
 
           {!value && (
             <div className="pointer-events-none absolute bottom-3 left-3 right-3 bg-black/85 border border-white/10 rounded-lg px-3 py-2">
-              <p className="text-[10.5px] text-stone-200 font-semibold">
+              <p className="text-body font-medium text-white">
                 Move the map so the pin sits on your gate
               </p>
             </div>
@@ -350,30 +352,30 @@ export default function PickupPinField({
           type="button"
           onClick={locate}
           disabled={busy}
-          className="flex-1 flex items-center justify-center gap-2 bg-brand-sage/90 hover:bg-brand-sage disabled:opacity-70 text-white rounded-xl py-2.5 text-[11px] font-bold transition-colors cursor-pointer"
+          className="flex flex-1 items-center justify-center gap-2 rounded-md bg-brand-sage py-3 text-[15px] font-medium text-white transition-colors duration-200 hover:bg-brand-sage-light disabled:opacity-60"
         >
-          {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Crosshair className="w-3.5 h-3.5" />}
+          {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Crosshair className="w-4 h-4" />}
           {busy ? 'Finding you…' : 'Use my current location'}
         </button>
         <button
           type="button"
           onClick={() => place({ ...anchor }, 'suburb')}
-          className="flex-1 flex items-center justify-center gap-2 bg-white/5 hover:bg-white/10 border border-white/10 text-stone-200 rounded-xl py-2.5 text-[11px] font-semibold transition-colors cursor-pointer"
+          className="flex flex-1 items-center justify-center gap-2 rounded-md border border-white/15 py-3 text-[15px] font-medium text-white transition-colors duration-200 hover:border-white/30"
         >
-          <MapPin className="w-3.5 h-3.5" />
+          <MapPin className="w-4 h-4" />
           Use the centre of {suburb.trim() || 'campus'}
         </button>
       </div>
 
       {!!error && (
-        <p className="text-[10.5px] text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+        <p className="rounded-md border border-brand-gold/30 bg-brand-gold/5 px-3 py-2 text-body text-brand-gold">
           {error}
         </p>
       )}
 
       {value ? (
         <div className="space-y-0.5">
-          <p className="text-[10px] text-stone-400 font-mono">
+          <p className="text-body text-brand-text-muted tnum">
             Pinned at {value.lat.toFixed(5)}° N, {Math.abs(value.lng).toFixed(5)}° W ·{' '}
             {fromAnchor < ANCHOR_TOLERANCE_M
               ? `the centre of ${suburb.trim() || 'campus'}`
@@ -382,10 +384,10 @@ export default function PickupPinField({
           {/* Where the pin came from, when it was not dragged there. A pin that
               appeared under the customer without explanation is the same
               unexamined guess the derived location used to be. */}
-          {!!originNote && <p className="text-[10px] text-brand-gold/90">{originNote}</p>}
+          {!!originNote && <p className="text-body text-brand-gold">{originNote}</p>}
         </div>
       ) : (
-        <p className="text-[10px] text-stone-500">
+        <p className="text-body text-brand-text-muted">
           {hasValidKey
             ? 'No pin yet. Without one your courier is sent to the middle of the suburb and will call you from there.'
             : 'Map unavailable. Share your location or pick the suburb centre — without either, your courier is sent to the middle of the suburb and will call you from there.'}

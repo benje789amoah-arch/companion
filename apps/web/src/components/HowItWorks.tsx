@@ -1,199 +1,177 @@
 import { useState } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { Calendar, Truck, Sparkles, Wind, FileText, Gift, ChevronRight, Play } from 'lucide-react';
+import {
+  Bike,
+  Calendar,
+  ClipboardCheck,
+  DoorOpen,
+  WashingMachine,
+  Wind,
+  type LucideIcon,
+} from 'lucide-react';
+import Reveal from './ui/Reveal';
+import StageArt from './ui/StageArt';
+
+/**
+ * The six stages, written the way the shop would say them.
+ *
+ * `note` is the one thing about a stage a customer would not assume. Nothing
+ * here promises anything the business does not already do: the rider tracking
+ * is the live map in the client portal, the re-wash is the same 24-hour promise
+ * the plans carry.
+ */
+const STAGES = [
+  {
+    title: 'You book a pickup',
+    icon: Calendar as LucideIcon,
+    when: 'About two minutes',
+    detail:
+      'Pick the day and the time window that suit you, on this site or by calling the shop. Tell us then if anything in the bag needs handling differently — a delicate, a stain, a suit.',
+    note: 'No account needed to book the first one.',
+  },
+  {
+    title: 'A rider collects it',
+    icon: Bike as LucideIcon,
+    when: 'Same day',
+    detail:
+      'A FreshFold rider comes to your door, tags the bag against your order and takes it to the shop. You get an order number the moment it is on board.',
+    note: 'You can watch the rider on the map from your order page.',
+  },
+  {
+    title: 'It gets washed',
+    icon: WashingMachine as LucideIcon,
+    when: 'Four to eight hours',
+    detail:
+      'Your load runs on its own. Water temperature, detergent and cycle are set by what is actually in the bag, and nothing of yours shares a drum with another household.',
+    note: 'Never mixed with anyone else’s laundry. Not once.',
+  },
+  {
+    title: 'Dried, pressed, folded',
+    icon: Wind as LucideIcon,
+    when: 'Two to four hours',
+    detail:
+      'Low heat, so nothing shrinks and nothing sets. Shirts and trousers are pressed and hung; sheets, towels and everyday clothes are folded flat and squared off.',
+    note: 'Say the word and shirts come back on hangers instead.',
+  },
+  {
+    title: 'Checked before it is packed',
+    icon: ClipboardCheck as LucideIcon,
+    when: 'Before it leaves',
+    detail:
+      'Every item is looked over once more under proper light. Anything still marked goes back for another attempt at the stain rather than going out as finished.',
+    note: 'If it still is not right, tell us within 24 hours and we redo it free.',
+  },
+  {
+    title: 'Back at your door',
+    icon: DoorOpen as LucideIcon,
+    when: 'The slot you picked',
+    detail:
+      'The rider returns it in the delivery window you chose, wrapped, folded and ready to go straight into the wardrobe. You sign for it at the door.',
+    note: 'Pickup and delivery cost nothing, on every order.',
+  },
+];
 
 export default function HowItWorks() {
-  const [activeStep, setActiveStep] = useState(0);
-
-  const steps = [
-    {
-      title: 'Schedule Pickup',
-      sub: 'Decide your timeline',
-      icon: Calendar,
-      duration: 'Est. 2 minutes',
-      details: 'Select your preferred pickup day and timeslot through our online booking engine or a quick call to the desk. Inform us about custom fabric requirements, laundry volume, or scent preferences.',
-      highlight: 'Keyless lock drops and contactless options available 24/7.'
-    },
-    {
-      title: 'We Collect Your Laundry',
-      sub: 'Concierge runner transit',
-      icon: Truck,
-      duration: 'Same-day collection',
-      details: 'A uniformed FreshFold logistics concierge arrives at your physical doorstep with weatherized heavy-duty dry shield cases. Bags are tagged and locked in real-time, matching your Patron profile.',
-      highlight: 'Full GPS tracking and digital receipt dispatch on collect.'
-    },
-    {
-      title: 'Washing & Garment Care',
-      sub: 'Bespoke fabric treatment',
-      icon: Sparkles,
-      duration: '4-8 hours cycle duration',
-      details: 'Garments are individual-separated, spot-evaluated by master artisans, and washed using advanced temperature-controlled drum cycles. We use plant-extract biological detergents and pH-balanced soft water.',
-      highlight: 'Zero mixing across families. 100% individual isolated batches.'
-    },
-    {
-      title: 'Drying, Ironing & Folding',
-      sub: 'Artisan textile press',
-      icon: Wind,
-      duration: '2-4 hours careful touch',
-      details: 'Gentle low-heat drying prevents shrinkage. Garments are hand-pressed using precise custom structural templates to guarantee symmetric, retail-standard folding, ready for direct closet storage.',
-      highlight: 'Bespoke collar-shields and hangers provided on formal suits.'
-    },
-    {
-      title: 'Packaging & Quality Check',
-      sub: 'Multi-point inspection',
-      icon: FileText,
-      duration: 'Double Q/A review',
-      details: 'Every collar, cuff, and button line is examined under crisp inspection stage lighting. Checked-out garments are wrapped in bespoke canvas protectors or organic breathable paper wrapping.',
-      highlight: 'If any spot remains, it is automatically routed back to spot cleaning.'
-    },
-    {
-      title: 'Delivery to Your Doorstep',
-      sub: 'Pristine drawer placement',
-      icon: Gift,
-      duration: 'Exact requested timeslot',
-      details: 'Your garment driver returns to your home within the specified delivery slot. All laundry is delivered crisp, folded of aesthetic order, and ready to immediately wear.',
-      highlight: 'Complimentary luxury hanger recycle program available on drop-off.'
-    }
-  ];
+  const [activeStage, setActiveStage] = useState(0);
+  const stage = STAGES[activeStage];
 
   return (
-    <section id="how-it-works" className="py-24 bg-brand-charcoal relative border-b border-white/5">
-      {/* Visual background lights */}
-      <div className="absolute top-1/4 right-[2%] w-[45%] h-[35%] rounded-full bg-brand-gold/5 blur-[160px] pointer-events-none" />
+    /*
+      The one section that is not charcoal.
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
-        
-        {/* Header Title */}
-        <div className="max-w-3xl mx-auto text-center mb-16">
-          <span className="font-sans text-[11px] uppercase tracking-[0.4em] text-brand-sage font-bold">
-            Bespoke Sequence
-          </span>
-          <h2 className="font-serif text-3xl sm:text-5xl text-white font-light tracking-tight mt-3">
-            The FreshFold <span className="font-serif italic text-brand-sage">Chronicle</span>
+      Olive is FreshFold's colour and it had been spending the whole page as a
+      1px hover border and a blurred blob. Here it is the ground: the process —
+      the part of the business that is actually theirs — is the part that gets
+      painted in it. White on this olive is 7.7:1, and the panel inverts back to
+      charcoal so the two halves of the section hold each other up.
+    */
+    <section
+      id="how-it-works"
+      className="bg-brand-sage py-20 font-ui text-white sm:py-28"
+    >
+      <div className="mx-auto max-w-[88rem] px-5 sm:px-8">
+        <Reveal className="max-w-[46ch]">
+          <h2 className="font-display text-section font-medium text-balance">
+            Six stages, start to finish.
           </h2>
-          <p className="font-sans text-[#8E9299] text-sm mt-4 font-light tracking-wide max-w-xl mx-auto leading-relaxed">
-            From your closet back to your closet, learn how our master handlers execute and safeguard your garments through a six-stage white glove care timeline.
+          <p className="mt-5 text-lead text-white/80">
+            From the moment the bag leaves your door to the moment it comes back. Pick any stage to
+            see what happens in it.
           </p>
-        </div>
+        </Reveal>
 
-        {/* Step-by-Step interactive timeline component */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 items-center" id="timeline-interactive-container">
-          
-          {/* Timeline Node buttons Selection Block (Grid columns: 5) - Sharp boundaries corrected to curved */}
-          <div className="lg:col-span-5 space-y-4" id="timeline-node-selectors">
-            {steps.map((step, idx) => {
-              const IconComponent = step.icon;
-              const isActive = idx === activeStep;
+        {/* The rail. A real sequence, so the numbers are information rather
+            than decoration. */}
+        <Reveal className="mt-14" delay={0.05}>
+          <ol
+            className="grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-white/25 sm:grid-cols-3 lg:grid-cols-6"
+            id="timeline-node-selectors"
+          >
+            {STAGES.map((item, index) => {
+              const isActive = index === activeStage;
               return (
-                <button
-                  key={idx}
-                  onClick={() => setActiveStep(idx)}
-                  className={`w-full text-left p-4 rounded-xl border transition-all duration-300 flex items-center space-x-4 cursor-pointer relative ${
-                    isActive
-                      ? 'bg-[#161616] border-brand-sage shadow-[0_4px_20px_-4px_rgba(90,90,64,0.15)] scale-[1.02] z-10'
-                      : 'bg-[#161616]/40 border-white/5 hover:border-white/20'
-                  }`}
-                  id={`timeline-btn-${idx}`}
-                >
-                  {/* Connection Node indicators */}
-                  {isActive && (
-                    <div className="absolute left-0 top-0 bottom-0 w-1 bg-brand-sage rounded-full" />
-                  )}
-
-                  {/* Icon Stamp */}
-                  <div className={`p-2.5 rounded-lg border transition-colors ${
-                    isActive ? 'bg-black border-brand-sage/30 text-brand-sage' : 'bg-[#161616]/70 border-white/5 text-[#8E9299]'
-                  }`}>
-                    <IconComponent className="w-5 h-5" />
-                  </div>
-
-                  {/* Titles */}
-                  <div className="flex-grow">
-                    <span className="font-mono text-[9px] tracking-widest text-brand-sage uppercase block font-semibold mb-0.5">
-                      Stage 0{idx + 1}
+                <li key={item.title} className="contents">
+                  <button
+                    onClick={() => setActiveStage(index)}
+                    aria-current={isActive ? 'step' : undefined}
+                    className={`group flex h-full flex-col gap-2 px-4 py-5 text-left transition-colors duration-300 ${
+                      isActive
+                        ? 'bg-brand-charcoal text-white'
+                        : 'bg-brand-sage text-white/85 hover:bg-brand-sage-dark hover:text-white'
+                    }`}
+                    id={`timeline-btn-${index}`}
+                  >
+                    <span className="flex items-center gap-2.5">
+                      <item.icon
+                        aria-hidden="true"
+                        className={`h-[18px] w-[18px] shrink-0 transition-colors duration-300 ${
+                          isActive ? 'text-brand-gold' : 'text-white/80'
+                        }`}
+                      />
+                      {/* white/80 rather than /70: on this olive, 70% lands at
+                          4.47:1 and the bar for 13px text is 4.5. */}
+                      <span
+                        className={`text-[13px] font-semibold tnum ${
+                          isActive ? 'text-brand-gold' : 'text-white/80'
+                        }`}
+                      >
+                        {String(index + 1).padStart(2, '0')}
+                      </span>
                     </span>
-                    <h4 className="font-serif text-sm text-white font-medium">
-                      {step.title}
-                    </h4>
-                    <p className="font-sans text-[11px] text-stone-400 font-light mt-0.5">
-                      {step.sub}
-                    </p>
-                  </div>
-
-                  <ChevronRight className={`w-4 h-4 text-[#8E9299] transition-transform ${isActive ? 'translate-x-1 text-brand-sage' : ''}`} />
-                </button>
+                    <span className="text-[15px] font-medium leading-snug tracking-[-0.01em]">
+                      {item.title}
+                    </span>
+                  </button>
+                </li>
               );
             })}
+          </ol>
+        </Reveal>
+
+        {/* The stage itself, on the inverted panel. */}
+        <Reveal className="mt-6" delay={0.1} id="timeline-explainer-display">
+          <div
+            key={activeStage}
+            className="panel-swap grid gap-8 rounded-lg bg-brand-charcoal p-7 sm:p-10 lg:grid-cols-12 lg:items-center lg:gap-12"
+          >
+            <div className="lg:col-span-7">
+              <p className="text-label font-medium text-brand-gold tnum">
+                Stage {String(activeStage + 1).padStart(2, '0')} of 06 · {stage.when}
+              </p>
+              <h3 className="mt-3 font-display text-sub font-medium text-white">{stage.title}</h3>
+              <p className="mt-4 max-w-[62ch] text-lead text-brand-text-muted">{stage.detail}</p>
+              <p className="mt-6 max-w-[62ch] border-t border-white/15 pt-5 text-body text-brand-text-light">
+                {stage.note}
+              </p>
+            </div>
+
+            {/* The drawing for this stage. Decorative and `aria-hidden` — it
+                repeats what the paragraph beside it already says, which is why
+                it is allowed to be purely pleasurable. */}
+            <div className="order-first flex justify-center lg:order-none lg:col-span-4 lg:col-start-9 lg:justify-end">
+              <StageArt stage={activeStage} className="h-40 w-40 sm:h-52 sm:w-52" />
+            </div>
           </div>
-
-          {/* Timeline Details Explanation Panel (Grid columns: 7) - Curved details card */}
-          <div className="lg:col-span-7" id="timeline-explainer-display">
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={activeStep}
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -20 }}
-                transition={{ duration: 0.4 }}
-                className="bg-[#161616] p-8 rounded-2xl border border-white/10 text-left relative overflow-hidden"
-              >
-                {/* Visual watermark */}
-                <div className="absolute -bottom-10 -right-10 font-serif italic text-9xl text-white/[0.02] select-none pointer-events-none">
-                  0{activeStep + 1}
-                </div>
-
-                <div className="flex justify-between items-center pb-4 border-b border-white/10">
-                  <div className="flex items-center space-x-2">
-                    <span className="w-2 h-2 rounded-full bg-brand-sage" />
-                    <span className="font-sans text-xs text-brand-sage font-bold tracking-widest uppercase">
-                      Operational Excellence
-                    </span>
-                  </div>
-                  <span className="font-mono text-[10px] text-brand-sage font-bold bg-brand-sage/15 px-2.5 py-0.5 rounded-lg border border-brand-sage/25">
-                    {steps[activeStep].duration}
-                  </span>
-                </div>
-
-                <h3 className="font-serif text-2xl text-white mt-6 font-light">
-                  {steps[activeStep].title}
-                </h3>
-                <p className="font-sans text-stone-300 text-sm font-light mt-4 leading-relaxed tracking-wide">
-                  {steps[activeStep].details}
-                </p>
-
-                {/* Micro tech highlight note - rounded corners */}
-                <div className="mt-8 p-4 bg-black/50 rounded-xl border-l-2 border-brand-sage text-left flex gap-3">
-                  <span className="text-xl font-bold text-brand-sage leading-none">“</span>
-                  <div>
-                    <h5 className="font-sans text-[11px] font-bold tracking-wider text-white uppercase">
-                      FreshFold Guarantee
-                    </h5>
-                    <p className="font-sans text-xs text-stone-400 mt-1 font-light leading-relaxed">
-                      {steps[activeStep].highlight}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Linear progress ticks indicator at bottom - rounded curves */}
-                <div className="mt-8 flex gap-2 justify-center">
-                  {steps.map((_, idx) => (
-                    <button
-                      key={idx}
-                      onClick={() => setActiveStep(idx)}
-                      className={`h-1.5 rounded-full transition-all duration-300 cursor-pointer ${
-                        idx === activeStep ? 'w-8 bg-brand-sage' : 'w-2 bg-stone-800'
-                      }`}
-                      aria-label={`Jump to stage ${idx + 1}`}
-                    />
-                  ))}
-                </div>
-
-              </motion.div>
-            </AnimatePresence>
-          </div>
-
-        </div>
-
+        </Reveal>
       </div>
     </section>
   );

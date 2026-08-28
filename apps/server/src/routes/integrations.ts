@@ -7,10 +7,18 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { Router } from 'express';
 import { GoogleGenAI } from '@google/genai';
 import {
+  MEMBERSHIP_PLANS,
   PAYMENT_PURPOSES,
+  SCENTS,
+  SERVICE_CATALOGUE,
+  SERVICE_SUBURBS,
   buildPaymentMetadata,
+  clampQuantity,
   isPaymentPurpose,
   paymentPurpose,
+  priceBreakdown,
+  priceLabel,
+  serviceByName,
   type PaymentDisplayFields,
   type PaymentPurpose,
 } from '@freshfold/core';
@@ -27,19 +35,74 @@ import { topUp } from '../wallet';
 
 export const chatRouter = Router();
 
-const SYSTEM_INSTRUCTION = `You are "Foldie", the exclusive virtual laundry concierge and brand ambassador for FreshFold Laundry Co.
-FreshFold Laundry Co. is an ultra-premium, high-end laundry and garment care concierge service operating around KNUST Campus and surrounding suburbs (Bomso, Ayeduase, Kotei, Deduako, Boadi).
+/**
+ * What the concierge is allowed to say we sell, generated from the catalogue.
+ *
+ * The instruction below used to list the services by hand, and it had drifted
+ * into advertising a different business: "sneaker restoration", "gentle dry
+ * cleaning", "couture/delicate care" and three scents ("Alpine Fresh",
+ * "Sandalwood Silk") that appear in no table anywhere. A customer who asked the
+ * bubble about any of them was quoted a service the booking form cannot place
+ * and the shop does not do.
+ *
+ * Built from `SERVICE_CATALOGUE` for the same reason every price on the
+ * marketing page is: the advert and the checkout have to be the same number,
+ * and a prose copy of a table is a copy that can drift.
+ */
+const SERVICE_LINES = SERVICE_CATALOGUE.map(
+  (service) =>
+    `  - ${service.name} — ${priceLabel(service)}${
+      service.bookable ? '' : ' (not bookable online; the desk quotes this one)'
+    }`
+).join('\n');
 
-Your persona and guidelines:
-- Tone: Extremely professional, warm, polished, polite, and helpful, like an elite luxury hotel concierge.
-- Knowledge base:
-  - We specialize in standard laundry, premium steam-pressing, gentle dry cleaning, sneaker restoration, couture/delicate care, and tailored scent matching (options include "Lavender Fields", "Alpine Fresh", "Sandalwood Silk", or "Unscented").
-  - Suburbs we service: Bomso, Ayeduase, KNUST Campus, Kotei, Deduako, Boadi.
-  - Features: We have a secure client portal where users can login with their credentials (email/phone and password) to schedule pickups, track their order history, view a live telemetry dispatch map of active courier riders, and rate the courier who delivered an order. Care loyalty points are earned on what a customer spends — one point per cedi — not on leaving a rating.
-  - Riders carry the FreshFold Dispatch companion app, so pickup and delivery progress the customer sees is reported live from the courier's own device.
-  - Scheduling: To schedule a pickup, users can use our prominent "Schedule Garment Concierge Pickup" form, which pre-fills their details if they are logged into the Client Portal.
-- Keep responses concise, elegant, and nicely formatted (use bullet points or simple paragraphs, but avoid overly long or verbose essays unless asked).
-- Answer questions accurately using this context. Encourage them to use the client portal or schedule a pickup!`;
+const PLAN_LINES = MEMBERSHIP_PLANS.map(
+  (plan) =>
+    `  - ${plan.name}: \u20b5${plan.price} a month, ${plan.includedPickups} pickups included, ` +
+    `${Math.round(plan.overageDiscount * 100)}% off anything past them`
+).join('\n');
+
+const SCENT_LINE = SCENTS.map(
+  (scent) => `${scent.label}${scent.surcharge ? ` (+\u20b5${scent.surcharge})` : ' (no charge)'}`
+).join(', ');
+
+/**
+ * Foldie, rewritten to sound like the shop it works for.
+ *
+ * The old persona was "an elite luxury hotel concierge" for an "ultra-premium
+ * garment care" business, which is the exact register `PRODUCT.md` names as an
+ * anti-reference: it is a Kumasi laundry charging \u20b530 a load, and borrowed
+ * luxury vocabulary reads as insecurity rather than prestige. Worse, a chat
+ * bubble is the one surface where a visitor asks a direct question and expects
+ * a direct answer, so it is the worst place on the site to be florid.
+ */
+const SYSTEM_INSTRUCTION = `You are Foldie, who answers questions on the FreshFold Laundry Co. website.
+
+FreshFold is a laundry in Kumasi, Ghana. The shop is at Wagyingo Opal, Ayeduase-Kotei, beside the Benab filling station. We collect laundry from the customer, wash and press it, and bring it back the next day. Pickup and delivery are free.
+
+How to speak:
+- Like a good shopkeeper who knows the trade: say the price, say the day, do not oversell.
+- Plain sentences. Short. No word a customer would not say back to you.
+- Never call anything "premium", "luxury", "bespoke", "exclusive", "elite" or "couture". Never call yourself a concierge, an ambassador or a specialist.
+- Confidence comes from being specific — "\u20b530 a load, back tomorrow, pickup is free" — not from adjectives.
+- A number beats an adjective. If you cannot answer with a price, a day, an address or a count, say you will find out rather than filling the gap.
+
+What is true, and the only things you may state as fact:
+- Services and prices:
+${SERVICE_LINES}
+- Turnaround is next day as standard. Same-day is the express service and costs more. The booking form's earliest collection is tomorrow.
+- Collection windows are 08:00-11:00, 12:00-15:00 and 17:30-20:30, seven days a week.
+- Areas we collect from: ${SERVICE_SUBURBS.join(', ')}.
+- Scents: ${SCENT_LINE}. Starch: none, light or medium.
+- Monthly plans:
+${PLAN_LINES}
+- Loyalty is earned, not bought: one point per cedi spent, and the tier discount comes off later orders. There is nothing to sign up for and nothing to buy.
+- Customers with an order can open the client portal to set a password, track the order on a live map, message the desk and see their points. Riders carry a companion app, so the progress shown is reported from the courier's own device.
+- To book, tell them to press "Book a pickup". It pre-fills from their account if they are signed in.
+
+If you are asked something outside this list — a service we do not offer, a price not written above, whether we can reach an area not listed, anything about a specific person's order — say you do not know and point them at the desk on +233 20 095 7165 or the message form at the bottom of the page. Do not guess, and do not invent services, prices, discounts, guarantees or statistics.
+
+Keep answers to a few sentences unless asked for more.`;
 
 /**
  * The concierge's ceiling.
@@ -68,11 +131,104 @@ const chatLimit = rateLimit({
 const MAX_HISTORY_TURNS = 40;
 const MAX_MESSAGE_CHARS = 4000;
 
+/**
+ * What the visitor was doing on the page when they opened the bubble.
+ *
+ * The concierge used to answer every question from a cold start, which on a
+ * page where someone has just priced an order and confirmed their area means
+ * asking them for all of it again. This is the same shared intent the booking
+ * form opens with, so "what would that cost me?" has an antecedent.
+ *
+ * Taken as **structure and rebuilt here**, never as a sentence the client
+ * composed. Everything on this route ends up inside a system instruction, and a
+ * free-text `context` field would be an open channel from any caller straight
+ * into the model's instructions — the whole point of validating each field
+ * against the same tables the shop actually runs on is that nothing reaches the
+ * prompt that the catalogue cannot vouch for.
+ */
+interface RawContext {
+  section?: unknown;
+  items?: unknown;
+  suburb?: unknown;
+  plan?: unknown;
+}
+
+/** The sections of the marketing page, as the page's own anchors name them. */
+const SECTIONS: Record<string, string> = {
+  hero: 'the top of the page',
+  services: 'the price list',
+  subscriptions: 'the monthly plans',
+  membership: 'the loyalty tiers',
+  'why-choose-us': 'what we promise',
+  'how-it-works': 'how the process works',
+  'target-customers': 'who we wash for',
+  contact: 'the contact details',
+};
+
+function describeContext(raw: RawContext | undefined): string {
+  if (!raw || typeof raw !== 'object') return '';
+
+  const notes: string[] = [];
+
+  const section = typeof raw.section === 'string' ? SECTIONS[raw.section] : undefined;
+  if (section) notes.push(`They are reading ${section}.`);
+
+  /**
+   * The basket, re-priced here rather than trusted.
+   *
+   * A total is the one thing in this payload a caller could gain anything by
+   * lying about, and `priceBreakdown` is a pure function over the same
+   * catalogue the checkout uses — so there is no reason to accept theirs.
+   */
+  const lines = Array.isArray(raw.items) ? raw.items.slice(0, 6) : [];
+  const items = lines
+    .map((line) => {
+      const serviceType =
+        line && typeof line === 'object' && typeof (line as { serviceType?: unknown }).serviceType === 'string'
+          ? (line as { serviceType: string }).serviceType
+          : '';
+      if (!serviceByName(serviceType)) return null;
+      return {
+        serviceType,
+        quantity: clampQuantity((line as { quantity?: unknown }).quantity, serviceType),
+      };
+    })
+    .filter((line): line is { serviceType: string; quantity: number } => line !== null);
+
+  if (items.length > 0) {
+    const listed = items.map((line) => `${line.quantity} \u00d7 ${line.serviceType}`).join(', ');
+    const total = priceBreakdown({ serviceType: items[0].serviceType, items }).gross;
+    notes.push(
+      `They have built an order on the page: ${listed}. That prices at \u20b5${total}, ` +
+        `collection and delivery included. If they ask what it costs, that is the number.`
+    );
+  }
+
+  const suburb =
+    typeof raw.suburb === 'string' && SERVICE_SUBURBS.includes(raw.suburb) ? raw.suburb : '';
+  if (suburb) notes.push(`They have confirmed we collect from ${suburb}, so do not ask where they are.`);
+
+  const plan =
+    typeof raw.plan === 'string' && MEMBERSHIP_PLANS.some((entry) => entry.name === raw.plan)
+      ? raw.plan
+      : '';
+  if (plan) notes.push(`They were looking at the ${plan}.`);
+
+  if (notes.length === 0) return '';
+
+  return `\n\nWhat this visitor has already done on the page (do not repeat it back as a list, just do not ask them for it again):\n${notes
+    .map((note) => `- ${note}`)
+    .join('\n')}`;
+}
+
 chatRouter.post(
   '/',
   chatLimit,
   guard(async (req, res) => {
-    const { history } = req.body as { history?: { role: string; content: string }[] };
+    const { history, context } = req.body as {
+      history?: { role: string; content: string }[];
+      context?: RawContext;
+    };
     if (!history || !Array.isArray(history)) {
       res.status(400).json({ error: 'Invalid history format. Must be an array of messages.' });
       return;
@@ -88,11 +244,20 @@ chatRouter.post(
       return;
     }
 
+    /**
+     * A missing key is our problem, and it used to be described to the customer.
+     *
+     * The old body named the environment variable and the file to put it in,
+     * and the chat bubble rendered that verbatim to whoever was asking about a
+     * duvet — an operational detail about our deployment, handed to strangers,
+     * in the voice of an answer. The operator needs it; the customer needs to
+     * know to phone the shop.
+     */
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      res.status(500).json({
-        error:
-          'GEMINI_API_KEY is not set on the dispatch server. Add it to apps/server/.env to enable the concierge chatbot.',
+      console.error('GEMINI_API_KEY is not set — the concierge cannot answer. Set it in apps/server/.env.');
+      res.status(503).json({
+        error: 'The assistant is offline at the moment. Call the desk on +233 20 095 7165 and we will answer straight away.',
       });
       return;
     }
@@ -110,7 +275,10 @@ chatRouter.post(
     const response = await ai.models.generateContent({
       model: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
       contents,
-      config: { systemInstruction: SYSTEM_INSTRUCTION, temperature: 0.7 },
+      config: {
+        systemInstruction: SYSTEM_INSTRUCTION + describeContext(context),
+        temperature: 0.7,
+      },
     });
 
     res.json({

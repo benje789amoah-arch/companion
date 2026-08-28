@@ -26,3 +26,4 @@ apps/server/data/
 # living inside the repo it belongs to — tracking them would commit the
 # repository into itself.
 .claude/worktrees/
+.claude

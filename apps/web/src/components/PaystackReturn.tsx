@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { CheckCircle2 } from 'lucide-react';
+import PaystackMark from './ui/PaystackMark';
 
 /**
  * Where Paystack sends the browser back to.
@@ -73,8 +74,15 @@ export default function PaystackReturn() {
   return (
     <div className="min-h-screen bg-brand-charcoal text-white font-sans antialiased flex items-center justify-center p-6">
       <div className="max-w-sm w-full bg-[#161616] rounded-2xl border border-white/10 p-8 text-center space-y-4 shadow-2xl">
-        <div className="inline-flex p-3 bg-brand-sage/15 rounded-full border border-brand-sage/25 text-brand-sage">
-          <CheckCircle2 className="w-8 h-8" />
+        {/* Both marks, because this window is the seam between the two
+            businesses: the customer arrived here from Paystack's checkout and
+            is about to be handed back to FreshFold, and saying so with the
+            same mark they just paid under is what makes the jump legible. */}
+        <div className="flex items-center justify-center gap-3">
+          <span className="inline-flex p-3 bg-brand-sage/15 rounded-full border border-brand-sage/25 text-brand-sage">
+            <CheckCircle2 className="w-8 h-8" />
+          </span>
+          <PaystackMark className="h-6 w-6" />
         </div>
 
         <div className="space-y-2">

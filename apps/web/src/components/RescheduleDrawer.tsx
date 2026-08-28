@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { motion } from 'motion/react';
 import { CalendarClock, X } from 'lucide-react';
 import {
   DELIVERY_TIME_SLOTS,
@@ -11,6 +10,8 @@ import {
   type Booking,
 } from '@freshfold/core';
 import * as store from '../services/store';
+import { FIELD } from './ui/portal';
+import { windowLabel } from './ui/slots';
 
 /**
  * Moving a booking that is already on the board.
@@ -147,151 +148,173 @@ export default function RescheduleDrawer({ booking, onClose, onMoved }: Reschedu
   };
 
   return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="fixed inset-0 z-[110] bg-black/80 backdrop-blur-md flex items-center justify-center p-4"
-    >
-      <div className="bg-[#181818] border border-brand-sage/40 rounded-2xl max-w-md w-full p-6 text-left space-y-5 shadow-2xl relative max-h-[90vh] overflow-y-auto">
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute top-4 right-4 text-stone-400 hover:text-white cursor-pointer"
-          aria-label="Close"
-        >
-          <X className="w-4 h-4" />
-        </button>
+    /* A conditional render, not an `AnimatePresence` child: the exit did not
+       complete, and a dismissed sheet left behind at `opacity: 0` is still a
+       `fixed inset-0` pane taking every click. See `.overlay-in` in index.css. */
+    <div className="overlay-in fixed inset-0 z-[110] flex items-end justify-center bg-black/75 p-0 backdrop-blur-sm sm:items-center sm:p-4">
+      {/* The backdrop as its own target: this sheet used to be closable only
+          by a 16px icon in its corner. */}
+      <button
+        type="button"
+        aria-label="Close"
+        onClick={onClose}
+        className="absolute inset-0 cursor-default"
+        tabIndex={-1}
+      />
 
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <CalendarClock className="w-4 h-4 text-brand-sage" />
-            <h4 className="font-serif text-lg text-white font-medium">Move this pickup</h4>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="reschedule-title"
+        className="sheet-in relative flex max-h-[92svh] w-full flex-col rounded-t-md border border-white/10 bg-brand-card font-ui text-[15px] text-white sm:max-w-md sm:rounded-md"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4">
+          <div className="min-w-0">
+            <h2
+              id="reschedule-title"
+              className="flex items-center gap-2 font-display text-[24px] font-medium leading-tight text-white"
+            >
+              <CalendarClock aria-hidden="true" className="h-5 w-5 text-brand-gold" />
+              Move this pickup
+            </h2>
+            <p className="mt-1 text-[13px] leading-relaxed text-brand-text-muted">
+              {movesLeft <= 1
+                ? 'This is the last time this booking can be moved. After that, cancel and rebook.'
+                : `You can move this booking ${movesLeft} more times.`}{' '}
+              Nothing is repriced — same order, same total, same reference{' '}
+              <span className="tnum text-white">{booking.id}</span>.
+            </p>
           </div>
-          <p className="font-sans text-[11px] font-light text-[#8E9299] leading-relaxed">
-            {movesLeft <= 1
-              ? 'This is the last time this booking can be moved. After that, cancel and rebook.'
-              : `You can move this booking ${movesLeft} more times.`}{' '}
-            Nothing is repriced — same order, same total, same reference {booking.id}.
-          </p>
-        </div>
-
-        <div className="space-y-2">
-          <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider">
-            New collection date
-          </label>
-          <div className="flex gap-1.5 overflow-x-auto pb-1">
-            {days.map((day) => {
-              const date = new Date(`${day}T00:00:00Z`);
-              const active = day === pickupDate;
-
-              return (
-                <button
-                  key={day}
-                  type="button"
-                  onClick={() => setPickupDate(day)}
-                  className={`shrink-0 px-3 py-2 rounded-xl border text-center transition-all cursor-pointer ${
-                    active
-                      ? 'bg-brand-sage border-brand-sage text-white'
-                      : 'bg-black/40 border-white/10 text-stone-400 hover:text-white'
-                  }`}
-                >
-                  <span className="block font-mono text-[8px] uppercase tracking-widest">
-                    {date.toLocaleDateString('en-GH', { weekday: 'short', timeZone: 'UTC' })}
-                  </span>
-                  <span className="block text-sm font-bold">{date.getUTCDate()}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider">
-            Collection window
-          </label>
-          <select
-            value={pickupTime}
-            onChange={(e) => setPickupTime(e.target.value)}
-            className="w-full bg-[#161616] text-white rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs"
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="-mr-1 -mt-1 grid h-9 w-9 shrink-0 place-items-center rounded-md text-brand-text-muted transition-colors duration-200 hover:bg-white/5 hover:text-white"
           >
-            {PICKUP_TIME_SLOTS.map((slot) => {
-              const state = slots[slot];
-              return (
-                <option key={slot} value={slot} disabled={state?.full}>
-                  {slot}
-                  {state?.full
-                    ? ' — full'
-                    : state && state.remaining <= 3
-                      ? ` — ${state.remaining} left`
-                      : ''}
-                </option>
-              );
-            })}
-          </select>
+            <X className="h-5 w-5" />
+          </button>
         </div>
 
-        <div className="space-y-2">
-          <label className="block text-[11px] font-semibold uppercase text-stone-400 tracking-wider">
-            Return window
-            <span className="ml-2 normal-case font-normal tracking-normal text-stone-500">
-              back to you on {deliveryDate}
-            </span>
-          </label>
-          <select
-            value={deliveryTime}
-            onChange={(e) => setDeliveryTime(e.target.value)}
-            className="w-full bg-[#161616] text-white rounded-xl p-3 border border-white/10 focus:border-brand-sage focus:outline-none text-xs"
-          >
-            {DELIVERY_TIME_SLOTS.map((slot) => {
-              const state = returns[slot];
-              const reachable = returnOptions.some((option) => option.label === slot);
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
+          <fieldset className="space-y-2">
+            <legend className="text-[13px] font-medium text-brand-text-muted">
+              New collection date
+            </legend>
+            <div className="flex gap-1.5 overflow-x-auto pb-1">
+              {days.map((day) => {
+                const date = new Date(`${day}T00:00:00Z`);
+                const active = day === pickupDate;
 
-              return (
-                <option key={slot} value={slot} disabled={!reachable || state?.full}>
-                  {slot}
-                  {!reachable
-                    ? ' — too early'
-                    : state?.full
+                return (
+                  <button
+                    key={day}
+                    type="button"
+                    onClick={() => setPickupDate(day)}
+                    aria-pressed={active}
+                    className={`shrink-0 rounded-md border px-3.5 py-2 text-center transition-colors duration-200 ${
+                      active
+                        ? 'border-brand-gold bg-brand-gold/10 text-white'
+                        : 'border-white/12 text-brand-text-muted hover:border-white/25 hover:text-white'
+                    }`}
+                  >
+                    <span className="block text-[13px]">
+                      {date.toLocaleDateString('en-GH', { weekday: 'short', timeZone: 'UTC' })}
+                    </span>
+                    <span className="tnum block text-[17px] font-semibold">
+                      {date.getUTCDate()}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </fieldset>
+
+          <div className="space-y-1.5">
+            <label htmlFor="reschedule-pickup" className="block text-[13px] font-medium text-brand-text-muted">
+              Collection window
+            </label>
+            <select
+              id="reschedule-pickup"
+              value={pickupTime}
+              onChange={(e) => setPickupTime(e.target.value)}
+              className={FIELD}
+            >
+              {PICKUP_TIME_SLOTS.map((slot) => {
+                const state = slots[slot];
+                return (
+                  /* The value stays the stored label — core documents those as
+                     frozen, because the string *is* the value on every booking
+                     ever made. Only what the customer reads is the hours. */
+                  <option key={slot} value={slot} disabled={state?.full}>
+                    {windowLabel(slot)}
+                    {state?.full
                       ? ' — full'
                       : state && state.remaining <= 3
                         ? ` — ${state.remaining} left`
                         : ''}
-                </option>
-              );
-            })}
-          </select>
-        </div>
+                  </option>
+                );
+              })}
+            </select>
+          </div>
 
-        {!!error && (
-          <p className="text-[11px] font-sans leading-relaxed text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl p-3">
-            {error}
-          </p>
-        )}
+          <div className="space-y-1.5">
+            <label htmlFor="reschedule-return" className="block text-[13px] font-medium text-brand-text-muted">
+              Return window
+              <span className="ml-2 text-brand-text-muted">back to you on {deliveryDate}</span>
+            </label>
+            <select
+              id="reschedule-return"
+              value={deliveryTime}
+              onChange={(e) => setDeliveryTime(e.target.value)}
+              className={FIELD}
+            >
+              {DELIVERY_TIME_SLOTS.map((slot) => {
+                const state = returns[slot];
+                const reachable = returnOptions.some((option) => option.label === slot);
 
-        <div className="flex gap-2.5">
-          <button
-            type="button"
-            onClick={submit}
-            disabled={busy || unchanged}
-            className={`flex-1 py-2.5 rounded-xl text-[10px] font-bold font-sans uppercase tracking-widest transition-all ${
-              busy || unchanged
-                ? 'bg-white/10 text-stone-500 cursor-not-allowed'
-                : 'bg-brand-sage text-white hover:bg-brand-sage-light cursor-pointer'
-            }`}
-          >
-            {busy ? 'Moving…' : 'Move pickup'}
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={busy}
-            className="px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-stone-300 rounded-xl text-[10px] font-bold font-sans uppercase tracking-widest transition-all cursor-pointer disabled:cursor-not-allowed"
-          >
-            Keep it
-          </button>
+                return (
+                  <option key={slot} value={slot} disabled={!reachable || state?.full}>
+                    {windowLabel(slot)}
+                    {!reachable
+                      ? ' — too early'
+                      : state?.full
+                        ? ' — full'
+                        : state && state.remaining <= 3
+                          ? ` — ${state.remaining} left`
+                          : ''}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+
+          {!!error && (
+            <p className="rounded-md border border-red-500/25 bg-red-500/10 px-4 py-3 text-[14px] leading-relaxed text-red-300">
+              {error}
+            </p>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={submit}
+              disabled={busy || unchanged}
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-brand-sage px-4 py-2.5 text-[14px] font-semibold text-white transition-colors duration-200 hover:bg-brand-sage-light hover:text-brand-charcoal disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-brand-text-muted disabled:hover:bg-white/10 disabled:hover:text-brand-text-muted"
+            >
+              {busy ? 'Moving…' : 'Move pickup'}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={busy}
+              className="inline-flex items-center justify-center gap-2 rounded-md border border-white/12 px-4 py-2.5 text-[14px] font-medium text-white transition-colors duration-200 hover:border-white/25 hover:bg-white/5 disabled:cursor-not-allowed"
+            >
+              Keep it
+            </button>
+          </div>
         </div>
       </div>
-    </motion.div>
+    </div>
   );
 }

@@ -1,204 +1,212 @@
-import { useState } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { GraduationCap, Briefcase, Users, Building, Check, ArrowUpRight } from 'lucide-react';
+import Reveal from './ui/Reveal';
+import { useIntent } from '../intent';
 
 interface TargetCustomersProps {
-  onSelectCustomerType: (typeGroup: string) => void;
+  onOpenBooking: () => void;
 }
 
-export default function TargetCustomers({ onSelectCustomerType }: TargetCustomersProps) {
-  const [activeTab, setActiveTab] = useState<'student' | 'professional' | 'family' | 'business'>('professional');
+/**
+ * Who sends us laundry, and what each of them is actually buying.
+ *
+ * `situation` is written in our own voice on purpose. It used to be a quotation
+ * mark around an invented customer — "Midterms, essays, social calendars…" —
+ * attributed to nobody, which is a testimonial the shop never received.
+ *
+ * Every number below is one `packages/core` can produce: plan prices from
+ * `MEMBERSHIP_PLANS`, service prices from the catalogue.
+ */
+const SECTORS = [
+  {
+    id: 'student' as const,
+    tab: 'Students',
+    name: 'Students',
+    situation:
+      'A shared bathroom, a bucket, and a hall that empties into one tap. Laundry day costs an afternoon you were going to spend on coursework.',
+    detail:
+      'We collect from the halls and hostels around KNUST and bring it back the next day, folded. The student plan is the cheapest way to do it every fortnight.',
+    facts: [
+      'Student plan — ₵79 a month, two pickups included',
+      'Collection from halls and hostels around Ayeduase and Kotei',
+      'Washing on its own from ₵30 a load if you would rather pay per wash',
+      'Order page shows the stage and the rider, so nobody has to wait in',
+    ],
+    cta: 'Book a student pickup',
+    imageUrl: 'https://images.unsplash.com/photo-1582735689369-4fe89db7114c?auto=format&fit=crop&q=80&w=1200',
+    imageAlt: 'A week of clothes waiting in a laundry basket',
+  },
+  {
+    id: 'professional' as const,
+    tab: 'Professionals',
+    name: 'Working professionals',
+    situation:
+      'Shirts for five days and a suit for the one meeting that matters. The washing is not hard — finding the evening to press it is.',
+    detail:
+      'Shirts and trousers come back pressed and on hangers, ready to wear. Four collections a month on the professional plan is one a week without thinking about it.',
+    facts: [
+      'Professional plan — ₵149 a month, four pickups included',
+      'Ironing and folding from ₵25 an order, pressed and hung',
+      'Next-day standard; same-day for ₵50 when a meeting moves',
+      '15% off everything past the four included pickups',
+    ],
+    cta: 'Book a pickup',
+    imageUrl: 'https://images.unsplash.com/photo-1714321960831-c8753b534400?auto=format&fit=crop&q=80&w=1200',
+    imageAlt: 'Hands running an iron across the shoulder of a white shirt',
+  },
+  {
+    id: 'family' as const,
+    tab: 'Families',
+    name: 'Families and households',
+    situation:
+      'School uniforms, sports kit, bedding for four. The machine runs most evenings and the pile still wins.',
+    detail:
+      'High-volume loads handled without anything getting mixed up between households. Bedding and linens are priced by the set, so a whole house of sheets is one predictable line.',
+    facts: [
+      'Family plan — ₵289 a month, eight pickups included',
+      'Bed sheets and linens — ₵45 a set, washed and pressed',
+      'Twice-weekly collection, sorted by household and by fabric',
+      '20% off everything past the eight included pickups',
+    ],
+    cta: 'Book a family pickup',
+    imageUrl: 'https://images.unsplash.com/photo-1699797467199-6bdf301649e8?auto=format&fit=crop&q=80&w=1200',
+    imageAlt: 'A stack of folded towels and bedding in afternoon light',
+  },
+  {
+    id: 'business' as const,
+    tab: 'Businesses',
+    name: 'Salons, guest houses and offices',
+    situation:
+      'Towels and robes that have to be clean and dry before the first appointment. Running out is not an inconvenience, it is a closed shop.',
+    detail:
+      'Standing collections on the days you need them, invoiced monthly rather than order by order. Contract rates are quoted against your actual volume — tell us what you go through in a week.',
+    facts: [
+      'Corporate plan — ₵499 a month, up to 30 pickups',
+      'Daily collection where the volume needs it',
+      'Same-day turnaround prioritised on contract accounts',
+      'Larger contracts quoted directly, not off a price list',
+    ],
+    cta: 'Ask for a contract rate',
+    imageUrl: 'https://images.unsplash.com/photo-1556740758-90de374c12ad?auto=format&fit=crop&q=80&w=1200',
+    imageAlt: 'The front desk of a busy salon at the start of the day',
+  },
+];
 
-  const targets = [
-    {
-      id: 'student' as const,
-      name: 'Students & Academics',
-      icon: GraduationCap,
-      quote: '“Midterms, essays, social calendars—there is zero room left for handling mountain piles of laundry in dark dorm basements.”',
-      tailoredText: 'We integrate with campus lifestyles. Schedule budget-friendly bi-weekly collections so you can focus strictly on what matters.',
-      perks: [
-        'Dedicated student cash-saving packages',
-        'Direct campus-dorm collections',
-        'Hypoallergenic formulas for zero skin breakout reaction',
-        'SMS automated tracking updates'
-      ],
-      ctaLabel: 'Schedule Student Package',
-      imageUrl: 'https://images.unsplash.com/photo-1541339907198-e08756dedf3f?auto=format&fit=crop&q=80&w=800'
-    },
-    {
-      id: 'professional' as const,
-      name: 'Working Professionals',
-      icon: Briefcase,
-      quote: '“My dry-clean runs used to hijack my Saturday mornings. Now, my business attire is managed on auto-pilot.”',
-      tailoredText: 'Primacy visual presence is essential. We treat executive wardrobes with absolute detail, using custom collar stays, luxury starch selections, and closet-ready hanger returns.',
-      perks: [
-        'Guaranteed next-morning response schedules',
-        'Bespoke hand-press suits & formal shirts styling',
-        'Automated digital calendar sync options',
-        'Exclusive premium garment shield transportation'
-      ],
-      ctaLabel: 'Book Executive Care',
-      imageUrl: 'https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&q=80&w=800'
-    },
-    {
-      id: 'family' as const,
-      name: 'Families & Households',
-      icon: Users,
-      quote: '“With three children and heavy sports, washing machines were running 24/7. FreshFold gave us our weekends back.”',
-      tailoredText: 'Heavy-volume household laundry processed with absolute care. We separated families’ washes carefully by load, heat-balancing delicate baby materials from sports uniforms.',
-      perks: [
-        'Hygienic high-capacity multi-weight packages',
-        'Pre-sort separation rules (Colors, Whites, Delicates separated)',
-        'Eucalyptus natural floral organic sanitizers',
-        'Easy monthly digital household billing tracking'
-      ],
-      ctaLabel: 'Book Family Pack',
-      imageUrl: 'https://images.unsplash.com/photo-1511895426328-dc8714191300?auto=format&fit=crop&q=80&w=800'
-    },
-    {
-      id: 'business' as const,
-      name: 'Corporate & Businesses',
-      icon: Building,
-      quote: '“FreshFold handles our boutique spa linens with absolute punctuality. Our clients always compliment the scent.”',
-      tailoredText: 'Tailored continuous operations for local beauty salons, medical offices, private clinics, gyms, and Airbnb hosts requiring continuous pristine linens, soft towels, and clean robes.',
-      perks: [
-        'SLA guaranteed turnaround timelines (12-24h options)',
-        'Flexible monthly credit ledger invoicing compliance',
-        'Custom high-heat sanitizing medical grade protocols',
-        'Dedicated dispatch courier account liaison'
-      ],
-      ctaLabel: 'Request Corporate Rate',
-      imageUrl: 'https://images.unsplash.com/photo-1556740758-90de374c12ad?auto=format&fit=crop&q=80&w=800'
-    }
-  ];
-
-  const currentTab = targets.find(t => t.id === activeTab) || targets[1];
-  const TabIcon = currentTab.icon;
+export default function TargetCustomers({ onOpenBooking }: TargetCustomersProps) {
+  /**
+   * Which sector they picked is kept in the shared intent, not locally.
+   *
+   * It never reaches the booking form — a sector is not a service, and putting
+   * "Working professionals" into the first line of an order would quote against
+   * something the catalogue has never heard of, which is exactly what the old
+   * `onSelectCustomerType('')` was written to avoid. What it reaches is the
+   * concierge, which can then open on the question this particular reader is
+   * most likely to be about to ask.
+   */
+  const { intent, note } = useIntent();
+  const activeId = intent.sector || 'professional';
+  const sector = SECTORS.find((item) => item.id === activeId) ?? SECTORS[1];
+  const setActiveId = (id: string) => note({ sector: id });
 
   return (
-    <section id="target-customers" className="py-24 bg-brand-charcoal relative border-b border-white/5">
-      {/* Visual background lights */}
-      <div className="absolute top-1/4 left-10 w-[45%] h-[45%] rounded-full bg-brand-sage/5 blur-[150px] pointer-events-none" />
-
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
-        
-        {/* Section Header */}
-        <div className="max-w-3xl mx-auto text-center mb-16">
-          <span className="font-sans text-[11px] uppercase tracking-[0.4em] text-brand-sage font-bold">
-            Bespoke Audiences
-          </span>
-          <h2 className="font-serif text-3xl sm:text-5xl text-white font-light tracking-tight mt-3">
-            Tailored Solutions <span className="font-serif italic text-brand-sage">by Sector</span>
+    <section
+      id="target-customers"
+      className="border-b border-white/10 bg-brand-charcoal py-20 font-ui sm:py-28"
+    >
+      <div className="mx-auto max-w-[88rem] px-5 sm:px-8">
+        <Reveal className="grid gap-6 lg:grid-cols-12 lg:items-end">
+          <h2 className="font-display text-section font-medium text-white text-balance lg:col-span-6">
+            Who we wash for.
           </h2>
-          <p className="font-sans text-[#8E9299] text-sm mt-4 font-light tracking-wide max-w-xl mx-auto leading-relaxed">
-            Every fabric user requires distinct care, frequency, and budget criteria. Select your sector above to learn how we personalize garment care for your specific lifestyle.
+          <p className="max-w-[50ch] text-lead text-brand-text-muted lg:col-span-5 lg:col-start-8">
+            The job is the same; the reason for it is not. Pick the one that sounds like you.
           </p>
+        </Reveal>
 
-          {/* Symmetrical interactive horizontal tabs - Curved and high contrast */}
-          <div className="mt-8 flex flex-wrap justify-center gap-2.5" id="customer-sector-tabs">
-            {targets.map((tab) => {
-              const IconComp = tab.icon;
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`px-5 py-3 rounded-xl text-xs font-bold uppercase tracking-widest flex items-center space-x-2 border transition-all duration-300 cursor-pointer ${
-                    activeTab === tab.id
-                      ? 'bg-brand-sage border-brand-sage text-white shadow-lg'
-                      : 'bg-[#161616]/75 border-white/10 text-[#8E9299] hover:text-white hover:border-white/20'
-                  }`}
-                >
-                  <IconComp className="w-4 h-4" />
-                  <span>{tab.name.split(' ')[0]}</span>
-                </button>
-              );
-            })}
-          </div>
+        {/* Tabs, as a quiet rule-anchored row. */}
+        <div
+          className="mt-10 flex flex-wrap items-center gap-x-7 gap-y-2 border-b border-white/10 pb-4"
+          id="customer-sector-tabs"
+          role="group"
+          aria-label="Choose a customer type"
+        >
+          {SECTORS.map((option) => {
+            const isActive = option.id === activeId;
+            return (
+              <button
+                key={option.id}
+                onClick={() => setActiveId(option.id)}
+                aria-pressed={isActive}
+                className={`-mb-[17px] border-b-2 pb-3.5 text-[15px] font-medium transition-colors duration-200 ${
+                  isActive
+                    ? 'border-brand-gold text-white'
+                    : 'border-transparent text-brand-text-muted hover:text-white'
+                }`}
+              >
+                {option.tab}
+              </button>
+            );
+          })}
         </div>
 
-        {/* Dynamic Display Panel Grid Layout - Curved card boundaries */}
-        <div className="bg-[#161616] rounded-2xl border border-white/10 overflow-hidden" id="customer-display-panel">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={activeTab}
-              initial={{ opacity: 0, scale: 0.99 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.99 }}
-              transition={{ duration: 0.4 }}
-              className="grid grid-cols-1 lg:grid-cols-12 gap-0"
-            >
-              
-              {/* LEFT side: Lifestyle Image (Grid Columns: 5) */}
-              <div className="lg:col-span-5 h-[320px] lg:h-auto min-h-[350px] relative">
-                <img
-                  src={currentTab.imageUrl}
-                  alt={currentTab.name}
-                  className="w-full h-full object-cover grayscale brightness-90 saturate-75"
-                  referrerPolicy="no-referrer"
-                />
-                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-transparent to-[#161616] hidden lg:block" />
-                <div className="absolute inset-0 bg-gradient-to-t from-[#161616] via-transparent to-transparent lg:hidden" />
-              </div>
+        <div
+          key={sector.id}
+          className="panel-swap mt-12 grid gap-10 lg:grid-cols-12 lg:gap-14"
+          id="customer-display-panel"
+        >
+            {/* Text first, image second — the mirror of the price list above it,
+                so two sections that both pair a picture with a column of text
+                do not read as the same section twice. */}
+            <div className="lg:col-span-7">
+              <h3 className="max-w-[20ch] font-display text-sub font-medium text-white text-balance">
+                {sector.name}
+              </h3>
+              <p className="mt-5 max-w-[54ch] text-lead text-brand-text-light">
+                {sector.situation}
+              </p>
+              <p className="mt-5 max-w-[58ch] text-body text-brand-text-muted">{sector.detail}</p>
 
-              {/* RIGHT side: Text Details (Grid Columns: 7) */}
-              <div className="lg:col-span-7 p-8 sm:p-12 text-left flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center space-x-3 text-brand-sage">
-                    <TabIcon className="w-5 h-5" />
-                    <span className="font-mono text-[10px] tracking-[0.25em] uppercase font-bold text-brand-sage">
-                      {currentTab.name}
-                    </span>
-                  </div>
-
-                  <blockquote className="font-serif italic text-lg text-white font-light mt-6 leading-relaxed relative pl-4 border-l border-brand-sage/30">
-                    {currentTab.quote}
-                  </blockquote>
-
-                  <p className="font-sans text-[#8E9299] text-xs sm:text-sm font-light leading-relaxed mt-6 tracking-wide">
-                    {currentTab.tailoredText}
-                  </p>
-
-                  <h4 className="font-sans text-xs font-semibold uppercase tracking-wider text-white mt-8 mb-4">
-                    Targeted Features & Perks
-                  </h4>
-
-                  <ul className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                    {currentTab.perks.map((perk, index) => (
-                      <li key={index} className="flex items-start">
-                        <Check className="w-3.5 h-3.5 text-brand-sage shrink-0 mt-0.5 mr-2.5" />
-                        <span className="font-sans text-[#8E9299] text-xs font-light leading-relaxed">
-                          {perk}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-
-                <div className="mt-10 pt-6 border-t border-white/10 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                  <div className="text-left">
-                    <span className="font-mono text-[9px] uppercase tracking-wider text-[#8E9299]/70 block">
-                      Sector Solution Code
-                    </span>
-                    <span className="font-sans text-[11px] text-brand-sage font-semibold uppercase tracking-wider">
-                      FFC-{currentTab.id.toUpperCase()}-VIP
-                    </span>
-                  </div>
-                  
-                  <button
-                    onClick={() => onSelectCustomerType(`${currentTab.name}`)}
-                    className="px-6 py-3.5 bg-white hover:bg-brand-sage hover:text-white text-black text-xs font-bold tracking-widest uppercase rounded-xl transition-all duration-300 hover:shadow-lg flex items-center justify-center space-x-2 cursor-pointer self-start sm:self-auto border border-white/15"
+              <ul className="mt-9 grid gap-px overflow-hidden rounded-lg bg-white/10 sm:grid-cols-2">
+                {sector.facts.map((fact) => (
+                  <li
+                    key={fact}
+                    className="bg-brand-charcoal px-5 py-4 text-body text-brand-text-light"
                   >
-                    <span>{currentTab.ctaLabel}</span>
-                    <ArrowUpRight className="w-4 h-4" />
+                    {fact}
+                  </li>
+                ))}
+              </ul>
+
+              <div className="mt-9">
+                {sector.id === 'business' ? (
+                  <a
+                    href="#contact"
+                    className="inline-block rounded-md bg-brand-gold px-6 py-3.5 text-[15px] font-semibold text-brand-charcoal transition-colors duration-200 hover:bg-brand-gold-light"
+                  >
+                    {sector.cta}
+                  </a>
+                ) : (
+                  <button
+                    /* Opens on whatever order the reader has actually built,
+                       which may well be nothing — the sector itself is not a
+                       line and never becomes one. */
+                    onClick={onOpenBooking}
+                    className="rounded-md bg-brand-gold px-6 py-3.5 text-[15px] font-semibold text-brand-charcoal transition-colors duration-200 hover:bg-brand-gold-light"
+                  >
+                    {sector.cta}
                   </button>
-                </div>
-
+                )}
               </div>
+            </div>
 
-            </motion.div>
-          </AnimatePresence>
+            <figure className="lg:col-span-5">
+              <img
+                src={sector.imageUrl}
+                alt={sector.imageAlt}
+                loading="lazy"
+                referrerPolicy="no-referrer"
+                className="h-[280px] w-full rounded-lg object-cover sm:h-[380px] lg:h-full lg:min-h-[440px]"
+              />
+            </figure>
         </div>
-
       </div>
     </section>
   );
