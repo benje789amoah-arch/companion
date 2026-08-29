@@ -22,16 +22,35 @@
  * promise with `error.message` verbatim, so one malformed request against any
  * of ~90 routes returned the table, column and constraint that failed.
  *
- * The register assertions drive the *real* router. They use a deliberately
- * short password so the handler refuses at validation — before it hashes
- * anything and before it touches the store — which is what lets this run
- * without a database while still proving the limiter is mounted on the route
+ * `/auth/reset` had no limiter either, and the comment by `/login` explaining
+ * *that* omission — "`/reset` needs a 32-byte token before it does anything at
+ * all" — was simply not true of the code. It derived a full scrypt hash of the
+ * caller's password, 64 MB and the better part of a second on a threadpool four
+ * wide, and only then looked the token up to find out whether the request had
+ * ever been legitimate. Roughly nine a second from one address took the process
+ * off the air.
+ *
+ * The register and reset assertions drive the *real* router. They use a
+ * deliberately short password so the handler refuses at validation — before it
+ * hashes anything and before it touches the store — which is what lets this run
+ * without a database while still proving each limiter is mounted on the route
  * that ships rather than on a copy of it.
+ *
+ * That same absence of a database is why the *ordering* inside `/reset` is
+ * asserted against the source rather than by timing a request: proving the
+ * lookup happens first means letting it happen, and there is nothing here for
+ * it to happen against. `headers.check.ts` reads `vercel.json` and the built
+ * page the same way and for the same reason.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import express from 'express';
-import { authRouter } from './routes/auth';
+import { authRouter, looksLikeContact } from './routes/auth';
 import { guard } from './helpers';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 let failures = 0;
 
@@ -55,7 +74,13 @@ function section(title: string): void {
 
 interface Reply {
   status: number;
-  body: { error?: string; reference?: string; detail?: string };
+  body: {
+    error?: string;
+    reference?: string;
+    detail?: string;
+    exists?: boolean;
+    hasPassword?: boolean;
+  };
 }
 
 async function main(): Promise<void> {
@@ -91,6 +116,23 @@ async function main(): Promise<void> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, phone, password: 'x' }),
+    });
+    return { status: res.status, body: (await res.json()) as Reply['body'] };
+  };
+
+  /**
+   * A reset attempt that fails validation before any hashing or lookup.
+   *
+   * Same trick as `register` above and for the same reason: the one-character
+   * password is refused by `passwordProblem`, which sits above both the token
+   * lookup and the hash — so this reaches the real handler on the real router
+   * and stops short of the database this suite does not have.
+   */
+  const reset = async (): Promise<Reply> => {
+    const res = await fetch('http://127.0.0.1:4613/api/auth/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: 'a'.repeat(64), password: 'x' }),
     });
     return { status: res.status, body: (await res.json()) as Reply['body'] };
   };
@@ -187,6 +229,142 @@ async function main(): Promise<void> {
     if (reply.status === 429) blocked = true;
   }
   checkTrue('a caller using fresh details every time is still stopped', blocked);
+
+  // -------------------------------------------------------------------------
+  section('and setting a new password is metered too');
+
+  // Ten through, the eleventh refused. Each of the ten reaches the handler and
+  // is turned away on the password, which is what proves the limiter is on the
+  // shipped route rather than in front of a copy of it.
+  const firstReset = await reset();
+  check('a first attempt reaches the handler', firstReset.status, 400);
+  checkTrue('...and is refused on its contents', (firstReset.body.error ?? '').includes('Password'));
+
+  for (let attempt = 1; attempt < 10; attempt += 1) await reset();
+
+  const eleventh = await reset();
+  check('the eleventh attempt in the window is refused', eleventh.status, 429);
+  checkTrue(
+    '...as a reset, not as a sign-in',
+    (eleventh.body.error ?? '').includes('set a new password')
+  );
+
+  section('and a bad link costs a lookup, not a hash');
+
+  /**
+   * Asserted against the source, because the alternative is a database.
+   *
+   * The property is an ordering: the token lookup has to come *before* the
+   * scrypt derivation, so that a caller holding a token this server never
+   * issued is refused for the price of a `select`. Timing it would mean letting
+   * the lookup run, and there is nothing here for it to run against — so the
+   * order is read off the handler instead. Scoped to the POST, because the GET
+   * above it looks the same token up and would otherwise satisfy this on its
+   * own.
+   */
+  const source = fs.readFileSync(path.resolve(HERE, 'routes', 'auth.ts'), 'utf8');
+
+  // Matched loosely rather than as a literal: this file is checked out with
+  // CRLF endings on Windows and LF elsewhere, and an anchor that hard-codes
+  // either one is an assertion about the working copy instead of about the
+  // handler. The same goes for how the arguments happen to be wrapped today.
+  const opens = source.search(/authRouter\.post\(\s*'\/reset',/);
+  const closes = source.indexOf('function resetPage(');
+  checkTrue('the POST /reset handler was located', opens !== -1 && closes > opens);
+
+  /**
+   * Comments stripped before anything is measured.
+   *
+   * The note above the lookup explains what `hashPassword` used to do and where
+   * it used to sit, so it names the call some lines *before* the call it is
+   * describing — and an ordering read off the raw text finds the sentence and
+   * reports the bug it was written to record as still present. What is being
+   * asserted is the order of two statements, so prose has to go first.
+   */
+  const handler = source
+    .slice(opens, closes)
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\r\n]*/g, '');
+
+  const lookupAt = handler.indexOf('findByResetToken(');
+  const hashAt = handler.indexOf('hashPassword(');
+
+  checkTrue('it looks the token up', lookupAt !== -1);
+  checkTrue('it still hashes the new password', hashAt !== -1);
+  checkTrue('and the lookup comes first', lookupAt < hashAt);
+  checkTrue('the limiter is mounted on it', handler.includes('resetLimit'));
+
+  /**
+   * The fast refusal must not become an oracle.
+   *
+   * Two paths now say no to a spent link — the pre-check and the transaction —
+   * and if their wording ever diverges, the difference tells a caller which one
+   * turned them away, which is a way to ask whether a link is still live. The
+   * sentence appearing twice is what keeps them the same.
+   */
+  const spent = 'That link has expired or has already been used.';
+  check('both refusals use one sentence', handler.split(spent).length - 1, 2);
+
+  // -------------------------------------------------------------------------
+  section('asking who banks here is metered');
+
+  /**
+   * A `/status` lookup that stops at the shape gate.
+   *
+   * `not-a-contact` is neither an email nor a whole phone number, so the route
+   * answers it without a query — which is what lets the limiter be exercised
+   * here at all. The matching path needs the database this suite does not have,
+   * so `looksLikeContact` is asserted directly below instead.
+   */
+  const status = async (): Promise<Reply> => {
+    const res = await fetch('http://127.0.0.1:4613/api/auth/status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identifier: 'not-a-contact' }),
+    });
+    return { status: res.status, body: (await res.json()) as Reply['body'] };
+  };
+
+  const firstStatus = await status();
+  check('a first lookup reaches the handler', firstStatus.status, 200);
+
+  /**
+   * The whole body, not one field. This route's entire risk is what it says
+   * about a contact, so an assertion that checked only `exists` would not
+   * notice a name, an email or a `blockedAt` arriving beside it.
+   */
+  check('and answers with two booleans and nothing else', firstStatus.body, {
+    exists: false,
+    hasPassword: false,
+  });
+
+  for (let attempt = 1; attempt < 10; attempt += 1) await status();
+
+  const eleventhStatus = await status();
+  check('the eleventh lookup in the window is refused', eleventhStatus.status, 429);
+  checkTrue(
+    '...and says so without naming a contact',
+    (eleventhStatus.body.error ?? '').includes('Too many lookups') &&
+      !(eleventhStatus.body.error ?? '').includes('not-a-contact')
+  );
+
+  section('...and garbage never reaches the database');
+
+  /**
+   * The real predicate the route gates on, imported rather than copied.
+   *
+   * Polarity is the thing worth pinning. Getting this backwards would refuse
+   * every genuine customer at the gate and answer "no account" to all of them —
+   * a silent break of the one feature the route exists for, and one that no
+   * assertion about garbage input would catch on its own.
+   */
+  checkTrue('an email is worth a lookup', looksLikeContact('ama@example.test'));
+  checkTrue('a whole phone number is too', looksLikeContact('0244000000'));
+  checkTrue('...however it is written', looksLikeContact('+233 24 400 0000'));
+  checkTrue('a bare word is not', !looksLikeContact('not-a-contact'));
+  checkTrue('nor is an empty string', !looksLikeContact(''));
+  checkTrue('nor half a phone number', !looksLikeContact('0244'));
+  checkTrue('nor an address with no domain', !looksLikeContact('ama@'));
 
   server.close();
   console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) failed.`);

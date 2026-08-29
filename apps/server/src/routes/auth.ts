@@ -520,6 +520,34 @@ authRouter.get(
 );
 
 /**
+ * The ceiling on submitting a reset link.
+ *
+ * This route carried no limiter at all, and the note beside `/login` said why:
+ * `/reset` "needs a 32-byte token before it does anything at all". It did not.
+ * It derived a full scrypt hash of whatever password the caller sent — 64 MB of
+ * working set and the better part of a second, on a threadpool four wide — and
+ * only *then* looked the token up to find out whether the request had ever been
+ * legitimate. Nine of those a second from a single address occupied every
+ * thread the process has, and every sign-in, every courier PIN check and every
+ * registration queued behind them.
+ *
+ * The ordering inside the handler is the real repair. This is the backstop: an
+ * open endpoint that runs a query per request is worth bounding whatever it
+ * costs, and if those two statements are ever swapped back, this is what stands
+ * between the mistake and the process.
+ *
+ * Ten a quarter-hour, against the three or four a real reset spends — somebody
+ * whose first two choices come back as too common has used three — and against
+ * the shared university address that sizes the sign-in limit below, which may
+ * carry more than one person resetting at the same time.
+ */
+const resetLimit = rateLimit({
+  max: 10,
+  windowMs: 15 * 60 * 1000,
+  message: 'Too many attempts to set a new password. Try again in a quarter of an hour.',
+});
+
+/**
  * Sets the new password.
  *
  * Holding the token is the proof, so this is not behind `requireAuth` — the
@@ -529,6 +557,7 @@ authRouter.get(
  */
 authRouter.post(
   '/reset',
+  resetLimit,
   guard(async (req, res) => {
     const { token, password } = req.body as { token?: string; password?: string };
 
@@ -547,6 +576,30 @@ authRouter.post(
     }
 
     const hash = createHash('sha256').update(token).digest('hex');
+
+    /**
+     * Whether this link is real, before anything is spent on it.
+     *
+     * `hashPassword` used to sit above this check, which made it the first
+     * thing an anonymous caller could reach — the most expensive call in the
+     * codebase, run in full for every request that arrived, including the ones
+     * carrying a token this server never issued.
+     *
+     * One indexed lookup answers that instead, so a made-up token is refused
+     * for the price of a `select`. This is a fast refusal and not the check
+     * that makes the write safe: the transaction below still re-reads the token
+     * under its own read, and two tabs racing on one link are still settled
+     * there rather than here.
+     *
+     * The wording and the status match the refusal at the end of this handler
+     * exactly. A caller must not be able to tell which of the two turned them
+     * away, or this becomes a way to ask whether a link is live.
+     */
+    if (!(await store.accounts.findByResetToken(hash))) {
+      res.status(400).json({ error: 'That link has expired or has already been used.' });
+      return;
+    }
+
     const { salt, hash: passwordHash } = await hashPassword(password);
 
     const account = await store.tx(async (t) => {
@@ -722,10 +775,13 @@ function escapeAttribute(value: string): string {
  * what somebody who has forgotten which of two passwords they used needs, and
  * nowhere near enough to walk a dictionary.
  *
- * `/register`, `/forgot` and `/reset` are deliberately not limited here.
- * `/forgot` has its own per-account cooldown and answers identically either
- * way, `/reset` needs a 32-byte token before it does anything at all, and
- * `/register` creates rather than guesses.
+ * `/forgot` is the only one of the four deliberately left unlimited: it has its
+ * own per-account cooldown and answers `{ ok: true }` whatever it finds, so
+ * repeating it buys nothing to learn and sends nothing extra. `/register` and
+ * `/reset` carry their own, sized to what each of them actually costs — see the
+ * notes beside them. `/reset` used to be described here as needing "a 32-byte
+ * token before it does anything at all", which was the reasoning that left the
+ * one route in this file that hashes for strangers with nothing in front of it.
  */
 authRouter.post(
   '/login',
@@ -1054,12 +1110,89 @@ authRouter.post(
 );
 
 /**
+ * The ceiling on asking whether a contact banks here.
+ *
+ * **Per address only, and that is the whole of the lever.** The obvious reach
+ * is `credentialLimit`, which buckets per identifier as well — and against this
+ * route the per-identifier bucket is decoration. Somebody guessing a password
+ * asks about one account repeatedly, which is what that bucket is for;
+ * somebody enumerating asks about a different account every single time and
+ * never fills it. What has to be counted here is the caller.
+ *
+ * Ten a quarter-hour, sized against a control the customer taps on purpose:
+ * "Not sure if you have an account?" is a deliberate press, not an on-blur
+ * probe, so real use is one or two a session and ten leaves room for a shared
+ * address with several people signing in at once.
+ *
+ * This bounds the oracle rather than removing it — see the note on the route.
+ */
+const statusLimit = rateLimit({
+  max: 10,
+  windowMs: 15 * 60 * 1000,
+  message: 'Too many lookups from here. Try again in a quarter of an hour.',
+});
+
+/**
+ * Whether a string is worth a database lookup, for `/status`.
+ *
+ * Anything else is answered "no account" without a query — true, free, and in
+ * the response shape the app already handles, rather than an error that lands
+ * in the catch which clears the hint and shows the customer nothing.
+ *
+ * **The phone half is `phoneKey`, not `isCompletePhone`, and the difference is
+ * a lockout.** `isCompletePhone` is the rule for a number being *entered* —
+ * exactly ten digits — while `findByIdentifier` matches on `phone_key`, which
+ * is the last nine after `233` or a leading zero has been stripped. Gating on
+ * the stricter of the two would refuse `+233 24 400 0000` at the door and
+ * answer "no account" to a customer who has one, which is precisely the patron
+ * `phoneKey`'s own note is about: records predate the ten-digit rule, and
+ * somebody who registered in international format still has to be able to sign
+ * in. A gate in front of a lookup has to accept everything that lookup can
+ * match, or it is not a gate, it is a bug.
+ *
+ * Exported so `auth.check.ts` can assert the real predicate rather than a copy
+ * of it. The route's *matching* path needs a database and is not exercised
+ * there; this is the half that can be.
+ */
+export function looksLikeContact(value: string): boolean {
+  return EMAIL_SHAPE.test(value) || phoneKey(value).length === 9;
+}
+
+/**
  * Whether a contact already has a login, so the portal can route someone to
- * sign-in versus password setup. Returns only a boolean — never a name, never
- * an email, so it reveals nothing an attacker could not already guess.
+ * sign-in versus password setup.
+ *
+ * **This route is an account-enumeration oracle, and it is one by
+ * construction.** The note that used to sit here said it "reveals nothing an
+ * attacker could not already guess", which was wrong: it reveals exactly the
+ * fact every other route in this file works to withhold. `/register` grew a
+ * three-bucket limiter because its 409 was a membership oracle; `/forgot`
+ * answers `{ ok: true }` for an address with no account so that it cannot be
+ * asked who banks here; `/login` returns one message for both failure modes and
+ * burns a dummy scrypt so the two take the same time. This answered the same
+ * question directly, in JSON, at whatever rate anyone liked — and
+ * `findByIdentifier` takes a phone number, so the space being walked is nine
+ * digits with known network prefixes rather than the whole of email.
+ *
+ * `hasPassword` is the worse half. `exists` says somebody is a customer;
+ * `hasPassword: false` picks out accounts created by a booking and never
+ * claimed, which is both the population with no password protecting their order
+ * history and the population `/auth/resend-setup` will mail on request.
+ *
+ * It is still here because the feature *is* the oracle: the customer app's
+ * "Not sure if you have an account?" link exists to answer this question before
+ * anybody types a password, and there is no version of that hint that does not
+ * tell the asker what they asked. So the limiter above bounds what the question
+ * costs to ask in bulk, which is the honest defence and not a complete one — a
+ * caller spread across many addresses still gets many answers.
+ *
+ * **If that hint is ever dropped from the app, delete this route with it.** It
+ * has no other caller: the website's `authStatus` wrapper in
+ * `apps/web/src/services/store.ts` is exported and imported by nothing.
  */
 authRouter.post(
   '/status',
+  statusLimit,
   guard(async (req, res) => {
     const { identifier } = req.body as { identifier?: string };
     if (!identifier) {
@@ -1067,7 +1200,15 @@ authRouter.post(
       return;
     }
 
-    const account = await store.accounts.findByIdentifier(identifier);
+    const value = identifier.trim();
+
+    // Shaped like a contact, or it is not looked up. See `looksLikeContact`.
+    if (!looksLikeContact(value)) {
+      res.json({ exists: false, hasPassword: false });
+      return;
+    }
+
+    const account = await store.accounts.findByIdentifier(value);
     res.json({ exists: Boolean(account), hasPassword: Boolean(account?.passwordHash) });
   })
 );
