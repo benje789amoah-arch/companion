@@ -89,6 +89,24 @@ services:
       - key: DATABASE_URL
         sync: false
 
+      # The CA that DATABASE_URL's certificate is checked against. Supabase →
+      # Database → Settings → SSL Configuration → download the CA certificate,
+      # and paste the whole PEM block here.
+      #
+      # Without it the connection is encrypted but not authenticated — any
+      # certificate is accepted, so anyone in the path to Supabase reads and
+      # rewrites every record and collects the password above. The server warns
+      # about this on every boot until it is set.
+      - key: SUPABASE_CA_CERT
+        sync: false
+
+      # Set to "true" once SUPABASE_CA_CERT is in place. The server then refuses
+      # to start without it, rather than falling back to an unverified
+      # connection — which is what stops the certificate quietly going missing
+      # in a later deploy and nobody noticing.
+      - key: DATABASE_SSL_STRICT
+        sync: false
+
       # The password the first supervisor account is created with. Read only when
       # the `supervisors` table is empty, so this matters on the very first deploy
       # against a new database and is ignored on every one after. Unset, that first

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import fs from 'node:fs';
 import dotenv from 'dotenv';
 import postgres from 'postgres';
 
@@ -32,14 +33,112 @@ if (!url) {
 
 const isLocal = /@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(url);
 
+/**
+ * The certificate authority to check Supabase against, or null if none is set.
+ *
+ * `SUPABASE_CA_CERT` carries either the certificate itself or a path to it,
+ * told apart by the PEM header — one of them starts with `-----BEGIN` and a
+ * filesystem path never does. Render takes multi-line environment values, so
+ * the inline form needs no file on the instance; the path form is for local
+ * development, where a downloaded `.crt` beside the checkout is easier.
+ *
+ * Get it from the Supabase dashboard: Database → Settings → SSL Configuration
+ * → download the CA certificate. It is a public certificate rather than a
+ * secret, but it must come from the dashboard over an authenticated connection
+ * — a root pulled off the wire from the very connection it is meant to verify
+ * proves nothing, since a caller in a position to tamper with that connection
+ * is in a position to hand you their own root.
+ */
+function certificateAuthority(configured: string | undefined): string | null {
+  if (!configured) return null;
+
+  if (configured.startsWith('-----BEGIN')) return configured;
+
+  try {
+    return fs.readFileSync(configured, 'utf8');
+  } catch {
+    throw new Error(
+      `SUPABASE_CA_CERT points at ${configured}, which cannot be read. Give it either the ` +
+        'certificate itself — the PEM block, newlines and all — or a path to a readable file.'
+    );
+  }
+}
+
+/**
+ * How the connection to Supabase is secured.
+ *
+ * **`'require'` does not mean what it looks like it means.** In this driver it
+ * maps to `rejectUnauthorized: false` — see `postgres/src/connection.js`, where
+ * `'require'`, `'allow'` and `'prefer'` all land on the same line. The session
+ * is encrypted against somebody listening and wide open to somebody
+ * interposing: any certificate is accepted, self-signed, expired, or issued for
+ * another host entirely. Anyone who can get into the path between this process
+ * and Supabase reads every customer address, phone number and payment record,
+ * can rewrite rows on the way past, and collects the `DATABASE_URL` password
+ * during startup authentication — which is full write access to every table.
+ *
+ * So a CA is supplied and the certificate is checked. What the old note here
+ * said was true — Supabase serves a chain rooted in its own `Supabase Root 2021
+ * CA`, which is not in Node's trust store, so plain `verify-full` cannot
+ * connect — but it drew the wrong conclusion from it. The bundle is one file
+ * from the dashboard rather than something that has to be shipped, and Node
+ * verifies the hostname against the certificate on its own once there is a
+ * trust anchor to check against.
+ *
+ * `servername` is deliberately not set here. The driver already derives it from
+ * the connection host, and this object is merged *over* its options — so naming
+ * it again would only create a second place for the pooler's hostname to be
+ * wrong.
+ *
+ * Without a CA this falls back to the old behaviour rather than refusing to
+ * start, because a deployment that is running today must not be taken off the
+ * air by a security fix it has not been configured for yet. That fallback is
+ * announced loudly in production, and `DATABASE_SSL_STRICT=true` turns it into
+ * a refusal — set that once the certificate is in place, and an unverified
+ * connection can never quietly come back.
+ */
+export type DatabaseSsl = false | 'require' | { ca: string; rejectUnauthorized: true };
+
+/**
+ * Takes its environment rather than reading it, so the four branches can be
+ * asserted in `db.check.ts` without opening a connection or a subprocess.
+ */
+export function databaseSsl(
+  env: {
+    SUPABASE_CA_CERT?: string;
+    DATABASE_SSL_STRICT?: string;
+    NODE_ENV?: string;
+  },
+  local: boolean
+): DatabaseSsl {
+  if (local) return false;
+
+  const ca = certificateAuthority(env.SUPABASE_CA_CERT?.trim());
+  if (ca) return { ca, rejectUnauthorized: true };
+
+  if (env.DATABASE_SSL_STRICT === 'true') {
+    throw new Error(
+      'DATABASE_SSL_STRICT is set but SUPABASE_CA_CERT is not, so the database certificate ' +
+        'cannot be verified. Add the CA from the Supabase dashboard (Database → Settings → SSL ' +
+        'Configuration), or unset DATABASE_SSL_STRICT to accept an unverified connection.'
+    );
+  }
+
+  if (env.NODE_ENV === 'production') {
+    console.warn(
+      '[db] SUPABASE_CA_CERT is not set. The connection to Postgres is encrypted but NOT ' +
+        'authenticated — any certificate is accepted, so anyone able to intercept the path to ' +
+        'Supabase can read and rewrite every record and capture the database password. ' +
+        'Download the CA from the Supabase dashboard (Database → Settings → SSL Configuration), ' +
+        'set it as SUPABASE_CA_CERT, then set DATABASE_SSL_STRICT=true to keep it that way.'
+    );
+  }
+
+  return 'require';
+}
+
 export const sql = postgres(url, {
-  /**
-   * Supabase terminates TLS at the connection, and refuses plaintext. `require`
-   * rather than `verify-full` because Supabase serves a certificate signed by
-   * its own CA, which is not in Node's trust store — verifying it would need
-   * the CA bundle downloaded and shipped alongside the server.
-   */
-  ssl: isLocal ? false : 'require',
+  ssl: databaseSsl(process.env, isLocal),
 
   /**
    * Prepared statements off.
