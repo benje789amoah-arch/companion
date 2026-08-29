@@ -8,6 +8,7 @@ import * as LocalAuthentication from 'expo-local-authentication';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { ApiError, type RiderState } from '@freshfold/core';
 import { api } from '../services/api';
+import { clearSecret, readSecret, writeSecret } from '../services/secrets';
 
 /**
  * Which courier is signed in on this device.
@@ -79,9 +80,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
     (async () => {
       const [storedToken, storedRider, storedBiometric] = await Promise.all([
-        AsyncStorage.getItem(KEYS.token),
+        readSecret(KEYS.token),
         AsyncStorage.getItem(KEYS.rider),
-        AsyncStorage.getItem(KEYS.biometric),
+        readSecret(KEYS.biometric),
       ]);
 
       if (cancelled) return;
@@ -115,7 +116,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
           setToken(null);
           setRider(null);
           setPhase('signedOut');
-          void AsyncStorage.multiRemove([KEYS.token, KEYS.rider]);
+          void Promise.all([clearSecret(KEYS.token), AsyncStorage.removeItem(KEYS.rider)]);
         } else {
           // Server unreachable. Keep the cached identity rather than locking a
           // courier out of their own job because the signal dropped.
@@ -154,9 +155,12 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setLocked(false);
     setPhase('signedIn');
 
-    await AsyncStorage.multiSet([
-      [KEYS.token, session.token],
-      [KEYS.rider, JSON.stringify(session.rider)],
+    // The token goes to the keychain, the courier record to ordinary storage.
+    // They cannot share a `multiSet` any more, and should not: one of them is a
+    // credential and the other is a copy of what that credential fetches.
+    await Promise.all([
+      writeSecret(KEYS.token, session.token),
+      AsyncStorage.setItem(KEYS.rider, JSON.stringify(session.rider)),
     ]);
 
     return session.rider;
@@ -164,7 +168,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const adoptToken = useCallback(async (next: string) => {
     setToken(next);
-    await AsyncStorage.setItem(KEYS.token, next);
+    await writeSecret(KEYS.token, next);
   }, []);
 
   const signOut = useCallback(async () => {
@@ -174,7 +178,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setRider(null);
     setLocked(false);
     setPhase('signedOut');
-    await AsyncStorage.multiRemove([KEYS.token, KEYS.rider]);
+    await Promise.all([clearSecret(KEYS.token), AsyncStorage.removeItem(KEYS.rider)]);
 
     if (current) {
       try {
@@ -194,7 +198,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const setBiometricEnabled = useCallback((enabled: boolean) => {
     setBiometricEnabledState(enabled);
-    void AsyncStorage.setItem(KEYS.biometric, String(enabled));
+    void writeSecret(KEYS.biometric, String(enabled));
   }, []);
 
   const promptBiometric = useCallback(async () => {

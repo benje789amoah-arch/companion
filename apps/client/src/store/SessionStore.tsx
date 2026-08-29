@@ -7,7 +7,8 @@ import * as LocalAuthentication from 'expo-local-authentication';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { ApiError, type UserAccount } from '@freshfold/core';
 import { api } from '../services/api';
-import { STORAGE_KEYS, readJson, readString, remove, writeJson, writeString } from '../services/storage';
+import { STORAGE_KEYS, readJson, remove, writeJson } from '../services/storage';
+import { clearSecret, readSecret, writeSecret } from '../services/secrets';
 
 /**
  * Who is signed in on this device.
@@ -123,7 +124,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
     (async () => {
       const [storedToken, storedAccount] = await Promise.all([
-        readString(STORAGE_KEYS.token),
+        readSecret(STORAGE_KEYS.token),
         readJson<UserAccount | null>(STORAGE_KEYS.account, null),
       ]);
 
@@ -149,7 +150,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
           setAccount(null);
           setToken(null);
           setPhase('guest');
-          void remove(STORAGE_KEYS.token, STORAGE_KEYS.account);
+          void Promise.all([clearSecret(STORAGE_KEYS.token), remove(STORAGE_KEYS.account)]);
         } else {
           // Server unreachable — keep the cached profile rather than signing
           // someone out every time their connection drops.
@@ -190,7 +191,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setToken(next.token);
     setAccount(next.account);
     setPhase('authenticated');
-    void writeString(STORAGE_KEYS.token, next.token);
+    void writeSecret(STORAGE_KEYS.token, next.token);
     void writeJson(STORAGE_KEYS.account, next.account);
     return next.account;
   }, []);
@@ -228,7 +229,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setAccount(null);
     setToken(null);
     setPhase('guest');
-    await remove(STORAGE_KEYS.token, STORAGE_KEYS.account);
+    await Promise.all([clearSecret(STORAGE_KEYS.token), remove(STORAGE_KEYS.account)]);
 
     if (current) {
       try {
@@ -255,7 +256,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setAccount(null);
     setToken(null);
     setPhase('guest');
-    await remove(STORAGE_KEYS.token, STORAGE_KEYS.account);
+    await Promise.all([clearSecret(STORAGE_KEYS.token), remove(STORAGE_KEYS.account)]);
   }, [token]);
 
   const continueAsGuest = useCallback(() => setPhase('guest'), []);
