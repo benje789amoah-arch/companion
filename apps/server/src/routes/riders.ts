@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { randomInt } from 'node:crypto';
 import { Router } from 'express';
 import {
   LAUNDRY_HUB,
@@ -338,7 +339,22 @@ ridersRouter.post(
     }
 
     const wantedPhone = phoneDigits(phone);
-    const temporaryPin = String(Math.floor(1000 + Math.random() * 9000));
+
+    /**
+     * The credential a new courier signs in with, from the CSPRNG.
+     *
+     * This was `Math.floor(1000 + Math.random() * 9000)`, which is V8's
+     * xorshift128+ — a generator whose state can be recovered from a handful of
+     * consecutive outputs, and which every other secret on this server already
+     * avoids. Four digits is a small space to begin with; drawing it from a
+     * predictable stream made the space smaller than it looks for anyone who
+     * had seen a few of its neighbours.
+     *
+     * `randomInt` is the right reach here where `@freshfold/core` had to use
+     * the Web Crypto global instead: this file is only ever loaded by the
+     * server, so `node:crypto` resolves. The upper bound is exclusive.
+     */
+    const temporaryPin = String(randomInt(1000, 10000));
     const { salt, hash } = await hashPassword(temporaryPin);
     const pinExpiresAt = new Date(Date.now() + PROVISIONAL_PIN_TTL_MS).toISOString();
 

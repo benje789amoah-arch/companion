@@ -32,8 +32,119 @@ import type {
  * own vocabulary without the data drifting apart.
  */
 
+// ---------------------------------------------------------------------------
+// Randomness
+// ---------------------------------------------------------------------------
+
+/**
+ * The Web Crypto global, or undefined where there isn't one.
+ *
+ * `crypto.getRandomValues` rather than `node:crypto`'s `randomInt`, which is
+ * the obvious reach and the wrong one here: this module is bundled into the
+ * website and both React Native apps as well as the server, and a `node:`
+ * import fails to resolve in Vite and Metro whether or not the function behind
+ * it is ever called. The Web Crypto global is present in Node 20 — which this
+ * repo already requires — and in every browser, and is the one spelling that
+ * satisfies all three without a build alias.
+ *
+ * Typed by hand because this package compiles with `lib: ["ES2022"]` and no
+ * DOM. Declaring the single method used is narrower than pulling the whole DOM
+ * lib in for it.
+ */
+type WebCrypto = { getRandomValues?: <T extends Uint32Array>(array: T) => T };
+
+/**
+ * Looked up per call rather than captured once at module load.
+ *
+ * A React Native polyfill is installed by an import, and module initialisation
+ * order decides whether it has run by the time this file is evaluated. Reading
+ * the global when the value is actually wanted means a polyfill that lands
+ * later still counts, instead of this module having decided at startup that
+ * there was no CSPRNG and quietly meaning it forever. The cost is one property
+ * access against a function that is already doing real work.
+ */
+function webCrypto(): WebCrypto | undefined {
+  return (globalThis as { crypto?: WebCrypto }).crypto;
+}
+
+/**
+ * A uniform integer in `[min, max)` from the platform CSPRNG, or null if there
+ * isn't one.
+ *
+ * Rejection sampling rather than `value % range`. A modulo leans towards the
+ * low end of the range whenever the range does not divide 2^32 evenly, and for
+ * a four-digit code that lean is measurable — which would undo most of the
+ * point of drawing the code from a CSPRNG in the first place. Anything at or
+ * above the largest clean multiple is thrown away and redrawn; the expected
+ * number of extra draws is far below one.
+ */
+function fromCsprng(min: number, max: number): number | null {
+  const source = webCrypto();
+  if (!source?.getRandomValues) return null;
+
+  const range = max - min;
+  const limit = Math.floor(0x1_0000_0000 / range) * range;
+  const buffer = new Uint32Array(1);
+
+  let value: number;
+  do {
+    source.getRandomValues(buffer);
+    value = buffer[0];
+  } while (value >= limit);
+
+  return min + (value % range);
+}
+
+/**
+ * For values that are secrets. Refuses to run without a CSPRNG.
+ *
+ * There is deliberately no fallback. A hand-off code quietly minted from
+ * `Math.random` is the bug this replaced — it looks identical in the database,
+ * on the customer's screen and in the courier's app, and nothing about the
+ * system would tell anybody it had happened. Failing loudly is the only
+ * behaviour that cannot be mistaken for working.
+ *
+ * The throw is unreachable on the only path that calls it: hand-off codes are
+ * minted by `bookingToJob` and `orderToJob`, and both are server-only.
+ */
+function secretInt(min: number, max: number): number {
+  const value = fromCsprng(min, max);
+
+  if (value === null) {
+    throw new Error(
+      'No secure random source on this platform. @freshfold/core mints hand-off codes here and ' +
+        'will not fall back to Math.random for them — install a crypto.getRandomValues polyfill.'
+    );
+  }
+
+  return value;
+}
+
+/**
+ * For values that are not secrets, and must never fail to produce one.
+ *
+ * The distinction from {@link secretInt} is the whole design. A booking id is
+ * not a credential — it stopped being one when `resolveBookingAccess` started
+ * gating every read of a booking and answering 404 to a caller with no claim —
+ * so the cost of an unpredictable id is collision resistance rather than
+ * secrecy, and a customer who cannot start a booking because their phone has no
+ * Web Crypto is a worse outcome than a guessable reference.
+ *
+ * React Native is why that branch exists: the booking forms in both apps call
+ * `newJobId` to seed a form, and RN 0.81 ships no `crypto.getRandomValues`
+ * without a polyfill. This uses the real thing on the server and in the
+ * browser, and the fallback only where there is nothing better.
+ */
+function looseInt(min: number, max: number): number {
+  return fromCsprng(min, max) ?? min + Math.floor(Math.random() * (max - min));
+}
+
+// ---------------------------------------------------------------------------
+// Identifiers
+// ---------------------------------------------------------------------------
+
 export function newJobId(): string {
-  return `FFC-${Math.floor(100000 + Math.random() * 900000)}`;
+  return `FFC-${looseInt(100000, 1000000)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -61,9 +172,18 @@ export function newJobId(): string {
  * system, which is the same as having no code: the courier's app knew it, the
  * "request OTP" button sent it to the customer, and the error message printed
  * it. Both ends are minted the same way now.
+ *
+ * And that way is a CSPRNG. This drew from `Math.random` until recently, which
+ * V8 implements as xorshift128+ — not a cryptographic generator, and one whose
+ * 128-bit state is recoverable from a handful of consecutive outputs. Creating
+ * one booking took four values from that stream, one job id and these three
+ * codes, and the customer who booked it legitimately received all four: book a
+ * few orders, recover the state, and predict the delivery code a courier is
+ * about to be read at somebody else's front door. The id no longer shares the
+ * stream either — see {@link looseInt}.
  */
 export function newHandoffCode(): string {
-  return String(Math.floor(1000 + Math.random() * 9000));
+  return String(secretInt(1000, 10000));
 }
 
 /** Bumped if the payload shape ever changes, so old QRs fail loudly. */
