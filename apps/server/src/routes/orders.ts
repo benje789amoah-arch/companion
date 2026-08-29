@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { timingSafeEqual } from 'node:crypto';
 import { Router } from 'express';
 import {
   applyStatus,
@@ -23,8 +24,9 @@ import {
   type Order,
 } from '@freshfold/core';
 import { requireRider, requireStaff, requireSupervisor } from '../auth';
-import { recordAudit } from '../audit';
-import { resolveBookingAccess } from '../booking-access';
+import { recordAudit, type AuditActor } from '../audit';
+import { resolveBookingAccess, type BookingAccess } from '../booking-access';
+import { rateLimit } from '../rateLimit';
 import { store, type Repositories } from '../store';
 import { guard, nowLabel, notFound, orderView, writtenOrderView } from '../helpers';
 
@@ -344,6 +346,8 @@ const HANDOFF_GATES: Partial<
       otp: 'dropoffOtp' | 'deliveryOtp';
       /** What the courier's app sends it as. */
       field: 'dropoffCode' | 'deliveryCode';
+      /** Which hand-off this is, for the audit line when a code is refused. */
+      leg: 'hub' | 'delivery';
       /** Where an override is written on the job's proof record. */
       reasonKey: 'dropoffOverrideReason' | 'deliveryOverrideReason';
       atKey: 'dropoffOverrideAt' | 'deliveryOverrideAt';
@@ -361,6 +365,7 @@ const HANDOFF_GATES: Partial<
   dropped_off: {
     otp: 'dropoffOtp',
     field: 'dropoffCode',
+    leg: 'hub',
     reasonKey: 'dropoffOverrideReason',
     atKey: 'dropoffOverrideAt',
     // Drop-off codes arrived after the ledger did.
@@ -375,6 +380,7 @@ const HANDOFF_GATES: Partial<
   delivered: {
     otp: 'deliveryOtp',
     field: 'deliveryCode',
+    leg: 'delivery',
     reasonKey: 'deliveryOverrideReason',
     atKey: 'deliveryOverrideAt',
     // Every job in the ledger has one.
@@ -616,6 +622,86 @@ const HUB_STAGE_FOR: Partial<Record<JobStatus, HubStage>> = {
 };
 
 /**
+ * Constant-time compare, so a code is not distinguishable by how long it takes.
+ *
+ * Exported for `orders.check.ts`, which pins the length-mismatch case: the
+ * obvious way to write this throws on a supplied code of the wrong length, and
+ * a wrong length is exactly what a guess looks like.
+ */
+export function matchesCode(expected: string | undefined, supplied: string | undefined): boolean {
+  if (!expected || !supplied) return false;
+
+  const a = Buffer.from(expected, 'utf8');
+  const b = Buffer.from(supplied, 'utf8');
+
+  // `timingSafeEqual` throws on a length mismatch, and a guessed code is exactly
+  // where a length mismatch comes from.
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** Who to file a refused hand-off against. */
+function actorFor(access: BookingAccess): AuditActor {
+  switch (access.kind) {
+    case 'supervisor':
+      return { actor: access.supervisor.email, actorName: access.supervisor.name };
+    case 'rider':
+      return { actor: access.rider.id, actorName: access.rider.name };
+    case 'customer':
+      return { actor: access.account.email, actorName: access.account.name || access.account.email };
+    case 'tracking':
+      return { actor: 'tracking-token', actorName: 'Guest tracking link' };
+  }
+}
+
+/**
+ * The ceiling on hand-off code attempts for one leg of one job.
+ *
+ * A code is four digits, and nothing counted the guesses. Ten thousand requests
+ * walked the space, and the reason that mattered is not that a courier could
+ * complete a hand-off they were not entitled to — they could already, by
+ * supplying an `overrideReason` — but that guessing produced a *clean* one. The
+ * override writes its sentence onto the job, raises "completed without a code"
+ * to the desk and tells the customer; a guessed code leaves none of that. What
+ * was unbounded was the way past the audit trail, not the way past the gate.
+ *
+ * **Keyed on the job and the leg rather than the caller.** What is being guessed
+ * at is this code. Whoever is guessing can change address between attempts and
+ * the job cannot, which is the same reasoning `credentialLimit` applies to an
+ * account being guessed at.
+ *
+ * **A request carrying an override is never counted or refused.** That is the
+ * accountable way past a code the courier genuinely cannot get — the customer is
+ * out, the hub desk is unmanned — and a limiter that could close it would leave
+ * somebody standing at a door holding bags they are not allowed to hand over.
+ * Locking the honest path to protect the audit trail would be the wrong way
+ * round: the override *is* the audit trail.
+ *
+ * Ten an hour against a space of ten thousand puts a full walk beyond a
+ * thousand hours, and leaves a courier in the rain more attempts than they will
+ * use. In-memory and per-instance, with the same honest limits as every other
+ * limiter here.
+ */
+const handoffLimit = rateLimit({
+  max: 10,
+  windowMs: 60 * 60 * 1000,
+  message:
+    'Too many hand-off code attempts on this order. Record why the code cannot be produced instead.',
+  key: (req) => {
+    const body = (req.body ?? {}) as { status?: unknown; overrideReason?: unknown };
+
+    // Never limit the accountable path — see above.
+    if (typeof body.overrideReason === 'string' && body.overrideReason.trim()) return null;
+
+    // Only the two transitions that check a code. Everything else on this route
+    // is an ordinary stage change and has nothing to guess at.
+    const status = typeof body.status === 'string' ? body.status : '';
+    if (!Object.prototype.hasOwnProperty.call(HANDOFF_GATES, status)) return null;
+
+    return `handoff:${req.params.id}:${status}`;
+  },
+});
+
+/**
  * Advances a job.
  *
  * Mostly a courier's route, but not only: the customer's own app completes the
@@ -629,6 +715,7 @@ const HUB_STAGE_FOR: Partial<Record<JobStatus, HubStage>> = {
  */
 ordersRouter.patch(
   '/:id/status',
+  handoffLimit,
   guard(async (req, res) => {
     const patch = req.body as {
       status?: JobStatus;
@@ -774,10 +861,36 @@ ordersRouter.patch(
         if (!expected && gate.legacyPasses) {
           // Nothing to check against; let it through.
         } else {
-          const codeMatches = !!expected && !!supplied && supplied === expected;
+          const codeMatches = matchesCode(expected, supplied);
 
           if (!codeMatches) {
             if (!reason) {
+              /**
+               * A refused code goes in the trail.
+               *
+               * This is the half of the fix the limiter above cannot do. Ten
+               * attempts an hour makes a walk of the space impractical; writing
+               * the failures down is what makes an *attempt* visible at all —
+               * before this, a wrong code and a job nobody ever touched looked
+               * exactly alike from the desk, so the only evidence of somebody
+               * working on a code was the moment they succeeded.
+               *
+               * Recorded before the refusal returns, and it survives it: the
+               * transaction commits on this path rather than rolling back,
+               * because nothing else has been written and the entry is the
+               * point.
+               */
+              await recordAudit(t, {
+                ...actorFor(access),
+                action: 'Hand-off code refused',
+                details:
+                  `${supplied ? 'Wrong' : 'Missing'} ${gate.leg} code on ${existing.reference}` +
+                  ` (${toBookingStatus(existing.status)} → ${toBookingStatus(status)})`,
+                type: 'stage',
+                orderId: existing.id,
+                subject: existing.customer.email,
+              });
+
               return {
                 kind: 'refused',
                 status: 403,
