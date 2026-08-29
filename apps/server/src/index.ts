@@ -181,8 +181,23 @@ app.get(
       return;
     }
 
-    const [jobs, riders] = await Promise.all([store.jobs.count(), store.riders.count()]);
-    res.json({ ok: true, jobs, riders, version: '1.0.0' });
+    /**
+     * That the process is up and the database answers. Deliberately nothing
+     * else.
+     *
+     * This used to report live job and rider counts, unauthenticated, to
+     * anybody who asked. A load balancer needs to know the instance is
+     * healthy; it does not need the order book. Polled once a day by a
+     * stranger those two integers are a growth chart and a headcount, which is
+     * a competitor's homework and no part of a health check's job.
+     *
+     * Removed rather than moved behind the desk's session, because nothing was
+     * reading them: `health()` in `@freshfold/core` is a reachability probe and
+     * all three callers discard the body. A number with no reader is a
+     * disclosure with no feature behind it. If the desk ever wants these, they
+     * belong on a metrics route that says who may see them.
+     */
+    res.json({ ok: true, version: '1.0.0' });
   })
 );
 

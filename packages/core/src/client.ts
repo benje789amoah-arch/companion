@@ -216,8 +216,14 @@ export function createClient(options: ClientOptions) {
   return {
     baseUrl: root,
 
-    /** Cheap reachability probe — both apps use it to decide online/offline. */
-    health: () => request<{ ok: true; jobs: number; version: string }>('/health'),
+    /**
+     * Cheap reachability probe — both apps use it to decide online/offline.
+     *
+     * The body carries nothing but that. It used to include live job and rider
+     * counts, which no caller here has ever read: every one of them awaits this
+     * to find out whether the server answered and throws the result away.
+     */
+    health: () => request<{ ok: true; version: string }>('/health'),
 
     // -- Bookings: the customer's view ------------------------------------
     //

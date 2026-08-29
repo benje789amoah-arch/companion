@@ -388,6 +388,13 @@ authRouter.post(
  * development is a different origin from the website and has no stylesheet to
  * offer. `APP_URL` is where the button goes, so the customer ends up back in
  * the product rather than staring at a dead end on the API host.
+ *
+ * Both interpolated values go through `escapeAttribute`, as they do in
+ * `resetPage`. Neither is hostile today — every caller passes a string literal
+ * and `home` is our own configuration — and that is exactly the argument this
+ * page was relying on while its sibling forty lines down escaped the same two
+ * things. Two near-identical templates disagreeing about whether escaping
+ * matters is how one of them is eventually wrong, so they now agree.
  */
 function verificationPage(ok: boolean, message: string): string {
   const home = (process.env.APP_URL || '').replace(/\/$/, '');
@@ -408,10 +415,10 @@ function verificationPage(ok: boolean, message: string): string {
     <h1 style="font-size:23px;font-weight:800;margin:0 0 14px">
       ${ok ? 'Email confirmed' : 'That link did not work'}
     </h1>
-    <p style="font-size:14px;line-height:22px;color:#5b6560;margin:0 0 28px">${message}</p>
+    <p style="font-size:14px;line-height:22px;color:#5b6560;margin:0 0 28px">${escapeAttribute(message)}</p>
     ${
       home
-        ? `<a href="${home}" style="display:inline-block;background:${accent};color:#fff;text-decoration:none;padding:13px 28px;border-radius:12px;font-size:14px;font-weight:700">Continue to FreshFold</a>`
+        ? `<a href="${escapeAttribute(home)}" style="display:inline-block;background:${accent};color:#fff;text-decoration:none;padding:13px 28px;border-radius:12px;font-size:14px;font-weight:700">Continue to FreshFold</a>`
         : ''
     }
   </div>
@@ -752,9 +759,14 @@ function resetPage(token: string | null, message: string, nonce: string): string
  * Escapes a value going into an HTML attribute or a JS string literal.
  *
  * The token is hex from `randomBytes` and `APP_URL` is our own configuration,
- * so neither is hostile today — but this page holds a password field, and a
- * template that interpolates without escaping is one config change away from
- * being the wrong kind of interesting.
+ * so neither is hostile today — but these pages hold a password field and a
+ * confirmation link, and a template that interpolates without escaping is one
+ * config change away from being the wrong kind of interesting.
+ *
+ * Used by both server-rendered pages. It was used by only one of them, which is
+ * the more interesting fact: the two templates are near-identical, sit forty
+ * lines apart, and had quietly come to different conclusions about whether this
+ * was worth doing. A rule applied in one of two identical places is not a rule.
  */
 function escapeAttribute(value: string): string {
   return value

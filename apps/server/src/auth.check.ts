@@ -366,6 +366,72 @@ async function main(): Promise<void> {
   checkTrue('nor half a phone number', !looksLikeContact('0244'));
   checkTrue('nor an address with no domain', !looksLikeContact('ama@'));
 
+  // -------------------------------------------------------------------------
+  section('both rendered pages escape what they interpolate');
+
+  /**
+   * The two server-rendered pages are near-identical and sat forty lines apart
+   * having quietly reached different conclusions: the reset form escaped what
+   * it interpolated and the confirmation page did not.
+   *
+   * Nothing hostile reaches either today — every caller passes a literal, and
+   * `home` is `APP_URL`, which is our own configuration. That is precisely the
+   * argument that stops being true the day somebody puts a value from anywhere
+   * else through one of these, so it is pinned rather than argued.
+   *
+   * Driven through `APP_URL` because that is the one input to either page a
+   * test can actually set. Both routes render without a token, and without a
+   * token neither touches the database.
+   */
+  const html = async (path: string): Promise<string> => {
+    const res = await fetch(`http://127.0.0.1:4613${path}`);
+    return res.text();
+  };
+
+  const wasAppUrl = process.env.APP_URL;
+  process.env.APP_URL = 'https://x.test/"><script>alert(1)</script>';
+
+  for (const [label, path] of [
+    ['the confirmation page', '/api/auth/verify'],
+    ['the reset page', '/api/auth/reset'],
+  ] as const) {
+    const body = await html(path);
+    checkTrue(`${label} renders`, body.includes('FreshFold'));
+    checkTrue(`...and does not emit a raw <script`, !body.includes('<script>alert(1)'));
+    checkTrue(`...and does not break out of the href`, !body.includes('/"><'));
+    checkTrue(`...having escaped it instead`, body.includes('&quot;') || body.includes('&lt;'));
+  }
+
+  process.env.APP_URL = wasAppUrl;
+
+  // -------------------------------------------------------------------------
+  section('the health check reports health, not the order book');
+
+  /**
+   * Asserted against the source because `index.ts` opens a port and connects to
+   * Postgres the moment it is imported, so there is nothing here to drive. The
+   * route lives beside the router this file already covers, and there is no
+   * `index.check.ts` to put this in.
+   *
+   * What is being kept out is live job and rider counts, which this answered to
+   * anyone who asked. Polled daily by a stranger, those two integers are a
+   * growth chart and a headcount.
+   */
+  const index = fs.readFileSync(path.resolve(HERE, 'index.ts'), 'utf8');
+  const healthAt = index.indexOf("'/api/health'");
+  const healthEnd = index.indexOf("app.use('/api/admin'");
+  checkTrue('the health route was located', healthAt !== -1 && healthEnd > healthAt);
+
+  const health = index
+    .slice(healthAt, healthEnd)
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\r\n]*/g, '');
+
+  checkTrue('it still answers ok', health.includes('ok: true'));
+  checkTrue('it still reports a database it cannot reach', health.includes('503'));
+  checkTrue('but counts no jobs', !health.includes('jobs.count()'));
+  checkTrue('and counts no riders', !health.includes('riders.count()'));
+
   server.close();
   console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) failed.`);
   process.exit(failures === 0 ? 0 : 1);
