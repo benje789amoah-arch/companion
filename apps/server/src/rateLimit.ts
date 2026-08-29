@@ -6,6 +6,28 @@
 import type { RequestHandler } from 'express';
 
 /**
+ * The most buckets one limiter will hold.
+ *
+ * Measured at about 250 bytes an entry, so ten thousand is roughly 2.5 MB per
+ * limiter — a handful of megabytes across all of them, on an instance with 512.
+ * Comfortably above any honest population: the per-address limiters bucket on
+ * client IPs, and a laundry in Kumasi does not have ten thousand of those in a
+ * quarter of an hour.
+ */
+const MAX_BUCKETS = 10_000;
+
+/**
+ * A limiter, plus a way to ask how much it is holding.
+ *
+ * `buckets()` exists for `rateLimit.check.ts`. The bound it reports is the
+ * whole of the fix for an unbounded map, and a bound nothing can observe is a
+ * bound nobody will notice breaking.
+ */
+export interface RateLimiter extends RequestHandler {
+  buckets: () => number;
+}
+
+/**
  * A ceiling on what one caller can spend.
  *
  * Both Google proxies — directions and places — are open by necessity: a
@@ -37,10 +59,27 @@ export function rateLimit(options: {
    * the route itself a line later.
    */
   key?: (req: Parameters<RequestHandler>[0]) => string | null;
-}): RequestHandler {
+}): RateLimiter {
   const callers = new Map<string, { count: number; windowStart: number }>();
 
-  return (req, res, next) => {
+  /**
+   * When the last sweep ran.
+   *
+   * The sweep used to fire on every request that opened a bucket, once the map
+   * held more than five thousand. That is fine while the keys are addresses and
+   * catastrophic once they are anything a caller picks: every entry is younger
+   * than the window because the attacker has just made it, so the sweep deletes
+   * nothing, and then runs again in full on the next request. The cost of a
+   * request becomes proportional to the number of requests already made —
+   * measured at 610,000 a second under five thousand buckets and 508 a second
+   * at two hundred thousand.
+   *
+   * Once per window instead. Anything the sweep now misses is caught by the
+   * ceiling below, which is the real bound.
+   */
+  let sweptAt = 0;
+
+  const handler: RateLimiter = (req, res, next) => {
     const bucket = options.key ? options.key(req) : (req.ip ?? 'unknown');
     if (bucket === null) return next();
 
@@ -48,14 +87,45 @@ export function rateLimit(options: {
     const seen = callers.get(bucket);
 
     if (!seen || now - seen.windowStart > options.windowMs) {
-      // Cheap sweep: without it this map is a slow leak keyed by every IP that
-      // has ever asked.
-      if (callers.size > 5_000) {
+      if (now - sweptAt > options.windowMs) {
+        sweptAt = now;
         for (const [key, entry] of callers) {
           if (now - entry.windowStart > options.windowMs) callers.delete(key);
         }
       }
 
+      /**
+       * The ceiling, and the thing that actually makes this safe.
+       *
+       * Three of these limiters bucket on a value the caller chooses — an email,
+       * a phone number, a job id in a URL — so without a hard cap the map is
+       * whatever an anonymous caller wants it to be. `MAX_BUCKETS` bounds it at
+       * a few megabytes whatever arrives.
+       *
+       * Oldest first, which `Map` gives for nothing: keys come back in insertion
+       * order, and the refresh below re-inserts, so the front of the map is the
+       * bucket whose window started longest ago — the one closest to expiring
+       * anyway.
+       *
+       * **Evicting forgives.** A caller whose bucket is dropped starts again
+       * with a full allowance, so somebody willing to spend `MAX_BUCKETS`
+       * requests can clear their own entry and buy another window. That is the
+       * deliberate half of this trade: the alternative is refusing new buckets
+       * when the map is full, which hands the same attacker a way to lock every
+       * honest caller out of signing in. Amnesia is the right way for a limiter
+       * to fail, and ten thousand requests to win back fifteen sign-in attempts
+       * is a poor exchange for anybody buying it.
+       */
+      while (callers.size >= MAX_BUCKETS) {
+        const oldest = callers.keys().next();
+        if (oldest.done) break;
+        callers.delete(oldest.value);
+      }
+
+      // Deleted before it is set so the key moves to the back of the insertion
+      // order. Without this a refreshed bucket keeps its original position and
+      // the eviction above would reach for entries that are still live.
+      callers.delete(bucket);
       callers.set(bucket, { count: 1, windowStart: now });
       return next();
     }
@@ -68,6 +138,9 @@ export function rateLimit(options: {
 
     next();
   };
+
+  handler.buckets = () => callers.size;
+  return handler;
 }
 
 /**
