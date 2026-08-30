@@ -1430,15 +1430,44 @@ async function pullThreads(
     return;
   }
 
+  /**
+   * `null` for a thread that could not be read, which is not the same answer
+   * as an empty one.
+   *
+   * This used to be `.catch(() => [])`, and the empty array went straight into
+   * the flattened result that *replaces* `mirror.messages` — so one failed
+   * request silently deleted that conversation from the mirror and then wrote
+   * the gap to `localStorage`, where it outlived the tab. The list did not look
+   * broken; it looked complete and one thread shorter, which is the version of
+   * this failure nobody notices. A customer chasing a late order is exactly who
+   * is on a connection flaky enough to drop one request, and exactly who should
+   * not watch their conversation with the desk disappear.
+   */
   const threads = await Promise.all(
     bookings.map((booking) =>
-      api.listMessages(booking.id, authFor(booking.id)).catch(() => [] as Message[])
+      api
+        .listMessages(booking.id, authFor(booking.id))
+        .then((messages) => ({ id: booking.id, messages }))
+        .catch(() => ({ id: booking.id, messages: null as Message[] | null }))
     )
   );
 
   if (inFlight > 0) return;
 
-  mirror.messages = threads.flat();
+  // A thread that answered replaces what we held; one that did not keeps it.
+  // Rebuilt per booking rather than by patching the old array, so a thread that
+  // came back genuinely empty — the desk deleted its messages — still empties.
+  //
+  // `previous` is captured rather than read through `mirror` inside the
+  // callback: the right-hand side happens to finish before the assignment, so
+  // reading it there works today, and it is one refactor away from quietly
+  // filtering the array it is halfway through replacing.
+  const previous = mirror.messages;
+
+  mirror.messages = threads.flatMap(
+    (thread) => thread.messages ?? previous.filter((message) => message.orderId === thread.id)
+  );
+
   writeLocal(KEYS.messages, mirror.messages);
   notify();
 }
