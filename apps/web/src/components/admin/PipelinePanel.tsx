@@ -490,7 +490,10 @@ export function filterBookings(
       (b.notes?.toLowerCase().includes(q) ?? false);
 
     const matchesStatus = status === 'all' || b.status === status;
-    const matchesSuburb = suburb === 'all' || b.suburb === suburb;
+    // Trimmed on both sides, because `useSuburbs` trims what it offers: a
+    // padded suburb in the ledger would otherwise never match the option minted
+    // from it.
+    const matchesSuburb = suburb === 'all' || b.suburb?.trim() === suburb;
     const matchesPayment =
       payment === 'all' ||
       (payment === 'Paid' && b.paymentStatus === 'Paid') ||
@@ -500,10 +503,19 @@ export function filterBookings(
   });
 }
 
-/** Distinct suburbs present in the ledger, for the filter dropdown. */
+/**
+ * Distinct suburbs present in the ledger, for the filter dropdown.
+ *
+ * Blanks are dropped rather than offered. A booking can reach the ledger with
+ * no suburb on it, and every one of those used to become an unlabelled option
+ * in the filter — a row a supervisor can select, that narrows the board to a
+ * set they cannot name, and that reads as a rendering fault rather than as
+ * missing data. Trimmed as well as filtered, so whitespace is not a suburb.
+ */
 export function useSuburbs(bookings: Booking[]): string[] {
   return useMemo(
-    () => Array.from(new Set(bookings.map((b) => b.suburb))).sort(),
+    () =>
+      Array.from(new Set(bookings.map((b) => b.suburb?.trim()).filter(Boolean) as string[])).sort(),
     [bookings],
   );
 }

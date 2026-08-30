@@ -186,8 +186,15 @@ export default function FinancialsPanel({
                       )}
                     </div>
 
+                    {/*
+                      Joined rather than interpolated: a booking with no suburb
+                      on it used to render the separator with nothing after it,
+                      so the line trailed off in a dangling "·".
+                    */}
                     <span className="mt-0.5 block truncate text-[12px] text-admin-fg-2 md:mt-0">
-                      {describeItems(b) || b.serviceType} · {b.suburb}
+                      {[describeItems(b) || b.serviceType, b.suburb?.trim()]
+                        .filter(Boolean)
+                        .join(' · ')}
                     </span>
 
                     <span className="mt-1 block font-mono text-[13px] tabular-nums text-admin-fg md:mt-0 md:text-right">
@@ -289,9 +296,16 @@ export default function FinancialsPanel({
                 <ReceiptRow label="Order" value={receiptFor.id} mono />
                 <ReceiptRow label="Customer" value={receiptFor.name} />
                 <ReceiptRow label="Service" value={describeItems(receiptFor) || receiptFor.serviceType} />
+                {/*
+                  Same join as the row above, and it matters more here: this is
+                  the document the customer is handed, and an address with no
+                  suburb behind it printed with a trailing comma.
+                */}
                 <ReceiptRow
                   label="Pickup"
-                  value={`${receiptFor.address}, ${receiptFor.suburb}`}
+                  value={[receiptFor.address?.trim(), receiptFor.suburb?.trim()]
+                    .filter(Boolean)
+                    .join(', ')}
                 />
 
                 {/*
