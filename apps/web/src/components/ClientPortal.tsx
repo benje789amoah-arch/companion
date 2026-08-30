@@ -163,6 +163,26 @@ interface ClientPortalProps {
   onOpenBooking: () => void;
 }
 
+/**
+ * An order with nowhere left to go.
+ *
+ * Both terminal stages, which is the rest of the product's definition —
+ * `App`'s tracking notifier, both of the desk's live counts, and the client
+ * app's own active/history split all read "done" as delivered *or* cancelled.
+ * This screen used to be the one place that read it as delivered alone, and it
+ * did so in three separate expressions, so a cancelled order sat in the tab
+ * labelled "In progress", never appeared under the one labelled "Delivered",
+ * and carried a Track button offering to follow an order that had been called
+ * off. The same file's `liveOrders` already excluded it, so the tracking card
+ * and the list underneath disagreed about the same order on the same screen.
+ *
+ * One predicate rather than three comparisons, because three comparisons is
+ * exactly how those drifted apart.
+ */
+function isClosed(booking: Booking): boolean {
+  return booking.status === 'Delivered' || booking.status === 'Cancelled';
+}
+
 export default function ClientPortal({
   isOpen,
   onClose,
@@ -419,7 +439,7 @@ export default function ClientPortal({
   );
 
   // Filter & Concierge states
-  const [orderFilter, setOrderFilter] = useState<'all' | 'active' | 'completed'>('all');
+  const [orderFilter, setOrderFilter] = useState<'all' | 'active' | 'closed'>('all');
   const [conciergeOpen, setConciergeOpen] = useState(false);
   const [conciergeText, setConciergeText] = useState('');
   const [conciergeSuccess, setConciergeSuccess] = useState('');
@@ -1062,9 +1082,7 @@ export default function ClientPortal({
   const signedIn = !!currentUser;
 
   /** Orders that still have somewhere to go. */
-  const liveOrders = userBookings.filter(
-    (candidate) => candidate.status !== 'Delivered' && candidate.status !== 'Cancelled'
-  );
+  const liveOrders = userBookings.filter((candidate) => !isClosed(candidate));
 
   /**
    * The order the tracking panel is showing.
@@ -1076,8 +1094,8 @@ export default function ClientPortal({
   const tracked = userBookings.find((candidate) => candidate.id === activeTrackingId) ?? null;
 
   const shownOrders = userBookings.filter((candidate) => {
-    if (orderFilter === 'active') return candidate.status !== 'Delivered';
-    if (orderFilter === 'completed') return candidate.status === 'Delivered';
+    if (orderFilter === 'active') return !isClosed(candidate);
+    if (orderFilter === 'closed') return isClosed(candidate);
     return true;
   });
 
@@ -1758,7 +1776,10 @@ export default function ClientPortal({
                           {([
                             ['all', `All ${userBookings.length}`],
                             ['active', 'In progress'],
-                            ['completed', 'Delivered'],
+                            // "Closed", not "Delivered": it holds cancelled
+                            // orders too, and a cancelled one has to live
+                            // somewhere a customer would think to look.
+                            ['closed', 'Closed'],
                           ] as const).map(([id, label]) => (
                             <button
                               key={id}
@@ -1816,7 +1837,7 @@ export default function ClientPortal({
                                   <span className="tnum mr-1 text-[16px] font-semibold text-white">
                                     ₵{displayAmount(booking).toFixed(2)}
                                   </span>
-                                  {booking.status !== 'Delivered' && booking.id !== activeTrackingId && (
+                                  {!isClosed(booking) && booking.id !== activeTrackingId && (
                                     <button
                                       type="button"
                                       onClick={() => setActiveTrackingId(booking.id)}
