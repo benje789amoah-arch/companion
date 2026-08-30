@@ -37,4 +37,12 @@ function resolveBaseUrl(): string {
 
 export const API_BASE_URL = resolveBaseUrl();
 
+/**
+ * Eight seconds is the budget for a request the server is awake to serve. The
+ * far longer budget for one that has to wake it first is `createClient`'s own
+ * — see `COLD_START_TIMEOUT_MS` — and it is spent only on a host that can sleep.
+ * The Render URL an EAS build is pointed at can; the LAN address a dev gets
+ * cannot, so a phone on the wrong Wi-Fi still says so in eight seconds rather
+ * than in a minute.
+ */
 export const api = createClient({ baseUrl: API_BASE_URL, timeoutMs: 8000 });

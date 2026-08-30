@@ -5,6 +5,7 @@
 
 import {
   ApiError,
+  COLD_START_TIMEOUT_MS,
   createClient,
   samePhone,
   type AuthSession,
@@ -53,9 +54,27 @@ const KEYS = {
 
 const POLL_INTERVAL_MS = 5000;
 
-/** Same-origin: Vite proxies `/api` to the dispatch server in dev, and in
- *  production the server serves this bundle itself. */
-export const api = createClient({ baseUrl: '' });
+/**
+ * Same-origin: Vite proxies `/api` to the dispatch server in dev, and in
+ * production Vercel rewrites it to the Render service — see `vercel.json` —
+ * or the server serves this bundle itself, where it is deployed that way.
+ *
+ * The cold-start budget has to be asked for by name here, where neither app
+ * has to. `createClient` works out on its own whether a host can sleep by
+ * reading its hostname, and an empty base has no hostname to read: what sits on
+ * the other end of `/api` is a rewrite rule this bundle cannot see. In a
+ * production build it is the Render service, which sleeps after fifteen idle
+ * minutes and takes about fifty seconds to wake — so a customer opening the
+ * site cold was told it was unreachable while it was still starting up.
+ *
+ * Dev opts out rather than inheriting the minute. There `/api` is a Vite proxy
+ * to localhost, which cannot sleep, and the only thing a long budget would buy
+ * is a dev server that is simply not running taking a minute to say so.
+ */
+export const api = createClient({
+  baseUrl: '',
+  coldStartMs: import.meta.env.DEV ? 0 : COLD_START_TIMEOUT_MS,
+});
 
 type Listener = () => void;
 

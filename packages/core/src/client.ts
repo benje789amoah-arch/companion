@@ -68,6 +68,78 @@ export interface ClientOptions {
   fetchImpl?: typeof fetch;
   /** Abort a request after this long. Defaults to 8s. */
   timeoutMs?: number;
+  /**
+   * Budget for a request that may have to wake the host, rather than merely be
+   * served by it. Defaults to {@link COLD_START_TIMEOUT_MS}.
+   *
+   * Only spent while the server is unproven — see {@link createClient}. Pass 0
+   * to opt out and hold every request to `timeoutMs`.
+   *
+   * Passing this explicitly also overrides the guess about whether the host can
+   * sleep at all, which is what a same-origin caller behind a proxy needs:
+   * `apps/web` builds its client with `baseUrl: ''`, so there is no hostname to
+   * read, but on Vercel those `/api` calls are rewritten to the same Render
+   * service that does sleep.
+   */
+  coldStartMs?: number;
+  /** Injectable for tests; defaults to `Date.now`. */
+  now?: () => number;
+}
+
+/**
+ * How long to wait on a request that may have to wake a sleeping host.
+ *
+ * Render's free plan spins a service down after 15 minutes with no inbound
+ * request, and the cold start that follows takes around 50 seconds: the process
+ * boots, `start()` checks the database and seeds the roster, and only then does
+ * the port open. Every second of that is spent before our request is read, so
+ * the 8s that is generous for a served request is not close to enough — the
+ * first tap after an idle spell aborted roughly 40 seconds early, every time,
+ * and told the customer to check a connection that was fine.
+ *
+ * 60s rather than 50 because the published figure is a typical cold start, not
+ * a bound, and because the alternative to waiting is an error that blames the
+ * customer's phone for our hosting plan.
+ */
+export const COLD_START_TIMEOUT_MS = 60_000;
+
+/**
+ * How long a proven server may sit unheard-from before it is doubted again.
+ *
+ * Deliberately shorter than the 15 minutes Render waits before sleeping. The
+ * two costs here are not symmetric: doubting a server that is in fact awake
+ * spends nothing, because a warm reply arrives in well under a second and the
+ * larger budget goes unused, while trusting one that has gone to sleep spends a
+ * failed request and shows somebody the unreachable message. So the doubt
+ * starts early.
+ */
+export const COLD_AFTER_IDLE_MS = 10 * 60_000;
+
+/**
+ * Hosts that answer from this network, and therefore never have to be woken.
+ *
+ * Loopback, the three private IPv4 ranges and link-local. A LAN dispatch server
+ * is either listening or it is not: connecting to a machine that is up but has
+ * nothing on the port fails immediately with a refusal rather than by timing
+ * out, so the cold-start budget would not buy a dev anything. It would only be
+ * spent on the case the guess is really protecting — a phone on cellular, or on
+ * a different Wi-Fi from the laptop — where it turns a wrong-network mistake
+ * that reports itself in 8 seconds into one that takes a minute.
+ */
+const LOCAL_HOST = /^(localhost|\[?::1\]?|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/;
+
+/** Whether `origin` names a host that might have to be woken up. */
+function mayNeedWaking(origin: string): boolean {
+  try {
+    const { hostname } = new URL(origin);
+    // Bonjour/mDNS — another name for a machine on this network.
+    if (hostname.endsWith('.local')) return false;
+    return !LOCAL_HOST.test(hostname);
+  } catch {
+    // A relative base (`apps/web`) has no hostname to judge. Callers that know
+    // they sit in front of something sleepy pass `coldStartMs` explicitly.
+    return false;
+  }
 }
 
 export interface PaystackInitResult {
@@ -148,9 +220,45 @@ export interface WalletMovement {
 }
 
 export function createClient(options: ClientOptions) {
-  const { baseUrl, fetchImpl, timeoutMs = 8000 } = options;
+  const {
+    baseUrl,
+    fetchImpl,
+    timeoutMs = 8000,
+    coldStartMs = COLD_START_TIMEOUT_MS,
+    now = Date.now,
+  } = options;
   const root = baseUrl.replace(/\/$/, '');
   const doFetch: typeof fetch = fetchImpl ?? ((...args) => fetch(...args));
+
+  // Whether this client ever spends the cold-start budget. An explicit
+  // `coldStartMs` is taken as the caller knowing better than the hostname does.
+  const canSleep =
+    options.coldStartMs !== undefined ? coldStartMs > 0 : mayNeedWaking(root);
+
+  /**
+   * When the server last proved it was running, or 0 if it never has.
+   *
+   * Set from any reply at all, not just a successful one: a 401 on a wrong
+   * password is as good a proof of a woken process as a 200, and holding out
+   * for `response.ok` would keep spending the long budget on a customer who is
+   * simply mistyping.
+   */
+  let lastReplyAt = 0;
+
+  /**
+   * How long to let this request run.
+   *
+   * Not a per-launch flag but a per-idle one, because the app outlives the
+   * server: a customer who books in the morning and opens the app again after
+   * lunch is talking to a process that went to sleep in between, and treating
+   * only the very first request of a session as cold would leave that afternoon
+   * tap to fail exactly the way this is meant to stop.
+   */
+  function budgetMs(): number {
+    if (!canSleep) return timeoutMs;
+    const proven = lastReplyAt !== 0 && now() - lastReplyAt < COLD_AFTER_IDLE_MS;
+    return proven ? timeoutMs : Math.max(timeoutMs, coldStartMs);
+  }
 
   async function request<T>(
     path: string,
@@ -169,7 +277,7 @@ export function createClient(options: ClientOptions) {
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), budgetMs());
 
     try {
       const response = await doFetch(url, {
@@ -180,6 +288,12 @@ export function createClient(options: ClientOptions) {
           ...(rest.headers ?? {}),
         },
       });
+
+      // Headers are in, so the process is up and serving. Recorded before the
+      // body is read: a slow or truncated body says nothing about whether the
+      // server had to be woken, and the next request should not be made to
+      // wait a minute again on account of it.
+      lastReplyAt = now();
 
       const text = await response.text();
       const body = text ? safeJson(text) : undefined;

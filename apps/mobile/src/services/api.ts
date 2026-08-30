@@ -36,6 +36,13 @@ function resolveBaseUrl(): string {
 
 export const API_BASE_URL = resolveBaseUrl();
 
+/**
+ * Six seconds is the budget for a request the server is awake to serve, which
+ * is the right patience for the four-second poll and is argued for below.
+ * Waking a sleeping Render instance is a different job and gets its own minute
+ * inside `createClient` — see `COLD_START_TIMEOUT_MS`. Only the hosted URL an
+ * EAS build carries can be asleep, so a dev's LAN address is untouched by it.
+ */
 export const api = createClient({ baseUrl: API_BASE_URL, timeoutMs: 6000 });
 
 /**

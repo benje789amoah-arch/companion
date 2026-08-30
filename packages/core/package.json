@@ -11,7 +11,7 @@
   },
   "scripts": {
     "lint": "tsc --noEmit",
-    "check": "tsx src/random.check.ts && tsx src/payments.check.ts && tsx src/passwords.check.ts && tsx src/uploads.check.ts && tsx src/money.check.ts && tsx src/details.check.ts && tsx src/reschedule.check.ts && tsx src/operations.check.ts && tsx src/growth.check.ts"
+    "check": "tsx src/random.check.ts && tsx src/payments.check.ts && tsx src/passwords.check.ts && tsx src/uploads.check.ts && tsx src/money.check.ts && tsx src/details.check.ts && tsx src/reschedule.check.ts && tsx src/operations.check.ts && tsx src/growth.check.ts && tsx src/client.check.ts"
   },
   "devDependencies": {
     "tsx": "^4.21.0"
