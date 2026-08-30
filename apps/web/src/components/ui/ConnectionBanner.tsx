@@ -3,6 +3,21 @@ import { CloudOff, RefreshCw } from 'lucide-react';
 import * as store from '../../services/store';
 
 /**
+ * How long to let the first request answer before believing it failed.
+ *
+ * `store.isOnline()` starts `false` and only turns true when a pull comes
+ * back, so between mount and that first reply the honest answer is "not known
+ * yet" — but the flag cannot say that, and rendering straight off it told
+ * every visitor the connection was gone for as long as the first request took.
+ *
+ * Long enough to cover a normal round trip, short enough that somebody who
+ * really is offline is not left guessing. Deliberately *not* scaled to a
+ * free-tier cold start: a server that has not answered in three seconds is one
+ * the page genuinely cannot reach yet, and saying so then is correct.
+ */
+const SETTLE_MS = 3_000;
+
+/**
  * Says out loud what the store has always quietly done.
  *
  * `services/store.ts` is built to survive a dropped connection: a write that
@@ -34,10 +49,30 @@ export default function ConnectionBanner() {
   const [online, setOnline] = useState(() => store.isOnline());
   const [pending, setPending] = useState(() => store.pendingWriteCount());
 
+  /**
+   * Whether anything is known yet.
+   *
+   * True as soon as a pull succeeds, or once `SETTLE_MS` has passed without
+   * one. Until then this component says nothing at all, because it has nothing
+   * to say. If the store is already online at mount — a remount later in the
+   * session — there is nothing to wait for.
+   */
+  const [settled, setSettled] = useState(() => store.isOnline());
+
+  useEffect(() => {
+    if (settled) return;
+    const timer = setTimeout(() => setSettled(true), SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [settled]);
+
   useEffect(() => {
     const sync = () => {
-      setOnline(store.isOnline());
+      const nowOnline = store.isOnline();
+      setOnline(nowOnline);
       setPending(store.pendingWriteCount());
+      // A reply is the thing worth waiting for; the timer is only the fallback
+      // for when none comes.
+      if (nowOnline) setSettled(true);
     };
 
     // The store notifies on every poll and every queue movement, which covers
@@ -61,7 +96,7 @@ export default function ConnectionBanner() {
   }, []);
 
   const syncing = online && pending > 0;
-  const hidden = online && pending === 0;
+  const hidden = (online && pending === 0) || !settled;
 
   /**
    * Tell the rest of the page how tall this is.
