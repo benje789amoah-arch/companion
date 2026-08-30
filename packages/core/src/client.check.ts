@@ -23,7 +23,7 @@
  */
 
 import { checkTrue, report, section } from './check';
-import { COLD_AFTER_IDLE_MS, createClient } from './client';
+import { ApiError, COLD_AFTER_IDLE_MS, createClient } from './client';
 
 const REMOTE = 'https://freshfold-server.onrender.com';
 const LAN = 'http://192.168.100.39:4000';
@@ -167,6 +167,66 @@ section('a host that cannot');
   });
 
   checkTrue('zero opts out of the wait entirely', !(await answered(api.health())));
+}
+
+section('what a failed reply says');
+
+/** The message a call rejected with, or '' if it did not reject. */
+async function messageFrom(call: Promise<unknown>): Promise<string> {
+  try {
+    await call;
+    return '';
+  } catch (error) {
+    return error instanceof ApiError ? error.message : '';
+  }
+}
+
+{
+  // The gateway's own answer: a status, and a body with no `error` in it. This
+  // is what a supervisor met on the sign-in form while Render was waking, and
+  // what it used to read out was the method, the path and the number.
+  const api = createClient({
+    baseUrl: REMOTE,
+    timeoutMs: LONG,
+    coldStartMs: 0,
+    fetchImpl: respondsIn(1, 502),
+  });
+
+  const message = await messageFrom(api.health());
+
+  checkTrue(
+    'a gateway failure is not read out as a request trace',
+    !message.includes('502') && !message.includes('/health')
+  );
+  checkTrue(
+    'a gateway failure says the server may be starting up',
+    message.toLowerCase().includes('starting back up')
+  );
+}
+
+{
+  // And the server's own refusal keeps its wording — the fallback must not
+  // reach a reply that came from us. `/health` answers 503 with an `error`
+  // field when Postgres is unreachable, which is the collision worth pinning.
+  const stated = ((_url: unknown) =>
+    Promise.resolve(
+      new Response(JSON.stringify({ ok: false, error: 'Database unreachable' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )) as typeof fetch;
+
+  const api = createClient({
+    baseUrl: REMOTE,
+    timeoutMs: LONG,
+    coldStartMs: 0,
+    fetchImpl: stated,
+  });
+
+  checkTrue(
+    'a stated error survives a status the gateway also uses',
+    (await messageFrom(api.health())) === 'Database unreachable'
+  );
 }
 
 report();

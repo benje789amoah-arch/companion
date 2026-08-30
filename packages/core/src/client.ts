@@ -143,6 +143,42 @@ function mayNeedWaking(origin: string): boolean {
   }
 }
 
+/**
+ * Statuses that come from something in front of the server rather than from it.
+ *
+ * None of the three is ever written by `apps/server`: they are Render's router
+ * and Vercel's proxy reporting that the process behind them is asleep,
+ * restarting, or did not answer inside the gateway's own patience. The reply
+ * carries an HTML page or nothing at all, so there is no `error` field to
+ * quote.
+ */
+const GATEWAY_STATUS = new Set([502, 503, 504]);
+
+/**
+ * What a caller is told when one of those answers instead of the server.
+ *
+ * Without this the fallback below ran, and the sentence a supervisor read on
+ * the desk's sign-in form was `POST /admin/login failed (502)` — true about the
+ * plumbing, useless about what to do, and indistinguishable to them from a
+ * rejected password. Every screen in `apps/web` renders `ApiError.message`
+ * directly when it has no better wording of its own, so the trace surfaced
+ * everywhere at once.
+ *
+ * The reading is nearly always the same one. The free plan sleeps after fifteen
+ * idle minutes and takes around fifty seconds to wake — see
+ * {@link COLD_START_TIMEOUT_MS} — which is longer than the proxy in front of it
+ * will hold the request, so the first tap after an idle spell can be answered
+ * by the gateway while the server is still booting perfectly well. The request
+ * is lost; the service is not. "Try again in a moment" is the whole of the
+ * advice, and it is right for a restart and a deploy too.
+ *
+ * Note that this cannot swallow the server's own 503 — `/health` answering that
+ * Postgres is unreachable — because that one carries an `error` field and
+ * `stated` wins.
+ */
+const GATEWAY_MESSAGE =
+  'The dispatch server is not answering just now. It may be starting back up — try again in a moment.';
+
 export interface PaystackInitResult {
   status: boolean;
   authorization_url: string;
@@ -300,10 +336,18 @@ export function createClient(options: ClientOptions) {
       const body = text ? safeJson(text) : undefined;
 
       if (!response.ok) {
-        const message =
-          (body && typeof body === 'object' && 'error' in body
+        // What the server said, when it was the server that answered.
+        const stated =
+          body && typeof body === 'object' && 'error' in body
             ? String((body as { error: unknown }).error)
-            : null) ?? `${rest.method ?? 'GET'} ${path} failed (${response.status})`;
+            : null;
+
+        const message =
+          stated ??
+          (GATEWAY_STATUS.has(response.status)
+            ? GATEWAY_MESSAGE
+            : `${rest.method ?? 'GET'} ${path} failed (${response.status})`);
+
         throw new ApiError(message, response.status, body);
       }
 
