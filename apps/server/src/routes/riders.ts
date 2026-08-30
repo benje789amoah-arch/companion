@@ -520,6 +520,42 @@ ridersRouter.patch(
   })
 );
 
+/**
+ * The rota, across the fleet, for a window.
+ *
+ * Staff only — it is the roster with names on it. Defaults to the coming week,
+ * which is what the roster console opens on, and takes an explicit window for
+ * the dispatcher looking at tonight.
+ *
+ * Registered here, apart from the other shift routes further down, because
+ * Express matches in order and `/shifts` is a single segment: every `/:id`
+ * route it sits below would answer this one first, reading `shifts` as a
+ * courier id. It used to live under the Shifts heading, below `GET /:id` — so
+ * the fleet rota was served by the single-rider route and guarded by
+ * `requireRider`, and the roster console's rota came back 401 for the
+ * supervisor it exists for. `RosterPanel` swallows that failure to keep the
+ * roster itself up, so the pane showed every courier with an empty rota rather
+ * than an error.
+ */
+ridersRouter.get(
+  '/shifts',
+  requireStaff,
+  guard(async (req, res) => {
+    const from = typeof req.query.from === 'string' ? req.query.from : new Date().toISOString();
+    const to =
+      typeof req.query.to === 'string'
+        ? req.query.to
+        : new Date(Date.now() + 7 * 86_400_000).toISOString();
+
+    if (Number.isNaN(Date.parse(from)) || Number.isNaN(Date.parse(to))) {
+      res.status(400).json({ error: 'A window needs two timestamps.' });
+      return;
+    }
+
+    res.json(await store.shifts.between(from, to));
+  })
+);
+
 ridersRouter.get(
   '/:id',
   requireRider,
@@ -562,35 +598,9 @@ ridersRouter.patch(
 // ---------------------------------------------------------------------------
 // Shifts
 // ---------------------------------------------------------------------------
-
-/**
- * The rota, across the fleet, for a window.
- *
- * Staff only — it is the roster with names on it. Defaults to the coming week,
- * which is what the roster console opens on, and takes an explicit window for
- * the dispatcher looking at tonight.
- *
- * Registered before `/:id/shifts` deliberately: Express matches in order, and
- * `/shifts` would otherwise be read as a rider whose id is `shifts`.
- */
-ridersRouter.get(
-  '/shifts',
-  requireStaff,
-  guard(async (req, res) => {
-    const from = typeof req.query.from === 'string' ? req.query.from : new Date().toISOString();
-    const to =
-      typeof req.query.to === 'string'
-        ? req.query.to
-        : new Date(Date.now() + 7 * 86_400_000).toISOString();
-
-    if (Number.isNaN(Date.parse(from)) || Number.isNaN(Date.parse(to))) {
-      res.status(400).json({ error: 'A window needs two timestamps.' });
-      return;
-    }
-
-    res.json(await store.shifts.between(from, to));
-  })
-);
+//
+// The fleet-wide rota, `GET /shifts`, is not here. It has to be registered
+// above `GET /:id` to be reachable at all — see the note on it up there.
 
 /**
  * The courier's own rota.

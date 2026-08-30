@@ -26,7 +26,7 @@ import {
   type RiderState,
 } from '@freshfold/core';
 import * as store from '../../services/store';
-import { Badge, Button, EmptyState, Field, Input, Panel } from './ui';
+import { Badge, Banner, Button, EmptyState, Field, Input, Panel } from './ui';
 import PaneHeader, { ResourceBanner } from './PaneHeader';
 import type { DeskResource } from './useDeskResource';
 import { useToast } from '../ui/Toast';
@@ -103,6 +103,23 @@ export default function RosterPanel({ riders }: { riders: DeskResource<RiderStat
    * in a drawer was both, and could take a collection nobody was going to make.
    */
   const [shifts, setShifts] = useState<Record<string, RiderShift[]>>({});
+  /**
+   * Why the rota is not on screen, when it is not.
+   *
+   * Held rather than swallowed. This read used to end in `.catch(() => [])`,
+   * which is the right instinct — the roster must survive a rota that will not
+   * load — applied in the one way that costs more than it saves: an empty rota
+   * and a rota nobody could read rendered identically. Every courier showed
+   * `Rota (0)`, "On shift now" and "Not signed in" both read a confident zero,
+   * and the pane asserted that nobody was rostered to a supervisor who had no
+   * way of knowing the question had gone unanswered. That is how a 401 on
+   * `GET /riders/shifts` sat unnoticed: the numbers were wrong in the direction
+   * that looks like a quiet day.
+   *
+   * Null means the last read succeeded. A string is shown, and every figure
+   * derived from the rota stops claiming a number.
+   */
+  const [rotaError, setRotaError] = useState<string | null>(null);
   /** The courier whose rota is open, and the block being drafted for them. */
   const [rostering, setRostering] = useState<string | null>(null);
   const [shiftStart, setShiftStart] = useState('');
@@ -131,7 +148,10 @@ export default function RosterPanel({ riders }: { riders: DeskResource<RiderStat
    */
   const loadShifts = useCallback(async () => {
     const token = store.readAdminToken();
-    if (!token) return;
+    if (!token) {
+      setRotaError('This desk is not signed in, so the rota could not be read.');
+      return;
+    }
 
     try {
       /**
@@ -140,25 +160,31 @@ export default function RosterPanel({ riders }: { riders: DeskResource<RiderStat
        * Backwards as well as forwards because the pane is where somebody
        * corrects a block they entered wrong yesterday, and a list that started
        * at "now" would hide exactly the entry they came to delete.
-       *
-       * Best effort: a rota that will not load must not take the roster down
-       * with it — hiring a courier is the more urgent of the two jobs this pane
-       * does, and it does not need the rota to work.
        */
-      const rota = await store.api
-        .rosterShifts(token, {
-          from: new Date(Date.now() - 7 * 86_400_000).toISOString(),
-          to: new Date(Date.now() + 14 * 86_400_000).toISOString(),
-        })
-        .catch(() => [] as RiderShift[]);
+      const rota = await store.api.rosterShifts(token, {
+        from: new Date(Date.now() - 7 * 86_400_000).toISOString(),
+        to: new Date(Date.now() + 14 * 86_400_000).toISOString(),
+      });
 
       const byRider: Record<string, RiderShift[]> = {};
       for (const shift of rota) {
         (byRider[shift.riderId] ??= []).push(shift);
       }
       setShifts(byRider);
+      setRotaError(null);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'The rota could not be read.');
+      /*
+        Caught here and not thrown on, so the roster and the hire form stay
+        usable — that much of the old `.catch` was right. What changes is that
+        the failure is now recorded instead of being spent on an empty object:
+        the banner says the rota is missing, and the figures drawn from it say
+        they do not know rather than saying zero.
+      */
+      setRotaError(
+        err instanceof ApiError
+          ? err.message
+          : 'The rota could not be read from the dispatch server.',
+      );
     }
   }, []);
 
@@ -352,21 +378,43 @@ export default function RosterPanel({ riders }: { riders: DeskResource<RiderStat
       <PaneHeader
         stats={[
           { label: 'On the roster', value: list.length },
+          /*
+            Both of these are read off the rota, so neither can answer while the
+            rota is missing. An em dash rather than a zero: "nobody is on shift"
+            and "we could not find out who is" are different facts, and the one
+            that reads as a quiet afternoon is the wrong one to guess.
+          */
           {
             label: 'On shift now',
-            value: onShiftNow,
-            tone: onShiftNow > 0 ? 'ok' : 'warn',
-            hint: 'can take a job',
+            value: rotaError ? '—' : onShiftNow,
+            tone: rotaError ? 'neutral' : onShiftNow > 0 ? 'ok' : 'warn',
+            hint: rotaError ? 'rota unavailable' : 'can take a job',
           },
           {
             label: 'Not signed in',
-            value: missing,
-            tone: missing > 0 ? 'warn' : 'ok',
-            hint: 'though on shift',
+            value: rotaError ? '—' : missing,
+            tone: rotaError ? 'neutral' : missing > 0 ? 'warn' : 'ok',
+            hint: rotaError ? 'rota unavailable' : 'though on shift',
           },
         ]}
         freshness={riders}
-        banner={<ResourceBanner error={riders.error} refresh={riders.refresh} />}
+        banner={
+          <>
+            <ResourceBanner error={riders.error} refresh={riders.refresh} />
+            {/*
+              Warn rather than danger, and separate from the roster's own
+              banner: the roster is fine and the pane's most urgent job — hiring
+              a courier — still works. It is the rota that is missing, and it
+              retries on its own read rather than the shell's.
+            */}
+            {rotaError && (
+              <Banner tone="warn" onRetry={() => void loadShifts()}>
+                {rotaError} The roster below is current; the shift figures and each courier’s rota
+                are not being shown.
+              </Banner>
+            )}
+          </>
+        }
       />
 
       <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)] xl:items-start">
@@ -574,9 +622,14 @@ export default function RosterPanel({ riders }: { riders: DeskResource<RiderStat
                       onClick={() =>
                         setRostering((current) => (current === rider.id ? null : rider.id))
                       }
-                      title={`Rota for ${rider.employeeId}`}
+                      title={
+                        rotaError
+                          ? `The rota could not be read, so this count is unknown`
+                          : `Rota for ${rider.employeeId}`
+                      }
                     >
-                      Rota ({shifts[rider.id]?.length ?? 0})
+                      {/* Not "(0)" when the answer never arrived — see `rotaError`. */}
+                      Rota ({rotaError ? '—' : (shifts[rider.id]?.length ?? 0)})
                     </Button>
                     <Button
                       size="sm"
@@ -633,7 +686,17 @@ export default function RosterPanel({ riders }: { riders: DeskResource<RiderStat
 
                 {rostering === rider.id && (
                   <div className="mt-3 space-y-2 rounded-xl border border-admin-line bg-admin-raised p-3">
-                    {(shifts[rider.id] ?? []).length === 0 ? (
+                    {/*
+                      "Nothing rostered" is a claim about this courier, so it is
+                      only made once the rota has actually been read. Otherwise
+                      the drawer would answer a question it never got back.
+                    */}
+                    {rotaError ? (
+                      <p className="text-[11px] text-admin-warn">
+                        This courier’s rota could not be read, so nothing is listed here. The form
+                        below still works — a block added now will appear once the rota loads.
+                      </p>
+                    ) : (shifts[rider.id] ?? []).length === 0 ? (
                       <p className="text-[11px] text-admin-fg-3">
                         Nothing rostered. A courier with no shifts at all can still accept work —
                         the rota only starts holding them to it once there is one.
