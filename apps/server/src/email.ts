@@ -40,6 +40,22 @@ export interface Mail {
   subject: string;
   html: string;
   text: string;
+  /**
+   * Where a reply should go, when that is not the sender.
+   *
+   * There is exactly one case: the contact form's copy to the desk. It is sent
+   * *from* the verified sender — it has to be, that being the only address
+   * either provider will accept — but the person who wrote it is a stranger
+   * whose address is in the body. Without this header, hitting reply answers
+   * the laundry's own mailbox, and the desk has to retype an address off the
+   * screen to answer somebody.
+   *
+   * Never set from an unvalidated string. `routes/contact.ts` puts an address
+   * here only after `isEmailShaped` has passed it, which rules out the
+   * whitespace and newlines that would otherwise be worth worrying about in a
+   * header.
+   */
+  replyTo?: { name?: string; email: string };
 }
 
 /** Which transport `sendMail` will use, given the environment as it stands. */
@@ -51,6 +67,26 @@ export function emailProvider(): 'brevo' | 'resend' | null {
 
 export function emailConfigured(): boolean {
   return emailProvider() !== null;
+}
+
+/**
+ * The mailbox the contact form's enquiries are sent to.
+ *
+ * `CONTACT_EMAIL` when it is set, and the sender's own address otherwise. That
+ * fallback is not a guess: `EMAIL_FROM` has to be a mailbox somebody verified
+ * by clicking a link in it, so it is the one address on the deployment that is
+ * known to exist and known to be read. A deployment that has configured email
+ * at all therefore has a working contact form without a second variable.
+ *
+ * Returns null only when neither is set, which is a server with no outbound
+ * mail configured — there, `sendMail` writes the enquiry to the log instead.
+ */
+export function contactAddress(): string | null {
+  const explicit = process.env.CONTACT_EMAIL?.trim();
+  if (explicit) return parseAddress(explicit).email;
+
+  const from = process.env.EMAIL_FROM?.trim();
+  return from ? parseAddress(from).email : null;
 }
 
 /**
@@ -131,6 +167,7 @@ function postBrevo(mail: Mail, from: string, signal: AbortSignal): Promise<Respo
     body: JSON.stringify({
       sender,
       to: [{ email: mail.to }],
+      ...(mail.replyTo ? { replyTo: mail.replyTo } : {}),
       subject: mail.subject,
       htmlContent: mail.html,
       textContent: mail.text,
@@ -149,6 +186,13 @@ function postResend(mail: Mail, from: string, signal: AbortSignal): Promise<Resp
     body: JSON.stringify({
       from,
       to: [mail.to],
+      ...(mail.replyTo
+        ? {
+            reply_to: mail.replyTo.name
+              ? `${mail.replyTo.name} <${mail.replyTo.email}>`
+              : mail.replyTo.email,
+          }
+        : {}),
       subject: mail.subject,
       html: mail.html,
       text: mail.text,
@@ -529,6 +573,98 @@ export function bookingRescheduledMail(
         <p style="font-size:13px;line-height:21px;color:#6b7280;margin:0 0 8px">${escapeHtml(allowance)}</p>
         <p style="font-size:13px;line-height:21px;color:#6b7280;margin:0">
           If this was not you, reply to this mail and we will put it back.
+        </p>
+      </div>
+    `.trim(),
+  };
+}
+
+/**
+ * The desk's copy of a contact-form enquiry.
+ *
+ * Addressed to the laundry rather than to a customer, which makes it the one
+ * message in this file written for whoever is at the desk: no branding above
+ * the fold, no call to action, and the sender's own words first because that is
+ * what somebody is opening it to read.
+ *
+ * `replyTo` is the whole point of it. The message is sent from the verified
+ * sender — the only address either provider accepts — so without that header
+ * every reply would go to the laundry's own mailbox. With it, answering an
+ * enquiry is pressing reply.
+ *
+ * The subject carries the sender's name so a morning's worth of these can be
+ * told apart in a list, and `id` goes in the footer so a row on this table and
+ * a message in the inbox can be matched up.
+ */
+export function enquiryMail(
+  to: string,
+  enquiry: { id: string; name: string; email: string; message: string; createdAt: string }
+): Mail {
+  const name = enquiry.name.trim();
+  const from = enquiry.email.trim();
+  // Only when it is really an address. `routes/contact.ts` has already refused
+  // anything else, and a Reply-To pointing at a typo is worse than none.
+  const replyTo = from ? { name, email: from } : undefined;
+
+  const received = new Date(enquiry.createdAt).toLocaleString('en-GB', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'GMT',
+  });
+
+  return {
+    to,
+    ...(replyTo ? { replyTo } : {}),
+    subject: `Website enquiry from ${name}`,
+    text: [
+      enquiry.message,
+      '',
+      '—',
+      `From: ${name}${from ? ` <${from}>` : ' (no email address given)'}`,
+      `Received: ${received} GMT`,
+      `Reference: ${enquiry.id}`,
+      '',
+      from
+        ? 'Reply to this message and it goes to them.'
+        : 'They left no address, so this cannot be replied to.',
+    ].join('\n'),
+    html: `
+      <div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:520px;margin:0 auto;padding:32px 24px;color:#2f3437">
+        <p style="font-size:10px;letter-spacing:1.6px;text-transform:uppercase;color:#7d8b7f;margin:0 0 6px">
+          Website enquiry
+        </p>
+        <h1 style="font-size:22px;font-weight:800;margin:0 0 18px">${escapeHtml(name)}</h1>
+        <p style="font-size:15px;line-height:24px;white-space:pre-wrap;margin:0 0 28px">${escapeHtml(
+          enquiry.message
+        )}</p>
+        <table style="width:100%;border-collapse:collapse;font-size:13px;line-height:20px;margin:0 0 20px">
+          <tr>
+            <td style="padding:7px 0;color:#6b7280;border-bottom:1px solid #eeeae4">From</td>
+            <td style="padding:7px 0;text-align:right;font-weight:700;border-bottom:1px solid #eeeae4">${
+              from
+                ? `<a href="mailto:${escapeHtml(from)}" style="color:#2f3437">${escapeHtml(from)}</a>`
+                : 'No address given'
+            }</td>
+          </tr>
+          <tr>
+            <td style="padding:7px 0;color:#6b7280;border-bottom:1px solid #eeeae4">Received</td>
+            <td style="padding:7px 0;text-align:right;font-weight:700;border-bottom:1px solid #eeeae4">${escapeHtml(
+              received
+            )} GMT</td>
+          </tr>
+          <tr>
+            <td style="padding:7px 0;color:#6b7280;border-bottom:1px solid #eeeae4">Reference</td>
+            <td style="padding:7px 0;text-align:right;font-weight:700;border-bottom:1px solid #eeeae4">${escapeHtml(
+              enquiry.id
+            )}</td>
+          </tr>
+        </table>
+        <p style="font-size:12px;line-height:19px;color:#6b7280;margin:0">
+          ${
+            from
+              ? 'Reply to this message and it goes to them.'
+              : 'They left no address, so this cannot be replied to.'
+          }
         </p>
       </div>
     `.trim(),

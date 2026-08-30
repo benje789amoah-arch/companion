@@ -1069,6 +1069,40 @@ export interface RiderShift {
 }
 
 // ---------------------------------------------------------------------------
+// The front desk — what somebody who is not a customer yet sent in
+// ---------------------------------------------------------------------------
+
+/**
+ * A message from the website's contact form.
+ *
+ * The only record in this file written by somebody with no account, no booking
+ * and no session — which is precisely who a contact form is for. It carries no
+ * status, no owner and no reference the sender ever sees: an enquiry is a
+ * message with a name on it, and `Claim` already exists for the kind that needs
+ * to be tracked to an outcome.
+ *
+ * It exists at all because the form used to build a `mailto:` link instead of
+ * sending anything, which reaches the laundry only if the visitor's browser has
+ * a mail client wired up — and tells them it worked either way.
+ */
+export interface Enquiry {
+  id: string;
+  name: string;
+  /** Optional on the form. Empty when they did not leave one. */
+  email: string;
+  message: string;
+  /**
+   * Whether the desk's copy reached the mail provider.
+   *
+   * Not whether the enquiry was received: the row is written first and is the
+   * record. This marks the ones nobody was emailed about, so they are a list to
+   * work through rather than a silence.
+   */
+  delivered: boolean;
+  createdAt: string;
+}
+
+// ---------------------------------------------------------------------------
 // Growing the business — codes, standing orders, invoices and branches
 // ---------------------------------------------------------------------------
 

@@ -149,6 +149,14 @@ services:
       - key: EMAIL_FROM
         sync: false
 
+      # Where the website's contact form sends enquiries. Optional — unset,
+      # they go to EMAIL_FROM's address, which is the mailbox whose owner
+      # clicked the verification link and is therefore known to be read. Every
+      # enquiry is recorded on `enquiries` before the email is attempted, so a
+      # provider outage costs the notification rather than the message.
+      - key: CONTACT_EMAIL
+        sync: false
+
       - key: GEMINI_API_KEY
         sync: false
       - key: PAYSTACK_SECRET_KEY

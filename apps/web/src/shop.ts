@@ -28,7 +28,7 @@ export const SHOP = {
   country: 'GH',
   phone: '+233200957165',
   phoneLabel: '+233 20 095 7165',
-  email: 'laundry.freshfold@gmail.com',
+  email: 'laundry.freshfold1@gmail.com',
 } as const;
 
 /**

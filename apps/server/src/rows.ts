@@ -12,6 +12,7 @@ import type {
   Claim,
   ClaimStatus,
   Coords,
+  Enquiry,
   Garment,
   Hub,
   HubEvent,
@@ -649,6 +650,26 @@ export function toClaim(row: ClaimRow): Claim {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     closedAt: opt(row.closed_at),
+  };
+}
+
+export interface EnquiryRow {
+  id: string;
+  name: string;
+  email: string;
+  message: string;
+  delivered: boolean;
+  created_at: string;
+}
+
+export function toEnquiry(row: EnquiryRow): Enquiry {
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    message: row.message,
+    delivered: row.delivered,
+    createdAt: row.created_at,
   };
 }
 

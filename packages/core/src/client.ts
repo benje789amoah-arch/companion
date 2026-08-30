@@ -16,6 +16,7 @@ import type {
   Claim,
   ClaimStatus,
   Coords,
+  Enquiry,
   Garment,
   Hub,
   HubEvent,
@@ -703,6 +704,35 @@ export function createClient(options: ClientOptions) {
       request<Claim>(`/claims/${encodeURIComponent(id)}`, {
         ...json('PATCH', patch),
         headers: bearer(token),
+      }),
+
+    // -- Enquiries ---------------------------------------------------------
+
+    /**
+     * Sends the website's contact form.
+     *
+     * No token: a contact form behind a sign-in is not a contact form, and the
+     * people it exists for are the ones with no account yet.
+     *
+     * `delivered` in the response is not "we have it" — the 201 is that, and
+     * the enquiry is on the server's table before this resolves. It says
+     * whether the desk's copy reached the mail provider, so a form can tell
+     * somebody their message is waiting rather than claiming it has landed in
+     * an inbox it cannot see.
+     */
+    sendEnquiry: (enquiry: { name: string; email?: string; message: string }) =>
+      request<{ ok: true; delivered: boolean }>('/contact', json('POST', enquiry)),
+
+    /**
+     * What has come in through it. Supervisor only.
+     *
+     * `undelivered` narrows it to the enquiries nobody was emailed about, which
+     * is the list to check when somebody says they wrote in and heard nothing.
+     */
+    listEnquiries: (token: string, options: { undelivered?: boolean } = {}) =>
+      request<Enquiry[]>('/contact', {
+        headers: bearer(token),
+        query: { undelivered: options.undelivered ? '1' : undefined },
       }),
 
     // -- Shifts ------------------------------------------------------------

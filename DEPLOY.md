@@ -317,6 +317,28 @@ end up.
    reaches the address that owns the Resend account — which is why booking
    confirmations currently go nowhere.
 
+### Where the contact form's enquiries go
+
+The website's contact form posts to `POST /api/contact`, which writes the
+enquiry to the `enquiries` table and *then* emails the desk — in that order, so
+a provider having a bad morning costs the notification rather than the message.
+The reply-to on that email is whatever address the visitor left, so answering
+one is pressing reply.
+
+By default the desk's copy goes to `EMAIL_FROM`'s address. That is not a
+fallback chosen for convenience: it is the mailbox somebody verified by clicking
+a link in it, so on any deployment where email works at all, the contact form
+works too with nothing extra set. Set `CONTACT_EMAIL` when enquiries should land
+somewhere else.
+
+Two things worth knowing when somebody says they wrote in and heard nothing:
+
+- `GET /api/contact?undelivered=1` — supervisor session — lists the enquiries
+  that were recorded but never emailed. On a healthy deployment it is empty.
+- The form tells the sender which of the two happened. "Sent. The desk has it"
+  means the email left; the softer "we have your message, our mail is playing
+  up" means it did not, and that list is where it is.
+
 ### Confirming it worked
 
 There is a script for exactly this —

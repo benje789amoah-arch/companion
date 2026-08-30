@@ -11,6 +11,7 @@ import {
   type ClaimStatus,
   type BookingItem,
   type Coords,
+  type Enquiry,
   type Garment,
   type Hub,
   type HubEvent,
@@ -30,6 +31,7 @@ import {
   toAccount,
   toAuditEvent,
   toClaim,
+  toEnquiry,
   toGarment,
   toHub,
   toHubEvent,
@@ -50,6 +52,7 @@ import {
   type AccountRow,
   type AuditEventRow,
   type ClaimRow,
+  type EnquiryRow,
   type GarmentRow,
   type HubEventRow,
   type HubRow,
@@ -1583,6 +1586,59 @@ function repositories(exec: Executor) {
           returning *
         `;
         return rows[0] ? toClaim(rows[0]) : null;
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    // Enquiries
+    // -----------------------------------------------------------------------
+    enquiries: {
+      /**
+       * Files a message from the website's contact form.
+       *
+       * Written before the desk's copy is sent, and that order is the point of
+       * the table: a provider having a bad morning then costs a notification
+       * rather than the enquiry itself.
+       */
+      async create(enquiry: {
+        id: string;
+        name: string;
+        email: string;
+        message: string;
+      }): Promise<Enquiry> {
+        const rows = await exec<EnquiryRow[]>`
+          insert into enquiries (id, name, email, message)
+          values (${enquiry.id}, ${enquiry.name}, ${enquiry.email}, ${enquiry.message})
+          returning *
+        `;
+        return toEnquiry(rows[0]);
+      },
+
+      /** Records that the desk was told about one. */
+      async markDelivered(id: string): Promise<void> {
+        await exec`update enquiries set delivered = true where id = ${id}`;
+      },
+
+      /**
+       * What has come in, newest first.
+       *
+       * Capped rather than unbounded. Nothing pages this yet, and a desk pane
+       * that grows without limit is a query that gets slower every month for a
+       * screen nobody scrolls to the bottom of.
+       */
+      async list(options: { limit?: number; undeliveredOnly?: boolean } = {}): Promise<Enquiry[]> {
+        const limit = Math.min(Math.max(options.limit ?? 200, 1), 500);
+
+        const rows = options.undeliveredOnly
+          ? await exec<EnquiryRow[]>`
+              select * from enquiries where not delivered
+              order by created_at desc limit ${limit}
+            `
+          : await exec<EnquiryRow[]>`
+              select * from enquiries order by created_at desc limit ${limit}
+            `;
+
+        return rows.map(toEnquiry);
       },
     },
 
