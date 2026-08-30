@@ -7,6 +7,7 @@ import {
   ApiError,
   COLD_START_TIMEOUT_MS,
   createClient,
+  isUnreachable,
   samePhone,
   type AuthSession,
   type Booking,
@@ -156,6 +157,23 @@ const listeners = new Set<Listener>();
 let online = false;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
+/**
+ * Set when the desk’s token is refused rather than merely unanswered.
+ *
+ * The desk session lasts twelve hours and `App` re-validates it only when the
+ * admin route is entered, so a board left open across that boundary polls a
+ * dead token indefinitely. `pull` cannot navigate, and reaching for the router
+ * from the data layer would put a UI concern in the one module that has none —
+ * so it records the fact and notifies, and `App` reads it off the subscription
+ * that already feeds every other screen.
+ */
+let adminSessionExpired = false;
+
+/** Whether the desk’s session was ended by the server rather than by its user. */
+export function isAdminSessionExpired(): boolean {
+  return adminSessionExpired;
+}
+
 // ---------------------------------------------------------------------------
 // Tracking grants
 // ---------------------------------------------------------------------------
@@ -304,28 +322,76 @@ async function send(write: PendingWrite): Promise<void> {
 }
 
 /**
+ * A write the server refused over who sent it, rather than what it said.
+ *
+ * Checked before {@link isPermanentFailure} and handled separately, because it
+ * is the one 4xx that says nothing about the write at all — the same body sent
+ * again with a live token would be accepted. It is also not a connection
+ * failure: the server answered, and answered quickly.
+ */
+function isAuthFailure(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401;
+}
+
+/**
  * Whether a failed write is worth retrying.
  *
  * A dropped connection is temporary and the write should wait. A rejection is
  * not: the commonest case is a booking deleted from the supervisor ledger while
  * an edit for it sat in the queue, and that write can never succeed. Timeouts
  * and rate limits are the two 4xx codes that *do* clear on their own.
+ *
+ * 401 is excluded and is the one this used to get wrong. It counted an expired
+ * session as the server’s final word and threw the write away — so a supervisor
+ * whose twelve-hour session ran out mid-edit lost it, silently, while the strip
+ * at the top of the page was still promising the change was saved on this
+ * device and would be sent. See {@link isAuthFailure} and `queueBlockedOnAuth`.
  */
 function isPermanentFailure(error: unknown): boolean {
   if (!(error instanceof ApiError)) return false;
-  if (error.status === 408 || error.status === 429) return false;
+  if (error.status === 401 || error.status === 408 || error.status === 429) return false;
   return error.status >= 400 && error.status < 500;
+}
+
+/**
+ * Set when the queue stops because the credential behind it was refused.
+ *
+ * Distinct from being offline, and it has to be: the writes are intact, the
+ * server is reachable, and the one thing that would move them is a sign-in.
+ * Retrying on the poll would not help — `startSync` drains every five seconds,
+ * so a held 401 would become a request a second time a minute against a token
+ * already known to be dead — so `drain` refuses to start while this is set and
+ * `unblockQueue` is what lifts it.
+ */
+let queueBlockedOnAuth = false;
+
+/** Whether the queue is holding writes that need somebody to sign in again. */
+export function isQueueBlockedOnAuth(): boolean {
+  return queueBlockedOnAuth;
+}
+
+/**
+ * A credential has arrived, so the held writes are worth another try.
+ *
+ * Called from both sign-ins. Nothing else can change the answer: the queue is
+ * blocked on a token, and a token is the only thing that unblocks it.
+ */
+function unblockQueue(): void {
+  if (!queueBlockedOnAuth) return;
+  queueBlockedOnAuth = false;
+  void drain();
 }
 
 let draining = false;
 
 async function drain(): Promise<void> {
-  if (draining || queue.length === 0) return;
+  if (draining || queue.length === 0 || queueBlockedOnAuth) return;
   draining = true;
   inFlight += 1;
 
   const onlineBefore = online;
   const queuedBefore = queue.length;
+  const blockedBefore = queueBlockedOnAuth;
 
   try {
     while (queue.length > 0) {
@@ -333,6 +399,17 @@ async function drain(): Promise<void> {
       try {
         await send(next);
       } catch (error) {
+        if (isAuthFailure(error)) {
+          // The session behind this write expired while it sat here. The write
+          // is still good and the server is plainly reachable — it just refused
+          // the token. So it is kept, in order, and draining stops until
+          // somebody signs in; the banner says as much rather than spinning on
+          // “sending” against a credential that will never be accepted.
+          queueBlockedOnAuth = true;
+          online = true;
+          return;
+        }
+
         if (isPermanentFailure(error)) {
           // The server will never accept this one — most often because the
           // order was deleted from the supervisor ledger while this write sat
@@ -369,7 +446,13 @@ async function drain(): Promise<void> {
     // storm — dozens of POSTs in the same millisecond against a server that was
     // down. Gating on a real change bounds it: the second pass has nothing new
     // to report and stops.
-    if (online !== onlineBefore || queue.length !== queuedBefore) notify();
+    if (
+      online !== onlineBefore ||
+      queue.length !== queuedBefore ||
+      queueBlockedOnAuth !== blockedBefore
+    ) {
+      notify();
+    }
   }
 }
 
@@ -1037,6 +1120,10 @@ function writeSession(session: AuthSession): UserAccount {
     /* see writeLocal */
   }
   applyAccount(session.account);
+
+  // Anything this customer wrote before the session lapsed can go now.
+  unblockQueue();
+
   return session.account;
 }
 
@@ -1231,6 +1318,13 @@ export async function adminLogin(
   }
   writeAdminSupervisor(session.supervisor);
 
+  // A live desk session again, so whatever ended the last one is no longer the
+  // reason anybody is looking at the sign-in form.
+  adminSessionExpired = false;
+
+  // And any desk write held back when the last one lapsed can go now.
+  unblockQueue();
+
   return session.supervisor;
 }
 
@@ -1267,6 +1361,11 @@ export async function adminLogout(): Promise<void> {
 }
 
 export function clearAdminSession(): void {
+  // Reset here as well as set in `pull`, so a deliberate sign-out does not
+  // leave the login form claiming a shift session ran out. `pull` sets the flag
+  // *after* calling this, which is the one order that serves both callers.
+  adminSessionExpired = false;
+
   sessionStorage.removeItem(KEYS.adminToken);
   sessionStorage.removeItem(KEYS.adminSupervisor);
 
@@ -1314,9 +1413,34 @@ export async function pull(): Promise<void> {
     online = true;
     lastPulled = Date.now();
     await pullAccount();
-  } catch {
-    // The server is down or we're offline. The mirror stands.
-    online = false;
+  } catch (error) {
+    // A refusal is not a dropped connection. `ApiError` is only built from a
+    // reply that arrived, so the server saying “no” — an aged-out desk token, a
+    // scope it will not grant, a fault of its own — means the connection is
+    // working and something else is wrong. Reading those as offline is what put
+    // a permanent “no connection” banner over a board whose only problem was a
+    // session that had run out. The mirror stands either way.
+    online = !isUnreachable(error);
+
+    // The desk’s token specifically. Nothing re-checks it once the route is
+    // open, so without this the board polls a token the server has already
+    // rejected every five seconds until somebody thinks to reload the page.
+    //
+    // `clearAdminSession` resets the flag, so it is set after — see the note
+    // there. The next pull takes the visitor branch, which is right: this
+    // browser no longer holds a desk session.
+    if (adminToken && error instanceof ApiError && error.status === 401) {
+      clearAdminSession();
+      adminSessionExpired = true;
+
+      // Hold whatever that token queued, rather than letting the next drain
+      // send it with no credential at all. `bookingAuth` would fall through to
+      // a customer token this desk does not have, and the routes deliberately
+      // refuse to distinguish “not yours” from “not there” — so the reply would
+      // be a 404 and the queue would read a good write as permanently rejected,
+      // which is the whole failure this was meant to end.
+      if (queue.length > 0) queueBlockedOnAuth = true;
+    }
   }
 
   // Both outcomes, so a screen showing the sync state learns about the failure

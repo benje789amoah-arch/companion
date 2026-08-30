@@ -165,6 +165,24 @@ export default function App() {
     };
   }, [isAdminOpen]);
 
+  /**
+   * The same check, for the rest of the shift.
+   *
+   * The one above runs when the route is entered and never again, while the
+   * desk session lasts twelve hours — so the expiry lands on a board that is
+   * already open, nearly every time. `store.pull` marks it when the server
+   * refuses the token and notifies, which is this subscription: the desk drops
+   * back to the sign-in form instead of sitting on a stale board blaming the
+   * connection for a session that had simply run out.
+   */
+  useEffect(() => {
+    if (!isAdminOpen) return;
+
+    return store.subscribe(() => {
+      if (store.isAdminSessionExpired()) setIsSupervisor(false);
+    });
+  }, [isAdminOpen]);
+
   // The booking ledger lives on the dispatch server. Read the cached mirror
   // immediately so the first paint has data, then subscribe: every poll that
   // brings back a rider's progress re-renders the portal and the live map.
@@ -422,7 +440,15 @@ export default function App() {
       {/* Supervisor desk — behind a real login, not a URL fragment. */}
       {isAdminOpen && isSupervisor === false && (
         <Deferred context="admin-login" label="Opening the desk" onDismiss={closeOverlay}>
-          <AdminLogin onAuthenticated={() => setIsSupervisor(true)} onClose={closeOverlay} />
+          <AdminLogin
+            onAuthenticated={() => setIsSupervisor(true)}
+            onClose={closeOverlay}
+            notice={
+              store.isAdminSessionExpired()
+                ? 'Your desk session ended, so the board stopped updating. Sign in to pick it back up.'
+                : undefined
+            }
+          />
         </Deferred>
       )}
 

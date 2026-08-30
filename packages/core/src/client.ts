@@ -179,6 +179,28 @@ const GATEWAY_STATUS = new Set([502, 503, 504]);
 const GATEWAY_MESSAGE =
   'The dispatch server is not answering just now. It may be starting back up — try again in a moment.';
 
+/**
+ * Whether a failed request means the server was never reached.
+ *
+ * The distinction the offline mirror in `apps/web` turns on, and the one it
+ * used to get wrong: every rejection was read as a dropped connection, so a
+ * desk whose twelve-hour session had aged out was told “no connection” by a
+ * server that had answered its 401 in under a second — and told it again every
+ * five seconds, over a board it could no longer refresh.
+ *
+ * An {@link ApiError} is only ever built from a reply that arrived, so the
+ * server answered and the connection is fine. The exception is
+ * {@link GATEWAY_STATUS}: those come from the proxy in front of a process that
+ * did not answer *it*, which is what unreachable looks like from out here.
+ *
+ * Anything else is `fetch` itself rejecting — no network, no DNS, refused, or
+ * this client’s own `AbortController` firing on the timeout — and none of
+ * those got an answer either.
+ */
+export function isUnreachable(error: unknown): boolean {
+  return error instanceof ApiError ? GATEWAY_STATUS.has(error.status) : true;
+}
+
 export interface PaystackInitResult {
   status: boolean;
   authorization_url: string;

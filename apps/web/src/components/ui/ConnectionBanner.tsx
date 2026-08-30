@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { CloudOff, RefreshCw } from 'lucide-react';
+import { CloudOff, LogIn, RefreshCw } from 'lucide-react';
 import * as store from '../../services/store';
 
 /**
@@ -33,13 +33,18 @@ const SETTLE_MS = 3_000;
  * sent, which is a different claim, and the difference is a customer waiting
  * in for a rider who was never dispatched.
  *
- * Two states, because they need different words:
+ * Three states, because they need different words:
  *
  *  - **Offline with nothing queued** — a warning. Nothing is lost; nothing is
  *    in flight either.
  *  - **Offline with writes queued** — a promise. This is the one that matters:
  *    it names how many, and it is what lets someone close the tab without
  *    wondering.
+ *  - **Queued behind an expired session** — a promise that needs something from
+ *    the reader. The connection is fine and waiting will not help, so this is
+ *    the one state the strip asks for an action instead of reporting one. It
+ *    exists because the queue now holds these writes rather than discarding
+ *    them; before, the promise above was made and then quietly broken.
  *
  * Nothing shows when the connection is fine and the queue is empty, which is
  * almost always. A permanent "you are online" badge is noise that trains
@@ -48,6 +53,7 @@ const SETTLE_MS = 3_000;
 export default function ConnectionBanner() {
   const [online, setOnline] = useState(() => store.isOnline());
   const [pending, setPending] = useState(() => store.pendingWriteCount());
+  const [blocked, setBlocked] = useState(() => store.isQueueBlockedOnAuth());
 
   /**
    * Whether anything is known yet.
@@ -70,6 +76,7 @@ export default function ConnectionBanner() {
       const nowOnline = store.isOnline();
       setOnline(nowOnline);
       setPending(store.pendingWriteCount());
+      setBlocked(store.isQueueBlockedOnAuth());
       // A reply is the thing worth waiting for; the timer is only the fallback
       // for when none comes.
       if (nowOnline) setSettled(true);
@@ -95,7 +102,8 @@ export default function ConnectionBanner() {
     };
   }, []);
 
-  const syncing = online && pending > 0;
+  // Blocked is not syncing: the writes are held for a sign-in, not in flight.
+  const syncing = online && pending > 0 && !blocked;
   const hidden = (online && pending === 0) || !settled;
 
   /**
@@ -136,7 +144,7 @@ export default function ConnectionBanner() {
       observer.disconnect();
       root.style.removeProperty('--banner-h');
     };
-  }, [hidden, syncing, pending]);
+  }, [hidden, syncing, blocked, pending]);
 
   if (hidden) return null;
 
@@ -158,6 +166,8 @@ export default function ConnectionBanner() {
       >
         {syncing ? (
           <RefreshCw aria-hidden="true" className="h-3.5 w-3.5 shrink-0 animate-spin" />
+        ) : blocked ? (
+          <LogIn aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
         ) : (
           <CloudOff aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
         )}
@@ -165,6 +175,11 @@ export default function ConnectionBanner() {
           {syncing ? (
             <>
               Back online — sending {pending} {pending === 1 ? 'change' : 'changes'}…
+            </>
+          ) : blocked ? (
+            <>
+              Your session ended. {pending} {pending === 1 ? 'change is' : 'changes are'} saved on
+              this device and will send when you sign in again.
             </>
           ) : pending > 0 ? (
             <>

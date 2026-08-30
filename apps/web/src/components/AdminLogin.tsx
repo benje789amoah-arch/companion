@@ -21,9 +21,18 @@ import * as store from '../services/store';
 export default function AdminLogin({
   onAuthenticated,
   onClose,
+  notice,
 }: {
   onAuthenticated: () => void;
   onClose: () => void;
+  /**
+   * Why the desk is looking at this form when it did not ask to be.
+   *
+   * Distinct from `error`, which is about the attempt just made: this is about
+   * the session that ended before the form opened, and a supervisor who is
+   * bounced here mid-shift is owed the reason.
+   */
+  notice?: string;
 }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -79,6 +88,14 @@ export default function AdminLogin({
         <p className="mt-4 text-xs leading-relaxed text-stone-400">
           This console edits the live order ledger. Sign in with the desk account issued to you.
         </p>
+
+        {/* Suppressed once they have tried and been told something newer. */}
+        {!!notice && !error && (
+          <div className="mt-4 flex items-start gap-2 rounded-xl border border-brand-gold/30 bg-brand-gold/10 p-3">
+            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-brand-gold" />
+            <p className="text-xs text-brand-gold-light">{notice}</p>
+          </div>
+        )}
 
         <form onSubmit={submit} className="mt-6 space-y-4">
           <div>

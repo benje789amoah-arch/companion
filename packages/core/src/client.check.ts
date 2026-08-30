@@ -23,7 +23,7 @@
  */
 
 import { checkTrue, report, section } from './check';
-import { ApiError, COLD_AFTER_IDLE_MS, createClient } from './client';
+import { ApiError, COLD_AFTER_IDLE_MS, createClient, isUnreachable } from './client';
 
 const REMOTE = 'https://freshfold-server.onrender.com';
 const LAN = 'http://192.168.100.39:4000';
@@ -226,6 +226,52 @@ async function messageFrom(call: Promise<unknown>): Promise<string> {
   checkTrue(
     'a stated error survives a status the gateway also uses',
     (await messageFrom(api.health())) === 'Database unreachable'
+  );
+}
+
+section('reached, or not reached at all');
+
+{
+  /**
+   * The predicate the offline mirror turns on.
+   *
+   * `apps/web` used to call every rejection a dropped connection, so a desk
+   * whose twelve-hour session had aged out sat behind a “no connection” banner
+   * while the server answered its 401 in milliseconds — and the board it was
+   * covering could not be refreshed for as long as it stayed there. These pin
+   * the two halves apart, because both readings look identical from the
+   * `catch` that has to choose between them.
+   */
+  checkTrue(
+    'a refused desk token is not a lost connection',
+    !isUnreachable(new ApiError('Session expired', 401))
+  );
+  checkTrue(
+    'nor is a scope the server will not grant',
+    !isUnreachable(new ApiError('Ask for one order’s messages by id.', 403))
+  );
+  checkTrue(
+    'nor is a fault the server owns up to',
+    !isUnreachable(new ApiError('GET /bookings failed (500)', 500))
+  );
+
+  // The proxy answering for a process that did not answer it. The reply
+  // arrived, but not from the server, so this is what unreachable looks like.
+  for (const status of [502, 503, 504]) {
+    checkTrue(
+      `a ${status} from the gateway means the server was not reached`,
+      isUnreachable(new ApiError('The dispatch server is not answering just now.', status))
+    );
+  }
+
+  // Everything that is not a reply at all.
+  checkTrue(
+    'a dropped connection is unreachable',
+    isUnreachable(new TypeError('Failed to fetch'))
+  );
+  checkTrue(
+    'so is our own timeout firing',
+    isUnreachable(new DOMException('The operation was aborted.', 'AbortError'))
   );
 }
 
