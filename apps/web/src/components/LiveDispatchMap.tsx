@@ -6,7 +6,7 @@ import {
   useMap,
   useMapsLibrary
 } from '@vis.gl/react-google-maps';
-import { Compass, Navigation, Info, MapPin, RefreshCw, Layers, Map as MapIcon, Shield, Sun, Moon, Key } from 'lucide-react';
+import { Compass, Navigation, Info, MapPin, RefreshCw, Layers, Map as MapIcon, Shield, Sun, Moon } from 'lucide-react';
 import {
   LANDMARKS,
   LAUNDRY_HUB,
@@ -46,6 +46,31 @@ const API_KEY =
   (globalThis as any).GOOGLE_MAPS_PLATFORM_KEY ||
   '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
+
+/**
+ * The missing-key diagnosis goes to the console, not to the page.
+ *
+ * This module used to render its own setup instructions when the key was
+ * absent — create a `.env`, set `VITE_GOOGLE_MAPS_PLATFORM_KEY`, restart
+ * `npm run dev`, or open Settings > Secrets in the environment it was
+ * scaffolded in. Which would be reasonable if only a developer could ever see
+ * it, and this component is mounted on `ClientPortal`'s tracking panel: a
+ * customer watching for their laundry was one quota error or one referrer
+ * restriction away from being told to edit a file they do not have.
+ *
+ * Maps keys fail in production for ordinary reasons, so that was not a
+ * hypothetical. The customer now gets one sentence about what they can see;
+ * whoever can actually fix it gets the variable name here, once at module
+ * load, where it belongs.
+ */
+if (!hasValidKey) {
+  console.warn(
+    '[maps] VITE_GOOGLE_MAPS_PLATFORM_KEY is unset or still the placeholder. ' +
+      'Live tracking will render as unavailable. Set it in apps/web/.env for local ' +
+      'work, or in the Vercel project for a deploy — it is a build-time variable, ' +
+      'so a redeploy is needed rather than a restart.'
+  );
+}
 
 /**
  * The cloud Map ID.
@@ -314,38 +339,25 @@ export default function LiveDispatchMap({
    */
   const courierPos = rider?.coords ?? null;
 
-  // If Google Maps API Key is missing, render Splash Screen
+  /*
+    No map, said to the person actually reading it.
+
+    The order is unaffected — the courier is still coming, and every stage still
+    advances on the timeline above this panel. Only the map is missing, so that
+    is all this says. See the note beside `hasValidKey` for where the reason
+    goes instead.
+  */
   if (!hasValidKey) {
     return (
-      <div className="w-full bg-[#121212] rounded-2xl border border-white/10 p-8 text-center space-y-5 text-white shadow-2xl">
-        <div className="w-14 h-14 bg-brand-gold/10 border border-brand-gold/30 rounded-2xl flex items-center justify-center mx-auto text-brand-gold">
-          <Key className="w-7 h-7 animate-pulse" />
+      <div className="w-full rounded-2xl border border-white/10 bg-black/30 p-8 text-center">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-brand-sage-light">
+          <MapPin aria-hidden="true" className="h-5 w-5" />
         </div>
-        <div className="max-w-md mx-auto space-y-2">
-          <h3 className="font-serif text-lg font-semibold tracking-wide">Google Maps API Key Required</h3>
-          <p className="text-stone-400 text-xs leading-relaxed font-light">
-            To view Google Maps live dispatch telemetry, please add your Google Maps Platform key to environment secrets.
-          </p>
-        </div>
-
-        <div className="bg-[#181818] border border-white/5 rounded-xl p-5 text-left max-w-lg mx-auto text-xs font-sans space-y-3">
-          <p className="font-bold text-brand-gold uppercase tracking-wider text-[10px] font-mono">Setup Instructions:</p>
-          <div className="space-y-2 text-stone-300 leading-relaxed font-light text-[11px]">
-            <p className="font-semibold text-white">For Local VS Code Development:</p>
-            <ol className="list-decimal list-inside space-y-1 pl-1">
-              <li>Create a file named <code className="bg-black px-1.5 py-0.5 rounded text-brand-gold font-mono">.env</code> in your project root directory.</li>
-              <li>Add your key: <code className="bg-black px-1.5 py-0.5 rounded text-brand-gold font-mono">VITE_GOOGLE_MAPS_PLATFORM_KEY=your_key_here</code></li>
-              <li>Restart your local dev server (<code className="bg-black px-1 py-0.5 rounded font-mono">npm run dev</code>).</li>
-            </ol>
-
-            <p className="font-semibold text-white mt-3">For AI Studio Cloud Environment:</p>
-            <ol className="list-decimal list-inside space-y-1 pl-1">
-              <li>Open <strong>Settings</strong> (⚙️ gear icon) &gt; <strong>Secrets</strong></li>
-              <li>Add key name <code className="bg-black px-1.5 py-0.5 rounded text-brand-gold font-mono">GOOGLE_MAPS_PLATFORM_KEY</code> and save</li>
-            </ol>
-          </div>
-        </div>
-        <p className="text-[10px] text-stone-500 font-mono">The app rebuilds automatically when the key is saved.</p>
+        <h3 className="mt-4 text-[17px] font-medium text-white">Live tracking is unavailable</h3>
+        <p className="mx-auto mt-2 max-w-[46ch] text-[14px] leading-relaxed text-brand-text-muted">
+          The map is not loading at the moment. Your order is not affected — the
+          stages above still update as the courier collects and delivers.
+        </p>
       </div>
     );
   }
