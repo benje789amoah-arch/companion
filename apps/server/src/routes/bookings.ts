@@ -14,6 +14,7 @@ import {
   applyBookingPatch,
   bookingItems,
   bookingToJob,
+  checkCancel,
   checkPromo,
   checkReschedule,
   defaultHub,
@@ -1155,6 +1156,151 @@ bookingsRouter.post(
       previous,
       Math.max(0, MAX_RESCHEDULES - (outcome.job.schedule.rescheduleCount ?? 0))
     );
+  })
+);
+
+/**
+ * Calls a booking off.
+ *
+ * Its own route because the thing it does was, until now, impossible: the
+ * customer app cancelled by sending `PATCH /:id` with `status: 'Cancelled'`,
+ * and `status` is on `SUPERVISOR_ONLY_FIELDS`. The patch was accepted, the field
+ * was dropped on the way in, and the response came back carrying the stage the
+ * job still had. The app had already written `Cancelled` to its own mirror, so
+ * the cancellation looked like it took — until the next pull replaced the mirror
+ * and the order came back to the stage it had never left.
+ *
+ * The rules are `checkCancel` in core, which the customer's order screen reads
+ * too so the button stops being offered before it is pressed. The desk is not
+ * held to them: a supervisor calling off a load that is already in the building
+ * is a decision somebody is making on purpose, and they have `POST /:id/refund`
+ * to settle what it costs.
+ *
+ * Deliberately does not touch the money. A paid booking stays `Paid` here, and
+ * the refund is a separate supervisor act with a ledger row behind it — which is
+ * what the cancel dialog has always promised: "anything already paid is refunded
+ * to your wallet by the concierge desk." Silently reversing a payment from a
+ * customer-facing route would be a balance moving with nobody's name on it.
+ *
+ * Idempotent, because the offline queue replays: a booking that is already
+ * cancelled answers with itself rather than a 409, so a write that reaches the
+ * server twice is the right answer arriving twice.
+ */
+bookingsRouter.post(
+  '/:id/cancel',
+  guard(async (req, res) => {
+    const job = await store.jobs.find(req.params.id);
+    if (!job) {
+      notFound(res, 'Booking');
+      return;
+    }
+
+    const access = await resolveBookingAccess(req, job);
+    if (!access) {
+      notFound(res, 'Booking');
+      return;
+    }
+
+    // A courier is not a party to whether the customer still wants their
+    // laundry collected. They move a job's *status* through the rider routes,
+    // and a job they cannot service goes back to the pool rather than off it.
+    if (access.kind === 'rider') {
+      res.status(403).json({
+        error: 'Only the customer or the desk can cancel a booking.',
+        reason: 'cancel-not-yours',
+      });
+      return;
+    }
+
+    const outcome = await store.tx(async (t) => {
+      const current = await t.jobs.find(job.id, { lock: true });
+      if (!current) return { kind: 'missing' } as const;
+
+      // Re-read under the lock, because the courier may have collected the bags
+      // between the read above and here — which is the one change that turns an
+      // allowed cancellation into a refused one.
+      const verdict = checkCancel(current.status);
+
+      // Idempotent: the offline queue replays, and a cancellation that arrives
+      // twice is the right answer arriving twice rather than a conflict.
+      if (!verdict.ok && verdict.reason === 'already-cancelled') {
+        return { kind: 'ok', job: current } as const;
+      }
+
+      /**
+       * The desk is exempt from the policy about where the bags are, not from
+       * the arrow of time. A supervisor may call off a load that is already in
+       * the building — that is a decision somebody is making on purpose, and
+       * `POST /:id/refund` is how they settle it — but a delivered order has
+       * nothing left to call off, whoever is asking.
+       */
+      if (!verdict.ok && (access.kind !== 'supervisor' || verdict.reason === 'delivered')) {
+        return { kind: 'refused', verdict } as const;
+      }
+
+      const cancelled = await t.jobs.upsert({
+        ...current,
+        status: 'cancelled',
+        updatedAt: new Date().toISOString(),
+      });
+
+      if (access.kind === 'supervisor') {
+        await recordAudit(t, {
+          actor: access.supervisor.email,
+          actorName: access.supervisor.name,
+          action: 'Booking cancelled',
+          details:
+            `Called off order ${cancelled.id} from ${toBookingStatus(current.status)}` +
+            (cancelled.payment.status === 'Paid'
+              ? `; the GHS ${cancelled.payment.amount.toFixed(2)} already paid still needs refunding`
+              : ''),
+          type: 'stage',
+          orderId: cancelled.id,
+          subject: cancelled.customer.email,
+        });
+      }
+
+      /**
+       * The desk finds out either way.
+       *
+       * A cancelled collection is a window that just came free and a round that
+       * has to be re-planned, and the board is where that gets noticed. Keyed
+       * `notif-cancel-` plus the id so it does not collide with the `notif-` row
+       * the create route wrote for the same booking, or the reschedule one.
+       */
+      await t.notifications.insert({
+        id: `notif-cancel-${cancelled.id}`,
+        title: 'Booking Cancelled',
+        body:
+          `${cancelled.customer.name} called off ${cancelled.id} ` +
+          `(${cancelled.schedule.pickupDate}, ${cancelled.schedule.pickupTime})` +
+          (cancelled.payment.status === 'Paid'
+            ? ` — GHS ${cancelled.payment.amount.toFixed(2)} is paid and needs refunding.`
+            : '.'),
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        type: 'order',
+        orderId: cancelled.id,
+        read: false,
+      });
+
+      return { kind: 'ok', job: cancelled } as const;
+    });
+
+    if (outcome.kind === 'missing') {
+      notFound(res, 'Booking');
+      return;
+    }
+
+    if (outcome.kind === 'refused') {
+      res.status(409).json({ error: outcome.verdict.message, reason: outcome.verdict.reason });
+      return;
+    }
+
+    // No viewer, so no hub code — deliberately, and not only because it keeps
+    // this route independent of who is reading. A called-off load is never
+    // checked in at the hub, so the drop-off code on a cancellation is a number
+    // for a hand-off that is not going to happen.
+    res.json(await bookingView(outcome.job));
   })
 );
 

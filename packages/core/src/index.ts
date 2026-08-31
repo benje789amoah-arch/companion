@@ -27,6 +27,7 @@ export * from './loyalty';
 export * from './services';
 export * from './pricing';
 export * from './reschedule';
+export * from './cancellation';
 export * from './operations';
 export * from './tax';
 export * from './promotions';

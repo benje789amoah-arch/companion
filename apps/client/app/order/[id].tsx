@@ -24,7 +24,15 @@ import {
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { bagsForJob, canReschedule, serviceUnit, type Job, type JobStatus } from '@freshfold/core';
+import {
+  ApiError,
+  bagsForJob,
+  canReschedule,
+  checkCancel,
+  serviceUnit,
+  type Job,
+  type JobStatus,
+} from '@freshfold/core';
 
 /**
  * Dispatch states in which the bags are still with the customer. `unassigned`
@@ -241,6 +249,24 @@ export default function OrderDetailScreen() {
     } as Job);
   }, [booking]);
 
+  /**
+   * Whether this order can still be called off, and why not when it cannot.
+   *
+   * The same `checkCancel` the route runs, read off the same live dispatch
+   * status `movable` uses. The button used to be unconditional and the write
+   * behind it silently did nothing on a collected order — which read to the
+   * customer as a cancellation that un-cancelled itself a few seconds later.
+   */
+  const cancellable = useMemo(() => {
+    if (!booking) return null;
+
+    return checkCancel(
+      booking.status === 'Cancelled'
+        ? 'cancelled'
+        : (booking.rider?.jobStatus ?? 'unassigned')
+    );
+  }, [booking]);
+
   /** The problems reported against this order. */
   const mine = useMemo(
     () => claims.filter((claim) => claim.jobId === params.id),
@@ -258,9 +284,32 @@ export default function OrderDetailScreen() {
         {
           text: t('order.cancel.confirm'),
           style: 'destructive',
+          /**
+           * Awaited, and the screen only closes once the server has agreed.
+           *
+           * This used to fire and navigate away in the same breath, which was
+           * survivable while the write silently did nothing and unforgivable now
+           * that it can be refused: a courier who collected the bags a minute ago
+           * makes this a 409, and the customer has to be standing in front of the
+           * order to be told so.
+           */
           onPress: () => {
-            cancelBooking(booking.id);
-            router.back();
+            void (async () => {
+              try {
+                await cancelBooking(booking.id);
+                router.back();
+              } catch (failure) {
+                // The server's own sentence when it wrote one — it knows whether
+                // the bags are on a courier or the order is already delivered,
+                // and either is more use than "that did not work".
+                Alert.alert(
+                  t('order.cancel.title'),
+                  failure instanceof ApiError && failure.message
+                    ? failure.message
+                    : t('order.cancel.failed')
+                );
+              }
+            })();
           },
         },
       ]
@@ -671,12 +720,19 @@ export default function OrderDetailScreen() {
                   icon={<CalendarClock size={15} color={colors.textCharcoal} />}
                 />
               )}
-              <Button
-                label={t('order.cancel.action')}
-                variant="danger"
-                onPress={onCancel}
-                icon={<Ban size={15} color={colors.statusError} />}
-              />
+              {/* Offered on the same rule as the reschedule button above, and
+                  for the same reason: once the bags are on the courier the
+                  route refuses this, and a button whose only outcome is a
+                  refusal is worse than no button. The desk can still call it
+                  off — which is what the refusal says. */}
+              {cancellable?.ok && (
+                <Button
+                  label={t('order.cancel.action')}
+                  variant="danger"
+                  onPress={onCancel}
+                  icon={<Ban size={15} color={colors.statusError} />}
+                />
+              )}
             </>
           )}
         </View>

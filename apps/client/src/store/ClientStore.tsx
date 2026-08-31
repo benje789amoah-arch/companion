@@ -276,7 +276,15 @@ interface ClientState extends Mirror {
     reference?: string
   ) => Promise<Booking>;
   patchBooking: (id: string, patch: Partial<Booking>) => void;
-  cancelBooking: (id: string) => void;
+  /**
+   * Calls an order off.
+   *
+   * Awaited rather than queued, unlike most writes here, and for the reason
+   * `payForBooking` is: the server can refuse it — the courier may already have
+   * the bags — and a refusal the customer never sees is exactly the bug this
+   * replaced. Throws `ApiError` carrying a `reason` from `CancelRefusal`.
+   */
+  cancelBooking: (id: string) => Promise<Booking>;
   /**
    * Rates the courier on a delivered order.
    *
@@ -958,12 +966,34 @@ export function ClientProvider({ children }: { children: React.ReactNode }) {
    * Cancelling keeps the record. The website's admin dashboard and the
    * customer's own history both need to see that an order existed and was
    * called off, which a delete would erase.
+   *
+   * `POST /bookings/:id/cancel`, not a patch. This used to be
+   * `patchBooking(id, { status: 'Cancelled' })`, and `status` is on the patch
+   * route's supervisor-only list — so the write went up, the field was dropped
+   * on the way in, and the mirror written here was the only place the
+   * cancellation existed. The next poll replaced the mirror and the order came
+   * back to the stage it had never left.
+   *
+   * Awaited rather than queued for the reason `payForBooking` is. The server can
+   * refuse this — a courier who already has the bags is past the point where the
+   * customer can stand them down — and a refusal that vanished into a background
+   * queue is the same silence in a different place.
    */
   const cancelBooking = useCallback<ClientState['cancelBooking']>(
-    (id) => {
-      patchBooking(id, { status: 'Cancelled' });
+    async (id) => {
+      // Drained first, like `rescheduleBooking`: an order made offline has to
+      // exist on the server before it can be called off on it.
+      await drain();
+      const cancelled = await api.cancelBooking(id, bookingAuthRef.current(id));
+
+      commit((current) => ({
+        ...current,
+        bookings: current.bookings.map((booking) => (booking.id === id ? cancelled : booking)),
+      }));
+
+      return cancelled;
     },
-    [patchBooking]
+    [drain, commit]
   );
 
   const sendMessage = useCallback<ClientState['sendMessage']>(

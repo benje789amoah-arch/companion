@@ -466,6 +466,7 @@ export const fr: Partial<Record<TranslationKey, string>> = {
   // grammaire le réclame, le français non.
   'order.cancel.keep': 'Garder',
   'order.cancel.confirm': 'Annuler',
+  'order.cancel.failed': "L'annulation n'a pas abouti pour le moment. Réessayez.",
 
   'order.section.actions': 'Ce que vous pouvez faire',
   'order.section.manifest': 'Contenu des sacs',

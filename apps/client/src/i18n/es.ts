@@ -467,6 +467,7 @@ export const es: Partial<Record<TranslationKey, string>> = {
     'Se avisará al mensajero de que no acuda. Lo ya pagado se devuelve a su cartera desde el mostrador de conserjería.',
   'order.cancel.keep': 'Conservarlo',
   'order.cancel.confirm': 'Cancelar pedido',
+  'order.cancel.failed': 'No se ha podido cancelar ahora mismo. Inténtelo de nuevo.',
 
   'order.section.actions': 'Lo que puede hacer',
   'order.section.manifest': 'Listado de bolsas',

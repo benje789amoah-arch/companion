@@ -574,6 +574,31 @@ export function createClient(options: ClientOptions) {
       }),
 
     /**
+     * Calls a booking off.
+     *
+     * Not a patch. `PATCH /bookings/:id` keeps `status` on its supervisor-only
+     * list, so a customer's cancellation used to be stripped on the way in — the
+     * request succeeded, the field was dropped, and the order came back at the
+     * stage it had never left on the next pull.
+     *
+     * Nothing is refunded here. A paid booking stays `Paid`, and the money is
+     * returned by the desk through {@link refundBooking} — which is what the
+     * cancel dialog has always said it would do.
+     *
+     * Idempotent: an order that is already cancelled comes back as itself, so a
+     * replayed offline write is the right answer arriving twice.
+     *
+     * Throws `ApiError` 409 with a `reason` from `CancelRefusal` — `'collected'`
+     * once the bags are on the courier, `'delivered'` once the round trip is
+     * done. The `error` on it is a sentence written for the customer.
+     */
+    cancelBooking: (id: string, auth: BookingAuth) =>
+      request<Booking>(`/bookings/${encodeURIComponent(id)}/cancel`, {
+        ...json('POST', {}),
+        headers: authHeaders(auth),
+      }),
+
+    /**
      * Refunds a settled booking to the customer's wallet. Supervisor only.
      *
      * The act `reverseCashPayment` refuses and points at. Whole-bill only, and

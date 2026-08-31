@@ -27,6 +27,7 @@ import {
   PICKUP_TIME_SLOTS,
   findSlot,
 } from './pricing';
+import { canCancel, checkCancel } from './cancellation';
 import {
   MAX_RESCHEDULES,
   RESCHEDULE_CUTOFF_HOURS,
@@ -266,5 +267,63 @@ check('a booking that names none leaves the job with none',
   booking().schedule.rescheduleCount, undefined);
 check('a spent allowance survives the round trip back out to the customer',
   jobToBooking(booking({ rescheduleCount: 2 })).rescheduleCount, 2);
+
+// ---------------------------------------------------------------------------
+section('calling an order off');
+
+/**
+ * The sibling rule to the one above, and it lives here for the same reason: it
+ * decides whether a change is allowed rather than what anything costs.
+ *
+ * Cancelling used to be a `PATCH` carrying `status: 'Cancelled'`, which the
+ * route strips for anybody but the desk — so the write succeeded, the field was
+ * dropped, and the customer's app was the only place the cancellation existed.
+ * The next poll put the order back at the stage it had never left.
+ *
+ * The line falls one status later than `MOVABLE` above, and the difference is
+ * the point: a courier at the door is past the moment where *moving* the
+ * collection means anything, but turning them away is exactly what cancelling
+ * is. Past that the bags are somebody else's to give back.
+ */
+/** The refusal reason, or null when the cancellation is allowed. */
+const cancelReason = (status: JobStatus): string | null => {
+  const verdict = checkCancel(status);
+  return verdict.ok ? null : verdict.reason;
+};
+
+checkTrue('an unassigned order can be called off', canCancel('unassigned'));
+checkTrue('so can one a courier has accepted', canCancel('assigned'));
+checkTrue('so can one with a courier on the way', canCancel('navigating_to_pickup'));
+checkTrue('a courier at the door can still be turned away',
+  canCancel('arrived_at_pickup'));
+
+// One status wider than a reschedule, which stops at the doorstep.
+checkTrue('...which is one step further than a reschedule reaches',
+  !canReschedule(job({ status: 'arrived_at_pickup' }), NOW).ok &&
+    canCancel('arrived_at_pickup'));
+
+checkTrue("once the bags are scanned it is not the customer's to cancel",
+  !canCancel('pickup_scanned'));
+checkTrue('nor once they are on the bike', !canCancel('picked_up'));
+checkTrue('nor once the laundry is being washed', !canCancel('processing'));
+check('...and the refusal says where the laundry is',
+  cancelReason('processing'), 'collected');
+
+check('a delivered order has nothing left to call off',
+  cancelReason('delivered'), 'delivered');
+check('a cancelled one says so rather than refusing generically',
+  cancelReason('cancelled'), 'already-cancelled');
+
+/**
+ * Every refusal carries a sentence, because the route sends it back verbatim
+ * and the order screen shows it. A reason with no message is a 409 that reaches
+ * the customer as a spinner that stopped.
+ */
+checkTrue('every refusal carries something to show the customer',
+  (['pickup_scanned', 'picked_up', 'processing', 'delivered', 'cancelled'] as JobStatus[])
+    .every((status) => {
+      const verdict = checkCancel(status);
+      return !verdict.ok && verdict.message.trim().length > 0;
+    }));
 
 report();

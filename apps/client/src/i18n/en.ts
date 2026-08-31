@@ -658,6 +658,9 @@ export const en = {
     'The courier will be stood down. Anything already paid is refunded to your wallet by the concierge desk.',
   'order.cancel.keep': 'Keep it',
   'order.cancel.confirm': 'Cancel order',
+  // Only reached when the server refuses without a sentence of its own —
+  // normally it sends one, and it knows more than this does.
+  'order.cancel.failed': 'That could not be cancelled just now. Try again.',
 
   'order.section.actions': 'Things you can do',
   'order.section.manifest': 'Bag manifest',
