@@ -18,6 +18,7 @@ import { randomInt } from 'node:crypto';
 import { accountForToken, bearerToken, requireSupervisor } from '../auth';
 import { deskActor, recordAudit } from '../audit';
 import { guard } from '../helpers';
+import { rateLimit } from '../rateLimit';
 import { store } from '../store';
 
 /**
@@ -54,9 +55,24 @@ const RESERVED_PREFIX = 'FF';
  * the booking form is open to strangers, which is what a booking form is. It
  * leaks whether a code exists and what it is worth, which is what a promo code
  * is for.
+ *
+ * **Telling one person about one code is not the same as answering everybody
+ * about every code**, and until {@link checkLimit} there was nothing marking
+ * the difference. A code is a short printable string, so an unmetered oracle
+ * over it is a dictionary away from the whole promotions table — including the
+ * limited-use codes meant for one campaign, and the referral codes that pay a
+ * real ₵ reward. The honest answer to a customer typing what they were given
+ * survives a limiter; a script walking the space does not.
  */
+const checkLimit = rateLimit({
+  max: 20,
+  windowMs: 15 * 60 * 1000,
+  message: 'Too many code checks. Wait a few minutes, or book without one.',
+});
+
 promotionsRouter.post(
   '/check',
+  checkLimit,
   guard(async (req, res) => {
     const { code, subtotal, email } = (req.body ?? {}) as {
       code?: string;

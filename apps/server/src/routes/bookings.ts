@@ -31,6 +31,7 @@ import {
   paymentBookingId,
   paymentPurpose,
   phoneDigits,
+  phoneKey,
   pickupPinFor,
   quoteBooking,
   ratesFromEnv,
@@ -48,6 +49,7 @@ import { store } from '../store';
 import { charge, refund } from '../wallet';
 import { BOOKING_PURPOSE, verifyPaystackTransaction } from './integrations';
 import { accountBlocked, bookingView, bookingViews, guard, notFound } from '../helpers';
+import { rateLimit } from '../rateLimit';
 
 /**
  * The customer-facing half of the API — what the website reads and writes.
@@ -270,8 +272,65 @@ bookingsRouter.get(
   })
 );
 
+/**
+ * How many bookings one phone number may create in an hour.
+ *
+ * Generous against real use — a household booking a wash, then remembering the
+ * bedsheets, then booking for a flatmate is three — and useless as a way to
+ * fill the board.
+ *
+ * This route is deliberately open: a guest books without an account, which is
+ * the whole of the front counter working. But it was also the only public write
+ * in the system with nothing in front of it, and it does two expensive things
+ * per call — writes a job and, at the bottom of the handler, sends a
+ * confirmation email. So an unmetered loop here is not just junk rows on the
+ * desk's board; it is our Brevo quota and our sending reputation, spent by
+ * somebody else. `POST /contact` has been limited for exactly this reason
+ * while the higher-value route beside it was not.
+ *
+ * Bucketed on the number rather than the address because the number is the one
+ * field this route cannot proceed without — it is refused a few lines down for
+ * being the wrong length, and the courier calls it from the doorstep.
+ *
+ * `phoneKey` rather than `phoneDigits`, which is the difference between a
+ * bucket and a bypass: the two are the same function until somebody writes the
+ * same number as `+233 24 …` instead of `024 …`, at which point `phoneDigits`
+ * hands out a second allowance for one phone. `phoneKey` is what `samePhone`
+ * compares on, so a caller cannot buy more attempts by changing format.
+ */
+const bookingLimit = rateLimit({
+  max: 6,
+  windowMs: 60 * 60 * 1000,
+  message: 'That is several bookings from this number in an hour. Call the shop to add more.',
+  key: (req) => {
+    const key = phoneKey((req.body as Booking | undefined)?.phone ?? '');
+    // Nothing usable to bucket on — the same nine-digit test `samePhone` makes
+    // before it trusts a match. The handler refuses the request a moment later
+    // for the same reason, and `bookingBurst` below still counts it against the
+    // address.
+    return key.length === 9 ? key : null;
+  },
+});
+
+/**
+ * And the same question asked of the address, which is what catches a script
+ * that varies the number.
+ *
+ * Two limiters rather than one, following the three credential routes: per
+ * account and per address, because either alone leaves the other as the bypass.
+ * Sized well above a shared NAT — a hall of students on one university
+ * connection is the normal case here, not the attack.
+ */
+const bookingBurst = rateLimit({
+  max: 40,
+  windowMs: 60 * 60 * 1000,
+  message: 'Too many bookings from this connection in an hour. Try again shortly.',
+});
+
 bookingsRouter.post(
   '/',
+  bookingLimit,
+  bookingBurst,
   guard(async (req, res) => {
     const incoming = req.body as Booking;
     if (!incoming || !incoming.name || !incoming.phone) {
