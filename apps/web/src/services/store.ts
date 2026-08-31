@@ -1650,9 +1650,30 @@ async function pullAccount(): Promise<void> {
  * to keep moving.
  */
 export function startSync(): () => void {
+  /**
+   * One poll at a time.
+   *
+   * The clock does not stop while a read is out, and a read can now be out for
+   * a while: a request that has to wake the Render service waits out the cold
+   * start rather than failing in eight seconds, which is what
+   * `COLD_START_TIMEOUT_MS` is for. Unguarded, a fifty-second wake queues ten
+   * more ticks behind the one already waiting — and a supervisor's pull is
+   * three requests, so the booting server is met with thirty of them arriving
+   * the moment it opens the port.
+   *
+   * Only the clock is held back. An explicit `pull()` — the Refresh beside the
+   * desk's timestamp, and every handler that asks for the board again after a
+   * write — is one deliberate request and goes through as it always has.
+   */
+  let polling = false;
+
   const tick = () => {
     void drain();
-    void pull();
+    if (polling) return;
+    polling = true;
+    void pull().finally(() => {
+      polling = false;
+    });
   };
 
   const resume = () => {

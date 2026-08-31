@@ -297,10 +297,11 @@ export function createClient(options: ClientOptions) {
   /**
    * When the server last proved it was running, or 0 if it never has.
    *
-   * Set from any reply at all, not just a successful one: a 401 on a wrong
-   * password is as good a proof of a woken process as a 200, and holding out
-   * for `response.ok` would keep spending the long budget on a customer who is
-   * simply mistyping.
+   * Set from any reply the server itself sent, not just a successful one: a
+   * 401 on a wrong password is as good a proof of a woken process as a 200,
+   * and holding out for `response.ok` would keep spending the long budget on a
+   * customer who is simply mistyping. A reply from the gateway in front of it
+   * proves the opposite, and is excluded where it is recorded below.
    */
   let lastReplyAt = 0;
 
@@ -348,11 +349,23 @@ export function createClient(options: ClientOptions) {
         },
       });
 
-      // Headers are in, so the process is up and serving. Recorded before the
-      // body is read: a slow or truncated body says nothing about whether the
-      // server had to be woken, and the next request should not be made to
-      // wait a minute again on account of it.
-      lastReplyAt = now();
+      // Something answered. Recorded before the body is read: a slow or
+      // truncated body says nothing about whether the server had to be woken,
+      // and the next request should not be made to wait a minute again on
+      // account of it.
+      //
+      // A gateway status is the exception, and it is the exact case the long
+      // budget exists for. None of the three is ever written by our server —
+      // see {@link GATEWAY_STATUS} — so a 502 is Render's router reporting
+      // that the process behind it did not answer, which is what a service
+      // that has gone to sleep looks like from out here. It also comes back in
+      // half a second rather than hanging, so counting it as proof inverted
+      // the whole mechanism: the request that woke the server marked it awake,
+      // and every request for the next ten minutes was then held to
+      // `timeoutMs` and aborted eight seconds into a fifty-second boot. The
+      // minute went to the one request that could not use it, and was withheld
+      // from all the ones that could.
+      if (!GATEWAY_STATUS.has(response.status)) lastReplyAt = now();
 
       const text = await response.text();
       const body = text ? safeJson(text) : undefined;

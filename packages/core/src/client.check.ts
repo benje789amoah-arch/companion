@@ -61,6 +61,24 @@ function respondsIn(ms: number, status = 200): typeof fetch {
     })) as typeof fetch;
 }
 
+/**
+ * A cold start with the timing Render actually gives one.
+ *
+ * The router turns the first request away in no time at all — it has nothing
+ * behind it to forward to yet — and that refusal is what starts the boot, so
+ * every request after it is held for as long as the boot takes. Both halves
+ * matter: a stub that only ever answered 502 could not tell a client that
+ * spends its budget from one that has thrown it away.
+ */
+function coldStart(): typeof fetch {
+  let woken = false;
+  return ((url: string, init?: RequestInit) => {
+    const stage = woken ? respondsIn(REPLY_AFTER) : respondsIn(1, 502);
+    woken = true;
+    return stage(url, init);
+  }) as typeof fetch;
+}
+
 /** Whether a call came back at all — the only thing these assertions ask. */
 async function answered(call: Promise<unknown>): Promise<boolean> {
   try {
@@ -107,6 +125,31 @@ section('a host that can sleep');
   checkTrue(
     'a refusal still counts as proof of a woken server',
     !(await answered(api.health()))
+  );
+}
+
+{
+  // The case the whole budget exists for, and the one it used to be spent on
+  // and then withheld from. Render's router answers 502 in under a second
+  // while the process behind it boots, so that reply arrives long before the
+  // cold start is over — and if it counts as proof of a woken server, the next
+  // request is held to `timeoutMs` and aborts in the middle of the wake it was
+  // supposed to sit through. A desk opened after an idle spell then reported
+  // no connection for the whole fifty seconds, over a board it could not
+  // refresh, on a service that was starting up perfectly well.
+  const api = createClient({
+    baseUrl: REMOTE,
+    timeoutMs: SHORT,
+    coldStartMs: LONG,
+    fetchImpl: coldStart(),
+  });
+
+  // The gateway's refusal, which arrives whether or not anything is awake.
+  await answered(api.health());
+
+  checkTrue(
+    'a gateway answer is not proof of a woken server',
+    await answered(api.health())
   );
 }
 
