@@ -17,7 +17,6 @@ import type {
   MembershipPlanId,
   ServiceCategory,
   SubscriptionPlan,
-  Testimonial,
 } from '@freshfold/core';
 
 /**
@@ -300,38 +299,26 @@ export function nextTierAfter(tier: ClientLoyaltyTier): ClientLoyaltyTier | null
   return next ? dress(next) : null;
 }
 
-export const TESTIMONIALS: Testimonial[] = [
-  {
-    id: '1',
-    name: 'Seraphina Kensington',
-    role: 'Creative Director & Fashion Consultant',
-    quote:
-      'As someone with severe fabric standards, handling bespoke knitwear can trigger anxiety. FreshFold treats my garments as individual works of art.',
-    rating: 5,
-    avatarUrl:
-      'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&q=80&w=150',
-  },
-  {
-    id: '2',
-    name: 'Jonathan Reynolds',
-    role: 'Managing Partner at Reynolds Asset Management',
-    quote:
-      'The Professional plan changed the way I travel. I step off a plane, schedule a locker drop, and my business clothing is back inside my closet the next morning.',
-    rating: 5,
-    avatarUrl:
-      'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?auto=format&fit=crop&q=80&w=150',
-  },
-  {
-    id: '3',
-    name: 'Aurelia Vance',
-    role: 'Luxury Hotelier & Family Advocate',
-    quote:
-      'Washing bedsheets for a high-occupancy estate used to disrupt our schedule. FreshFold sanitizes our Italian cottons with natural scenting. Perfect care.',
-    rating: 5,
-    avatarUrl:
-      'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=150',
-  },
-];
+/*
+ * `TESTIMONIALS` used to be here, and is gone.
+ *
+ * Three invented people — Seraphina Kensington, Jonathan Reynolds of "Reynolds
+ * Asset Management", Aurelia Vance — with five stars each and stock Unsplash
+ * portraits of real strangers standing in as their photographs. One of them
+ * praised a "locker drop" the shop has never offered; another described Italian
+ * cottons being sanitised with natural scenting, which is not a service in
+ * `./services`.
+ *
+ * `PRODUCT.md` names the invented testimonial roster as an anti-reference and
+ * requires that nothing be claimed the business cannot substantiate. The web
+ * landing was cleaned of it; this file was missed, and the entries were then
+ * translated into Spanish and French, which made the fiction more expensive to
+ * keep rather than less.
+ *
+ * Nothing replaces it until there are real quotes from real customers who
+ * agreed to be quoted. A section with three honest sentences beats one with
+ * nine invented ones, and an empty space beats both.
+ */
 
 // ---------------------------------------------------------------------------
 // Booking options

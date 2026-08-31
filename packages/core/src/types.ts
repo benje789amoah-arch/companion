@@ -955,14 +955,15 @@ export interface StatItem {
   description: string;
 }
 
-export interface Testimonial {
-  id: string;
-  name: string;
-  role: string;
-  quote: string;
-  rating: number;
-  avatarUrl: string;
-}
+/*
+ * `Testimonial` was here, and went with the roster that was its only use.
+ *
+ * Kept as a note rather than an empty interface: the shape is easy to bring
+ * back, and what matters is that it not come back carrying invented people. A
+ * testimonial needs a customer who said the thing and agreed to be named, which
+ * is a business record, not a type. See the note in the customer app's
+ * `src/data/catalogue.ts`.
+ */
 
 // ---------------------------------------------------------------------------
 // The laundry itself — what happened to the garments, and what went wrong

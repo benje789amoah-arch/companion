@@ -208,7 +208,6 @@ export const en = {
   'home.segments.title': 'Built for',
   'home.segments.caption': 'Tap one to start a booking shaped around it.',
 
-  'home.testimonials.title': 'From our patrons',
 
   'home.contact.title': 'Talk to us',
   'home.contact.caption': 'A person, not a form.',

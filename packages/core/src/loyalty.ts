@@ -15,13 +15,37 @@
  * Presentation is deliberately absent. A tier here is a name, a threshold and a
  * discount; the website renders it with Tailwind class names and the app with
  * hex gradients, and neither of those means anything to the other.
+ *
+ * ---
+ *
+ * **Every line below has to be something the shop can be held to.**
+ *
+ * This table is read by the marketing landing (`Membership.tsx` renders
+ * `cardName` and `benefits`), the client portal (`tier.description`) and the
+ * customer app's wallet screen. It is copy, and it is the only copy that ships
+ * from `@freshfold/core` rather than from a component — which is exactly how it
+ * survived the landing page's rewrite untouched.
+ *
+ * What was here claimed a "Certified Master Artisan", "24/7 custom scheduling
+ * lockers" and a "Dedicated Customer Care VIP line". There is no such
+ * certification, there are no lockers, and there is one phone number. The
+ * descriptions ran on "our entry-level sanctuary code" and "the ultimate
+ * bespoke fabric hospitality" — borrowed luxury vocabulary for a shop charging
+ * ₵30 a load, and the precise register `PRODUCT.md` names as an anti-reference.
+ *
+ * The rule those violations broke, restated so the next edit keeps it: **a
+ * benefit on this table has to resolve to something in this package.** The
+ * discount is `discountRate` and is applied by `quoteBooking`. Free collection
+ * is the `pickup-delivery` service at ₵0 in `./services`. The point rate is
+ * `pointsForSpend`, one per whole cedi. A line that cannot be traced to one of
+ * those is a claim the shop cannot substantiate, and it comes off.
  */
 
 export type LoyaltyTierId = 'basic' | 'silver' | 'gold';
 
 export interface LoyaltyTier {
   id: LoyaltyTierId;
-  /** The tier, as a customer would say it: "Silver Premium Club". */
+  /** The tier, as a customer would say it at the counter: "Silver". */
   name: string;
   /** The line printed on the membership card artwork. */
   cardName: string;
@@ -37,43 +61,41 @@ export interface LoyaltyTier {
 export const LOYALTY_TIERS: LoyaltyTier[] = [
   {
     id: 'basic',
-    name: 'Bronze Membership',
-    cardName: 'FRESH VIP BASIC',
-    description: 'Our entry-level sanctuary code. Earn 1 point per ₵1 spent.',
+    name: 'Bronze',
+    cardName: 'FRESHFOLD BRONZE',
+    description: 'Where every account starts. 1 point for every ₵1 you spend.',
     minPoints: 0,
     discountRate: 0,
     benefits: [
-      'Live GPS courier tracking',
-      'Digital laundry historical ledger',
-      '24/7 custom scheduling lockers',
+      'Free pickup and delivery on every order',
+      'Follow your courier on the map, both ways',
+      'Every order you have placed, kept in the app',
     ],
   },
   {
     id: 'silver',
-    name: 'Silver Premium Club',
-    cardName: 'SILVER CONCIERGE',
-    description: 'Elevated garment tracking protocols. Attained at 500 lifetime points.',
+    name: 'Silver',
+    cardName: 'FRESHFOLD SILVER',
+    description: '10% off every order, once you have earned 500 points.',
     minPoints: 500,
     discountRate: 0.1,
     benefits: [
-      '10% direct discount on all specialized stain care',
-      'Priority emergency morning collection',
-      'Complimentary seasonal conditioning washes',
-      'Dedicated Customer Care VIP line',
+      '10% off every quote, taken off automatically',
+      'Everything Bronze gets, at the lower price',
+      '500 points is about ₵500 of laundry',
     ],
   },
   {
     id: 'gold',
-    name: 'Gold Royal Patron',
-    cardName: 'GOLD ARCHITECT',
-    description: 'The ultimate bespoke fabric hospitality. Attained at 1500 lifetime points.',
+    name: 'Gold',
+    cardName: 'FRESHFOLD GOLD',
+    description: '20% off every order, once you have earned 1,500 points.',
     minPoints: 1500,
     discountRate: 0.2,
     benefits: [
-      '20% lifetime standard discount on all wash and press cycles',
-      'Guaranteed same-day express return (surcharge always waived)',
-      'Direct contact of a Certified Master Artisan',
-      'Bespoke scent customization (Eucalyptus, Lavender, or Unscented)',
+      '20% off every quote, taken off automatically',
+      'Everything Bronze and Silver get, at the lowest price',
+      '1,500 points is about ₵1,500 of laundry',
     ],
   },
 ];
@@ -160,23 +182,32 @@ export interface LoyaltyReward {
   walletCredit?: number;
 }
 
+/**
+ * Same rule as the tiers above: each of these has to name something real.
+ *
+ * The scent reward advertised "French Lavender or Cedarwood", neither of which
+ * `SCENTS` in `./pricing` has ever offered, and the express reward waived a
+ * surcharge without saying what it was worth. Both now quote the figure the
+ * customer would otherwise pay — ₵5 for a scent, ₵50 for the same-day service
+ * in `./services` — which is checkable against the booking form.
+ */
 export const LOYALTY_REWARDS: LoyaltyReward[] = [
   {
     id: 'scent-spray',
-    name: 'Free Organic Scent Spray',
-    description: 'French Lavender or Cedarwood infusion on your next order.',
+    name: 'Free scent upgrade',
+    description: 'Organic Lavender or Eucalyptus & Tea-Tree, normally ₵5, on your next order.',
     cost: 300,
   },
   {
     id: 'express-dispatch',
-    name: 'Free Express Courier Dispatch',
-    description: 'Waives the express same-day courier surcharge once.',
+    name: 'Free express same-day',
+    description: 'Waives the ₵50 express same-day charge once.',
     cost: 500,
   },
   {
     id: 'wallet-credit-50',
-    name: '₵50.00 GHS Wallet Credit',
-    description: 'Adds ₵50.00 straight to your FreshFold wallet.',
+    name: '₵50 wallet credit',
+    description: 'Adds ₵50 straight to your FreshFold wallet.',
     cost: 1000,
     walletCredit: 50,
   },

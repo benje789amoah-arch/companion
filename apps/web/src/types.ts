@@ -27,6 +27,5 @@ export type {
   ServiceItem,
   StatItem,
   SubscriptionPlan,
-  Testimonial,
   UserAccount,
 } from '@freshfold/core';

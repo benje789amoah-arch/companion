@@ -146,7 +146,6 @@ export const es: Partial<Record<TranslationKey, string>> = {
   'home.segments.title': 'Pensado para',
   'home.segments.caption': 'Toque uno para empezar una reserva a su medida.',
 
-  'home.testimonials.title': 'Lo que dicen nuestros clientes',
 
   'home.contact.title': 'Hable con nosotros',
   'home.contact.caption': 'Una persona, no un formulario.',

@@ -12,7 +12,7 @@ import type { Locale } from './locales';
  * built the opposite way round. Those hold the app's own copy — buttons,
  * labels, error sentences — with English as a full dictionary that defines
  * `TranslationKey`. This holds the catalogue: service descriptions, plan
- * benefits, testimonials. **There is no English map here.** The English is the
+ * benefits, loyalty tiers. **There is no English map here.** The English is the
  * literal already sitting in `src/data/catalogue.ts` and
  * `packages/core/src/services.ts`, and it is passed in as the fallback.
  *
@@ -32,8 +32,6 @@ import type { Locale } from './locales';
  *   customer's booking naming a service the server cannot price. The
  *   *description* beneath it carries the meaning and is translated; the name is
  *   an identifier that happens to read as English.
- * - **Testimonial names.** Seraphina Kensington is called that in every
- *   language. Their *roles* and what they said are copy and are translated.
  * - **Plan names.** `Student Club Plan` and the rest are the commercial terms
  *   in `MEMBERSHIP_PLANS`, quoted back in receipts and on the server's
  *   membership records. Their taglines and benefits are translated.
@@ -139,35 +137,20 @@ const es: Record<string, string> = {
   'plan.corporate.benefit.3': 'Tarifa de socio del 25% más allá de las treinta',
 
   // ---------------------------------------------------------------- tiers
-  'tier.basic.desc': 'Nuestro nivel de entrada. Gane 1 punto por cada ₵1 gastado.',
-  'tier.basic.benefit.0': 'Seguimiento GPS del mensajero en directo',
-  'tier.basic.benefit.1': 'Historial digital de toda su colada',
-  'tier.basic.benefit.2': 'Programación a cualquier hora, todos los días',
+  'tier.basic.desc': 'Donde empieza toda cuenta. 1 punto por cada ₵1 que gaste.',
+  'tier.basic.benefit.0': 'Recogida y entrega gratuitas en cada pedido',
+  'tier.basic.benefit.1': 'Siga a su mensajero en el mapa, a la ida y a la vuelta',
+  'tier.basic.benefit.2': 'Todos sus pedidos, guardados en la aplicación',
 
-  'tier.silver.desc':
-    'Seguimiento de prendas de nivel superior. Se alcanza a los 500 puntos acumulados.',
-  'tier.silver.benefit.0': '10% de descuento directo en todo el tratamiento especializado de manchas',
-  'tier.silver.benefit.1': 'Recogida matinal prioritaria de urgencia',
-  'tier.silver.benefit.2': 'Lavados de acondicionamiento de temporada gratuitos',
-  'tier.silver.benefit.3': 'Línea VIP de atención al cliente dedicada',
+  'tier.silver.desc': '10% de descuento en cada pedido, al alcanzar los 500 puntos.',
+  'tier.silver.benefit.0': '10% de descuento en cada presupuesto, aplicado automáticamente',
+  'tier.silver.benefit.1': 'Todo lo de Bronce, al precio más bajo',
+  'tier.silver.benefit.2': '500 puntos son unos ₵500 de colada',
 
-  'tier.gold.desc':
-    'La máxima hospitalidad textil a medida. Se alcanza a los 1500 puntos acumulados.',
-  'tier.gold.benefit.0': '20% de descuento permanente en todos los ciclos de lavado y planchado',
-  'tier.gold.benefit.1': 'Devolución exprés el mismo día garantizada (recargo siempre exento)',
-  'tier.gold.benefit.2': 'Contacto directo con un maestro artesano certificado',
-  'tier.gold.benefit.3': 'Aroma personalizado a medida (eucalipto, lavanda o sin perfume)',
-
-  // --------------------------------------------------------- testimonials
-  'testimonial.0.role': 'Directora creativa y consultora de moda',
-  'testimonial.0.quote':
-    'Con lo exigente que soy con los tejidos, confiar mi punto a medida me daba verdadera angustia. FreshFold trata mis prendas como obras de arte, una por una.',
-  'testimonial.1.role': 'Socio director en Reynolds Asset Management',
-  'testimonial.1.quote':
-    'El plan Professional cambió mi forma de viajar. Bajo del avión, programo una entrega en el casillero y por la mañana mi ropa de trabajo está de vuelta en el armario.',
-  'testimonial.2.role': 'Hotelera de lujo y defensora de las familias',
-  'testimonial.2.quote':
-    'Lavar la ropa de cama de un establecimiento siempre lleno nos descuadraba el horario. FreshFold higieniza nuestros algodones italianos con aromas naturales. Un cuidado perfecto.',
+  'tier.gold.desc': '20% de descuento en cada pedido, al alcanzar los 1500 puntos.',
+  'tier.gold.benefit.0': '20% de descuento en cada presupuesto, aplicado automáticamente',
+  'tier.gold.benefit.1': 'Todo lo de Bronce y Plata, al precio mínimo',
+  'tier.gold.benefit.2': '1500 puntos son unos ₵1500 de colada',
 
   // ------------------------------------------------------------ how it works
   'step.schedule.title': 'Reserve',
@@ -313,35 +296,20 @@ const fr: Record<string, string> = {
   'plan.corporate.benefit.3': 'Tarif adhérent de 25 % au-delà des trente',
 
   // ---------------------------------------------------------------- tiers
-  'tier.basic.desc': 'Notre niveau d’entrée. Gagnez 1 point par ₵1 dépensé.',
-  'tier.basic.benefit.0': 'Suivi GPS du coursier en direct',
-  'tier.basic.benefit.1': 'Historique numérique de tout votre linge',
-  'tier.basic.benefit.2': 'Programmation à toute heure, tous les jours',
+  'tier.basic.desc': 'Là où commence chaque compte. 1 point par ₵1 dépensé.',
+  'tier.basic.benefit.0': 'Collecte et livraison offertes sur chaque commande',
+  'tier.basic.benefit.1': 'Suivez votre coursier sur la carte, à l’aller comme au retour',
+  'tier.basic.benefit.2': 'Toutes vos commandes, conservées dans l’application',
 
-  'tier.silver.desc':
-    'Un suivi des pièces d’un cran au-dessus. Atteint à 500 points cumulés.',
-  'tier.silver.benefit.0': '10 % de remise directe sur tout traitement spécialisé des taches',
-  'tier.silver.benefit.1': 'Collecte matinale prioritaire en urgence',
-  'tier.silver.benefit.2': 'Lavages d’entretien saisonniers offerts',
-  'tier.silver.benefit.3': 'Ligne VIP dédiée au service client',
+  'tier.silver.desc': '10 % de remise sur chaque commande, à partir de 500 points.',
+  'tier.silver.benefit.0': '10 % de remise sur chaque devis, déduits automatiquement',
+  'tier.silver.benefit.1': 'Tout ce que Bronze offre, au prix inférieur',
+  'tier.silver.benefit.2': '500 points, c’est environ ₵500 de linge',
 
-  'tier.gold.desc':
-    'La plus haute hospitalité textile sur mesure. Atteint à 1500 points cumulés.',
-  'tier.gold.benefit.0': '20 % de remise à vie sur tous les cycles de lavage et de repassage',
-  'tier.gold.benefit.1': 'Retour express le jour même garanti (supplément toujours offert)',
-  'tier.gold.benefit.2': 'Contact direct d’un maître artisan certifié',
-  'tier.gold.benefit.3': 'Parfum personnalisé sur mesure (eucalyptus, lavande ou sans parfum)',
-
-  // --------------------------------------------------------- testimonials
-  'testimonial.0.role': 'Directrice de création et consultante mode',
-  'testimonial.0.quote':
-    'Exigeante comme je le suis sur les tissus, confier mes mailles sur mesure me nouait l’estomac. FreshFold traite mes pièces comme des œuvres, une par une.',
-  'testimonial.1.role': 'Associé gérant chez Reynolds Asset Management',
-  'testimonial.1.quote':
-    'L’abonnement Professional a changé ma façon de voyager. Je descends d’avion, je programme un dépôt en casier, et le lendemain matin mes tenues de travail sont de retour dans mon placard.',
-  'testimonial.2.role': 'Hôtelière de luxe et porte-parole des familles',
-  'testimonial.2.quote':
-    'Laver le linge de lit d’un établissement toujours complet désorganisait nos journées. FreshFold assainit nos cotons italiens avec des parfums naturels. Un soin parfait.',
+  'tier.gold.desc': '20 % de remise sur chaque commande, à partir de 1500 points.',
+  'tier.gold.benefit.0': '20 % de remise sur chaque devis, déduits automatiquement',
+  'tier.gold.benefit.1': 'Tout ce que Bronze et Argent offrent, au prix le plus bas',
+  'tier.gold.benefit.2': '1500 points, c’est environ ₵1500 de linge',
 
   // ------------------------------------------------------------ how it works
   'step.schedule.title': 'Réservez',

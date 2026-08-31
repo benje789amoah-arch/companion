@@ -14,8 +14,6 @@ import {
   Mail,
   MapPin,
   Phone,
-  Quote,
-  Star,
 } from 'lucide-react-native';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
@@ -34,7 +32,6 @@ import {
   HOW_IT_WORKS,
   SERVICES,
   SERVICE_CATEGORIES,
-  TESTIMONIALS,
   WHY_CHOOSE_US,
   tierForPoints,
   type ClientService,
@@ -389,38 +386,19 @@ export default function HomeScreen() {
           </ScrollView>
         </View>
 
-        {/* ------------------------------------------------- testimonials */}
-        <View style={styles.section}>
-          <SectionHeader title={t('home.testimonials.title')} />
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: 10, paddingRight: 20 }}
-          >
-            {TESTIMONIALS.map((testimonial, index) => (
-              <Card key={testimonial.id} style={styles.testimonial}>
-                <Quote size={17} color={colors.brandStone} />
-                <Text style={styles.testimonialQuote}>
-                  {c(`testimonial.${index}.quote`, testimonial.quote)}
-                </Text>
-                <View style={styles.testimonialFoot}>
-                  <Image source={{ uri: testimonial.avatarUrl }} style={styles.testimonialAvatar} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.testimonialName}>{testimonial.name}</Text>
-                    <Text style={styles.testimonialRole} numberOfLines={1}>
-                      {c(`testimonial.${index}.role`, testimonial.role)}
-                    </Text>
-                  </View>
-                </View>
-                <View style={styles.stars}>
-                  {Array.from({ length: testimonial.rating }).map((_, index) => (
-                    <Star key={index} size={11} color={colors.brandGold} fill={colors.brandGold} />
-                  ))}
-                </View>
-              </Card>
-            ))}
-          </ScrollView>
-        </View>
+        {/*
+          No testimonials section.
+
+          What stood here was three invented customers — a creative director, a
+          managing partner at a firm that does not exist, a luxury hotelier —
+          each with five stars nobody awarded and a stock photograph of a real
+          stranger used as their portrait. It had been translated into Spanish
+          and French, which only meant the fiction existed in three languages.
+
+          Removed rather than rewritten, because there is nothing to rewrite it
+          from. When the shop has quotes from real customers who agreed to be
+          quoted, this is where they go.
+        */}
 
         {/* ------------------------------------------------------ contact */}
         <View style={styles.section}>
@@ -728,14 +706,6 @@ const styles = StyleSheet.create({
   },
   segmentTitle: { fontSize: 12.5, fontWeight: '800', color: colors.textCharcoal, marginTop: 2 },
   segmentBody: { fontSize: 10.5, color: colors.textSlate, lineHeight: 14.5 },
-
-  testimonial: { width: 250, gap: 9 },
-  testimonialQuote: { fontSize: 11.5, color: colors.textCharcoal, lineHeight: 17 },
-  testimonialFoot: { flexDirection: 'row', alignItems: 'center', gap: 9 },
-  testimonialAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.bgSand },
-  testimonialName: { fontSize: 11.5, fontWeight: '800', color: colors.textCharcoal },
-  testimonialRole: { fontSize: 9.5, color: colors.textMuted },
-  stars: { flexDirection: 'row', gap: 2 },
 
   contactRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 9 },
   contactIcon: {
