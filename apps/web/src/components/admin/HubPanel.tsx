@@ -23,10 +23,26 @@
  * no hub deadline; the `Order` projection carries all three plus the exact
  * dispatch status. The person confirming a wash needs the bag labels in front of
  * them, which is the whole argument.
+ *
+ * ## The arrival, above both of them
+ *
+ * The board used to begin at `dropped_off` — the load already in the building.
+ * The moment before that, a courier standing at this desk with the bags, was on
+ * no screen the person behind the desk was looking at: the drop-off code they
+ * had to read out lived on the Pipeline pane, inside a collapsed row, behind a
+ * reveal. The supervisor's half of a hand-off was two tabs away from the
+ * supervisor.
+ *
+ * So the first list is the couriers riding in, and the code is on it. The code
+ * itself is still the hub's and only the hub's — `Order` deliberately carries no
+ * `dropoffOtp`, so this pane takes the booking mirror for that one field and for
+ * the courier's name, and the server is still the thing that decides whether
+ * what the courier typed was right.
  */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
+  Bike,
   CheckCircle2,
   ClipboardList,
   PackageCheck,
@@ -34,8 +50,9 @@ import {
   Sparkles,
   WashingMachine,
 } from 'lucide-react';
-import type { JobStatus, Order } from '@freshfold/core';
+import type { Booking, JobStatus, Order } from '@freshfold/core';
 import * as store from '../../services/store';
+import HandoffCode from '../HandoffCode';
 import CheckInDrawer from './CheckInDrawer';
 import OrderRef from './OrderRef';
 import PaneHeader, { ResourceBanner } from './PaneHeader';
@@ -117,6 +134,8 @@ function countedBags(order: Order): number {
 export default function HubPanel({
   orders,
   awaiting,
+  inbound,
+  bookings,
   onConfirmed,
   onFailed,
 }: {
@@ -131,6 +150,17 @@ export default function HubPanel({
   orders: DeskResource<Order[]>;
   /** The two stages this pane owns, already filtered by the shell. */
   awaiting: Order[];
+  /** Collected and riding in — see `HUB_LEG`. Filtered by the shell as well. */
+  inbound: Order[];
+  /**
+   * The booking mirror, for the two things an `Order` cannot answer: the
+   * drop-off code, which is deliberately absent from the courier's projection,
+   * and the name of the courier holding the job.
+   *
+   * The whole list rather than a lookup, because the shell already holds it and
+   * a second shape to keep in step would be a second thing to get wrong.
+   */
+  bookings: Booking[];
   /** A sentence for the toast, after the server accepts a confirmation. */
   onConfirmed: (message: string) => void;
   onFailed: (message: string) => void;
@@ -157,6 +187,12 @@ export default function HubPanel({
   const [batch, setBatch] = useState<Record<string, string>>({});
 
   const loading = orders.loading;
+
+  /** The mirror, by order id, so an arriving row can find its code once. */
+  const bookingsById = useMemo(
+    () => new Map(bookings.map((booking) => [booking.id, booking])),
+    [bookings],
+  );
 
   /**
    * Confirms one stage.
@@ -205,10 +241,22 @@ export default function HubPanel({
     (order) => (order.bags?.length ?? 0) > 0 && countedBags(order) === 0,
   ).length;
 
+  /** Couriers who have stopped riding — somebody is at the counter, waiting. */
+  const atDesk = inbound.filter((order) => order.status === 'arrived_at_laundry').length;
+
   return (
     <div className="space-y-4">
       <PaneHeader
         stats={[
+          {
+            label: 'At the desk',
+            value: atDesk,
+            // Warn while it is above zero, on the same rule the count below
+            // uses: this is the only number on the pane with a person standing
+            // behind it.
+            tone: atDesk > 0 ? 'warn' : 'ok',
+            hint: 'couriers waiting to check in',
+          },
           {
             label: 'Awaiting wash',
             value: awaiting.filter((o) => o.status === 'dropped_off').length,
@@ -227,6 +275,101 @@ export default function HubPanel({
         freshness={orders}
         banner={<ResourceBanner error={orders.error} refresh={orders.refresh} />}
       />
+
+      {/*
+        The couriers riding in, and the code each of them has to be given.
+
+        Read-only on purpose. There is no button here that checks a load in,
+        because the courier does that from their own console by producing this
+        code — a desk that could wave a load in without one would be the
+        override path with none of the override's cost, reachable by whoever is
+        nearest the screen.
+      */}
+      <Panel
+        title={
+          <span className="flex items-center gap-2">
+            <Bike className="h-4 w-4 text-admin-fg-3" />
+            Arriving
+          </span>
+        }
+        description="Collected and on the way in. Show the code once the bags are on the counter — it is this desk saying it received them."
+        actions={
+          <Badge mono tone={atDesk > 0 ? 'warn' : 'neutral'}>
+            {inbound.length} inbound
+          </Badge>
+        }
+      >
+        {inbound.length === 0 ? (
+          <EmptyState
+            icon={Bike}
+            title={loading ? 'Reading the hub board…' : 'Nobody on the way in'}
+            detail={
+              loading ? undefined : 'Loads appear here the moment a courier collects them.'
+            }
+          />
+        ) : (
+          <div className="divide-y divide-admin-line">
+            {inbound.map((order) => {
+              const booking = bookingsById.get(order.id);
+              const here = order.status === 'arrived_at_laundry';
+
+              return (
+                <div key={order.id} className="space-y-3 px-5 py-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <span className="text-[12px] font-medium">
+                        <OrderRef id={order.orderNumber} />
+                      </span>
+                      <span className="mt-0.5 block truncate text-[13px] font-medium text-admin-fg">
+                        {order.customerName}
+                      </span>
+                      <span className="block truncate text-[11px] text-admin-fg-3">
+                        {bagSummary(order)} · {order.laundryType}
+                      </span>
+                    </div>
+
+                    <div className="flex flex-col items-end gap-1">
+                      <Badge tone={here ? 'warn' : 'neutral'} dot>
+                        {here ? 'At the desk' : 'On the way'}
+                      </Badge>
+                      {/*
+                        Who to expect, so the desk can tell two couriers apart
+                        without asking which order they are holding.
+                      */}
+                      <span className="text-right text-[11px] text-admin-fg-3">
+                        {booking?.rider
+                          ? [booking.rider.name, booking.rider.vehiclePlate?.trim()]
+                              .filter(Boolean)
+                              .join(' · ')
+                          : 'Courier not named on the mirror yet'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {booking?.dropoffOtp ? (
+                    <div className="max-w-sm">
+                      <HandoffCode booking={booking} leg="dropoff" surface="admin" />
+                    </div>
+                  ) : (
+                    /*
+                      Two different absences, said differently, because the desk
+                      has to act differently. A job minted before drop-off codes
+                      existed has none and the server waves it through; a booking
+                      this board has simply not seen yet is a stale read, and the
+                      code is one refresh away.
+                    */
+                    <p className="rounded-xl border border-admin-line bg-admin-raised px-4 py-3 text-[12px] leading-relaxed text-admin-fg-3">
+                      {booking
+                        ? 'This order predates the hub code, so there is none to show. The courier will check it in without one and the trail records that nobody produced it.'
+                        : 'This order is not on the booking mirror yet, which is where the code lives. Refresh the board.'}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Panel>
 
       {SECTIONS.map((section) => {
         const rows = awaiting.filter((o) => o.status === section.from);

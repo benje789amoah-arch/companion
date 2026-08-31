@@ -30,28 +30,15 @@ import {
   Trash2,
   User,
 } from 'lucide-react';
-import type { Booking, BookingStatus, JobStatus } from '../../types';
+import type { Booking, BookingStatus } from '../../types';
 import HandoffCode from '../HandoffCode';
 import LiveDispatchMap from '../LiveDispatchMap';
 import ProductionRecord from './ProductionRecord';
 import ProofOfService from './ProofOfService';
 import { Badge, Button, EmptyState, Panel, TableHead, formatCedis, type Tone } from './ui';
+import { HUB_LEG } from './stages';
 import { OrderTrail } from './AuditPanel';
 import { displayAmount } from '../../services/amount';
-
-/**
- * When the hub's drop-off code is worth putting on screen.
- *
- * From the moment the bags are on the bike to the moment they are checked in.
- * Earlier it is noise on a row a dispatcher is reading for something else, and
- * once the job is `dropped_off` the code has been spent — leaving it up would
- * invite the desk to read it out for a load that already arrived.
- *
- * Keyed off the courier's own status rather than the coarse customer stage,
- * which lumps the whole collection leg into one word. No courier on the job
- * means nobody to check in, so nothing is shown.
- */
-const HUB_LEG: JobStatus[] = ['picked_up', 'navigating_to_laundry', 'arrived_at_laundry'];
 
 /**
  * Grid tracks.

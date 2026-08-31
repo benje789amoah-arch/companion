@@ -90,6 +90,7 @@ import { ConfirmProvider, useConfirm } from './admin/Confirm';
 import { OrderRefProvider } from './admin/OrderRef';
 import { useDeskMirror, useDeskResource } from './admin/useDeskResource';
 import { NAV, groupOf, tabSpec, type TabId } from './admin/nav';
+import { HUB_LEG } from './admin/stages';
 import { Badge, Button, formatCedis } from './admin/ui';
 
 interface AdminDashboardProps {
@@ -271,6 +272,32 @@ function Desk({ onClose, onSignOut, activeBookings, onUpdateBookings }: AdminDas
     [orders.data],
   );
 
+  /**
+   * The loads riding in, for the top of the Hub pane.
+   *
+   * Separate from `awaitingHub` because it is a different kind of work: nothing
+   * here is confirmed from the desk. The pane shows these so that the person
+   * holding the drop-off code is looking at the screen it is on when the
+   * courier walks up.
+   */
+  const inboundHub = useMemo(
+    () => orders.data.filter((o) => HUB_LEG.includes(o.status)),
+    [orders.data],
+  );
+
+  /**
+   * A courier who has stopped riding is work; one still on the road is not.
+   *
+   * Only `arrived_at_laundry` counts towards the rail's badge — the badge rule
+   * is "this needs you", and somebody standing at the counter waiting to be
+   * given four digits needs you more immediately than anything else on the
+   * pane. The rest of the inbound leg would be inventory.
+   */
+  const atHubDesk = useMemo(
+    () => inboundHub.filter((o) => o.status === 'arrived_at_laundry').length,
+    [inboundHub],
+  );
+
   const openClaims = useMemo(
     () => claims.data.filter((c) => c.status === 'open' || isRemedyOwed(c)),
     [claims.data],
@@ -283,7 +310,7 @@ function Desk({ onClose, onSignOut, activeBookings, onUpdateBookings }: AdminDas
 
   const needsAttention: Partial<Record<TabId, number>> = {
     pipeline: unassigned.length,
-    hub: awaitingHub.length,
+    hub: awaitingHub.length + atHubDesk,
     inbox: inboundThreadCount(messages),
     claims: openClaims.length,
     financials: unpaid.length,
@@ -899,6 +926,8 @@ function Desk({ onClose, onSignOut, activeBookings, onUpdateBookings }: AdminDas
               <HubPanel
                 orders={orders}
                 awaiting={awaitingHub}
+                inbound={inboundHub}
+                bookings={activeBookings}
                 onConfirmed={(message) => {
                   toast(message);
                   orders.refresh();
