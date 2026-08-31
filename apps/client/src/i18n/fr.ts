@@ -597,6 +597,8 @@ export const fr: Partial<Record<TranslationKey, string>> = {
   'sign.code.label': 'Lisez ceci à votre coursier',
   'sign.code.hint':
     'Ne le donnez qu’une fois votre linge réellement entre vos mains. Signer ci-dessous l’envoie pour vous.',
+  'sign.noCode':
+    "Cette commande n'a pas de code de livraison ; elle ne peut donc pas être signée ici. Le service conciergerie peut la finaliser.",
   'sign.refused':
     'La répartition n’a pas accepté. Demandez au coursier d’essayer depuis sa console.',
 

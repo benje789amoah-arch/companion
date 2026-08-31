@@ -820,6 +820,8 @@ export const en = {
   'sign.code.label': 'Read this to your courier',
   'sign.code.hint':
     'Only give it once your laundry is actually in your hands. Signing below sends it for you.',
+  'sign.noCode':
+    'This order has no delivery code on it, so it cannot be signed for here. The concierge desk can complete it.',
   'sign.refused': 'Dispatch would not accept that. Ask the courier to try from their console.',
 
   /** The `X` is where the mark goes and stays put in every language. */

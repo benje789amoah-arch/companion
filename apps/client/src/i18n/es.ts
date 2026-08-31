@@ -591,6 +591,8 @@ export const es: Partial<Record<TranslationKey, string>> = {
   'sign.code.label': 'Lea esto a su mensajero',
   'sign.code.hint':
     'Dígalo sólo cuando tenga su ropa en las manos. Al firmar abajo se lo enviamos por usted.',
+  'sign.noCode':
+    'Este pedido no tiene código de entrega, así que no se puede firmar aquí. El mostrador de conserjería puede completarlo.',
   'sign.refused':
     'Reparto no aceptó eso. Pida al mensajero que lo intente desde su consola.',
 

@@ -49,22 +49,56 @@ export default function DeliveryConfirm({
   /** Completed strokes, plus the one currently under the finger. */
   const [strokes, setStrokes] = useState<string[]>([]);
   const [currentStroke, setCurrentStroke] = useState('');
+  /**
+   * Whether a finger is down on the pad, which is when the sheet must not
+   * scroll. See the pan responder below.
+   */
+  const [drawing, setDrawing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   const svgRef = useRef<Svg | null>(null);
   const strokeRef = useRef('');
 
+  /**
+   * The pad, and the four lines that stop the sheet eating the signature.
+   *
+   * This component renders inside a `ScrollView` — it has to, because the code
+   * card, the pad, the notice and the buttons do not fit on a small phone — and
+   * a scroll view and a drawing pad want the same gesture. Signing is a slow
+   * vertical drag, which is precisely what a scroll view is watching for, so
+   * every stroke was a race: sometimes a line, sometimes the sheet sliding under
+   * the finger, most often a line that stopped dead the moment the scroll view
+   * decided the drag was its. A customer signing their name got the first third
+   * of it.
+   *
+   * `onPanResponderTerminationRequest` is the fix. It is the scroll view asking
+   * to take the gesture over mid-stroke, and the answer is no — a signature is
+   * not something to hand over halfway through. The capture variants claim the
+   * touch on the way down rather than waiting to be offered it, and
+   * `scrollEnabled` is switched off for the duration so nothing else is
+   * competing. `onPanResponderTerminate` keeps whatever was drawn if the system
+   * takes the gesture anyway — an incoming call, a notification shade — because
+   * a partial signature the customer can see and clear is better than one that
+   * vanishes.
+   */
   const panResponder = useMemo(
     () =>
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
+        onStartShouldSetPanResponderCapture: () => true,
+        onMoveShouldSetPanResponderCapture: () => true,
+        onPanResponderTerminationRequest: () => false,
+        // The pad is inside a modal sheet; without this a touch that starts on
+        // the pad can still be treated as one on the scrim behind it.
+        onShouldBlockNativeResponder: () => true,
 
         onPanResponderGrant: (event) => {
           const { locationX, locationY } = event.nativeEvent;
           strokeRef.current = `M${locationX.toFixed(1)},${locationY.toFixed(1)}`;
           setCurrentStroke(strokeRef.current);
+          setDrawing(true);
         },
 
         onPanResponderMove: (event) => {
@@ -77,7 +111,16 @@ export default function DeliveryConfirm({
           const finished = strokeRef.current;
           strokeRef.current = '';
           setCurrentStroke('');
+          setDrawing(false);
           // A tap with no drag leaves a single moveto — not worth keeping.
+          if (finished.includes('L')) setStrokes((current) => [...current, finished]);
+        },
+
+        onPanResponderTerminate: () => {
+          const finished = strokeRef.current;
+          strokeRef.current = '';
+          setCurrentStroke('');
+          setDrawing(false);
           if (finished.includes('L')) setStrokes((current) => [...current, finished]);
         },
       }),
@@ -142,7 +185,14 @@ export default function DeliveryConfirm({
   };
 
   return (
-    <ScrollView contentContainerStyle={styles.sheet} keyboardShouldPersistTaps="handled">
+    <ScrollView
+      contentContainerStyle={styles.sheet}
+      keyboardShouldPersistTaps="handled"
+      // Off while a stroke is in progress. The responder handlers above already
+      // refuse to give the gesture up; this is the belt to that pair of braces,
+      // and it is what stops the pad drifting under the finger on Android.
+      scrollEnabled={!drawing}
+    >
       <View style={styles.header}>
         <Pencil size={19} color={colors.brandSage} />
         <View style={{ flex: 1 }}>
@@ -171,6 +221,14 @@ export default function DeliveryConfirm({
         </View>
       </View>
       <Text style={styles.codeHint}>{t('sign.code.hint')}</Text>
+      {/*
+        An order with no code on it cannot be signed for — `ready` is false and
+        the confirm button below is disabled. Said out loud rather than left as
+        a button that does nothing when pressed: every code is minted with the
+        booking, so a missing one means an order old enough to predate them, and
+        the desk is the only way through.
+      */}
+      {!deliveryCode && <Text style={styles.codeError}>{t('sign.noCode')}</Text>}
       {!!error && <Text style={styles.codeError}>{error}</Text>}
 
       <View style={styles.pad} {...panResponder.panHandlers}>
