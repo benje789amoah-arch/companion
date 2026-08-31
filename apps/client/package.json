@@ -10,7 +10,7 @@
     "ios": "cross-env EXPO_NO_CACHE=1 expo start --ios",
     "web": "cross-env EXPO_NO_CACHE=1 expo start --web",
     "lint": "tsc --noEmit",
-    "check": "node scripts/secrets.check.mjs",
+    "check": "node scripts/secrets.check.mjs && tsx src/services/checkout.check.ts",
     "i18n": "tsx src/i18n/coverage.report.ts"
   },
   "dependencies": {

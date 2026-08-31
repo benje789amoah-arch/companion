@@ -6,26 +6,16 @@
 import Constants from 'expo-constants';
 import * as Linking from 'expo-linking';
 
+import { ownsAddress } from './schemes';
+
 /** Which checkout the browser took the screen for. */
 export type CheckoutFlow = 'wallet' | 'book';
 
-/**
- * Whether a return address is one this build can honestly claim.
- *
- * `Linking.createURL` answers with whatever scheme is currently carrying the
- * app, and under Expo Go that is Expo Go's own — `exp://<dev-host>:8081/--/…`,
- * an address that belongs to a development client rather than to FreshFold.
- *
- * An http(s) URL passes: that is the Expo web build returning to the origin it
- * is served from, and the server checks it against `CORS_ORIGINS` the same way
- * it checks the website's.
- */
-function isOurs(url: string): boolean {
-  if (/^https?:/i.test(url)) return true;
-
-  const configured = Constants.expoConfig?.scheme;
-  const schemes = Array.isArray(configured) ? configured : configured ? [configured] : [];
-  return schemes.some((scheme) => url.toLowerCase().startsWith(`${scheme.toLowerCase()}:`));
+/** The URL schemes this build registered, as `app.config.js` declares them. */
+function declaredSchemes(): string[] {
+  const declared = Constants.expoConfig?.scheme;
+  if (Array.isArray(declared)) return declared;
+  return declared ? [declared] : [];
 }
 
 /**
@@ -39,9 +29,11 @@ function isOurs(url: string): boolean {
  * qualify.
  *
  * Expo Go does not, and asking anyway is what broke every card payment made
- * from it. `/paystack/initialize` carries no session, so a callback the server
- * cannot tie to one of our own apps is an open redirect on the real gateway at
- * the highest-trust moment in the flow; production therefore refuses `exp`
+ * from it. `Linking.createURL` answers with whatever scheme is carrying the
+ * app, and under Expo Go that is Expo Go's own `exp://<dev-host>:8081/--/…`.
+ * `/paystack/initialize` carries no session, so a callback the server cannot
+ * tie to one of our own apps is an open redirect on the real gateway at the
+ * highest-trust moment in the flow; production therefore refuses `exp`
  * outright — see `callbackPolicy` in apps/server/src/routes/integrations.ts,
  * and the customer app's `.env` points at that production server. The refusal
  * came back as "that is not a return address this server will send a customer
@@ -57,5 +49,5 @@ function isOurs(url: string): boolean {
  */
 export function paystackReturnUrl(flow: CheckoutFlow): string | undefined {
   const url = Linking.createURL('paystack-success', { queryParams: { flow } });
-  return isOurs(url) ? url : undefined;
+  return ownsAddress(url, declaredSchemes()) ? url : undefined;
 }
