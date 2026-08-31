@@ -12,8 +12,10 @@ import { colors } from '../src/theme';
 /**
  * Where Paystack sends the customer back to.
  *
- * Both checkouts hand Paystack `Linking.createURL('paystack-success', …)` as
- * their `callback_url`, so a completed payment redirects the browser to
+ * Both checkouts hand Paystack this app's own `paystack-success` deep link as
+ * their `callback_url` — see `paystackReturnUrl`, which withholds it under Expo
+ * Go, where the only address on offer belongs to Expo Go rather than to us. A
+ * completed payment then redirects the browser to
  * `freshfoldclient://paystack-success` and the OS hands that to this app. Until
  * this file existed that URL matched no route — the root layout names its
  * screens explicitly and there is no `+not-found` — so the one customer we most

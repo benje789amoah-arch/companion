@@ -5,7 +5,6 @@
 
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
-import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
 import {
   ArrowDownLeft,
@@ -46,6 +45,7 @@ import {
 import { SUBSCRIPTION_PLANS, nextTierAfter, tierForPoints } from '../../src/data/catalogue';
 import { intlTag, useT, type Translate } from '../../src/i18n';
 import { api } from '../../src/services/api';
+import { paystackReturnUrl } from '../../src/services/checkout';
 import { useClient } from '../../src/store/ClientStore';
 import { useSession } from '../../src/store/SessionStore';
 import { colors, formatCedis, radius, relativeTime, shadow, tints } from '../../src/theme';
@@ -263,8 +263,9 @@ export default function WalletScreen() {
         // Back into the app rather than the server's `APP_URL`, which on a
         // phone is a localhost page that does not exist. `flow` is only read if
         // the app was killed while the browser had the screen — see the
-        // `paystack-success` route.
-        callback_url: Linking.createURL('paystack-success', { queryParams: { flow: 'wallet' } }),
+        // `paystack-success` route. Left unset under Expo Go, whose address is
+        // not ours to hand out — see `paystackReturnUrl`.
+        callback_url: paystackReturnUrl('wallet'),
         // The server refuses to credit a wallet from a reference that was not
         // opened as a top-up, so a booking payment cannot be replayed here.
         // A top-up names no booking and now cannot: the server writes

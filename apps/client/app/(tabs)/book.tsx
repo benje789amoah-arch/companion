@@ -5,7 +5,6 @@
 
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
-import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
 import {
   ArrowLeft,
@@ -90,6 +89,7 @@ import {
 } from '../../src/data/catalogue';
 import { intlTag, servicePriceLabel, unitLabel, useT, type TranslationKey } from '../../src/i18n';
 import { api } from '../../src/services/api';
+import { paystackReturnUrl } from '../../src/services/checkout';
 import { useClient } from '../../src/store/ClientStore';
 import { useSession } from '../../src/store/SessionStore';
 import { colors, formatCedis, formatDate, radius, shadow, tints } from '../../src/theme';
@@ -666,7 +666,9 @@ export default function BookScreen() {
         // the server's `APP_URL` and drops a phone on a localhost page that
         // does not exist on that phone. `flow` is only read if the app was
         // killed while the browser had the screen — see `paystack-success`.
-        callback_url: Linking.createURL('paystack-success', { queryParams: { flow: 'book' } }),
+        // Left unset under Expo Go, whose address is not ours to hand out —
+        // see `paystackReturnUrl`.
+        callback_url: paystackReturnUrl('book'),
         // What this payment is for. The server writes Paystack's metadata from
         // this and `bookingId` rather than taking an object from here — a
         // checkout that declared itself both a top-up and a booking payment

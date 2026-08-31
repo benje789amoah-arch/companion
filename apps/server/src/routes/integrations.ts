@@ -340,11 +340,18 @@ export const BOOKING_PURPOSE: PaymentPurpose = 'booking';
  * moment in the whole flow and the best possible place to ask someone to
  * "re-enter your card to confirm".
  *
- * It cannot simply be dropped. Both Expo apps pass a deep link back into
- * themselves, because Paystack following `APP_URL` would drop a phone on a web
- * page that is not the app; and the website passes its own origin, because in
+ * It cannot simply be dropped. The customer app passes a deep link back into
+ * itself, because Paystack following `APP_URL` would drop a phone on a web page
+ * that is not the app; and the website passes its own origin, because in
  * development `APP_URL` is the API's own host and not where the site is served
  * from. So the fix is an allow-list rather than a removal.
+ *
+ * An app carried by something whose scheme is not its own sends no callback at
+ * all rather than offering one it cannot claim: under Expo Go the address on
+ * offer is `exp://<dev-host>/--/…`, which is Expo Go's, and the customer app
+ * withholds it — see `paystackReturnUrl` in apps/client. Which is why `exp`
+ * stays out of the production list rather than being added to it to make the
+ * development harness work.
  *
  * Two kinds of destination are allowed, and nothing else:
  *
