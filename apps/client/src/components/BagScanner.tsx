@@ -235,7 +235,9 @@ export default function BagScanner({ bags: initial, reference, onConfirm, onCanc
 }
 
 const styles = StyleSheet.create({
-  sheet: { padding: 20, paddingTop: 8, gap: 12 },
+  // Shrinkable, so the sheet's cap reaches the checklist below rather than
+  // clipping the buttons at the bottom of this column. See `Sheet` in `./ui`.
+  sheet: { padding: 20, paddingTop: 8, gap: 12, flexShrink: 1 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   title: { fontSize: 15, fontWeight: '800', color: colors.textCharcoal },
   subtitle: { fontSize: 10, color: colors.textSlate, marginTop: 2 },
@@ -254,6 +256,10 @@ const styles = StyleSheet.create({
 
   viewfinder: {
     aspectRatio: 16 / 10,
+    // Gives up its height before the checklist does. On a short screen a
+    // slightly letterboxed viewfinder is a much better trade than a list of
+    // bags with no room to show any of them.
+    flexShrink: 2,
     borderRadius: radius.xl,
     overflow: 'hidden',
     backgroundColor: '#141412',
@@ -321,7 +327,21 @@ const styles = StyleSheet.create({
   tickAll: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   tickAllLabel: { fontSize: 11, fontWeight: '700', color: colors.brandSage },
 
-  bagList: { maxHeight: 170 },
+  /**
+   * The list takes what room is left, rather than a fixed 170.
+   *
+   * `maxHeight: 170` was about two rows, and it was 170 whether the order had
+   * two bags or twenty — so a large order's manifest was a two-row window onto a
+   * long list, on a sheet whose own contents had already overflowed and been
+   * clipped. Between the two, the thing a customer was trying to scroll would
+   * not move.
+   *
+   * `flexShrink` lets it collapse into whatever the sheet has spare, and
+   * `minHeight` keeps that from collapsing to nothing on a small screen — below
+   * about three rows the list stops reading as a list. It scrolls inside that,
+   * which is what it was always meant to do.
+   */
+  bagList: { flexShrink: 1, minHeight: 132 },
   bagRow: {
     flexDirection: 'row',
     alignItems: 'center',

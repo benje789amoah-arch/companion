@@ -249,10 +249,17 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 28,
     padding: 20,
     gap: 16,
+    // Shrinkable, so the modal's cap reaches the checklist below instead of
+    // pushing the header off the top of the screen. See `modalBody` in the
+    // rider console.
+    flexShrink: 1,
   },
 
   viewfinder: {
     aspectRatio: 16 / 10,
+    // Gives its height up before the checklist does. A courier ticking twelve
+    // bags off by hand needs the list far more than the framing corners.
+    flexShrink: 2,
     borderRadius: radius.xl,
     overflow: 'hidden',
     backgroundColor: '#121212',
@@ -317,7 +324,16 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
 
-  bagList: { maxHeight: 200 },
+  /**
+   * Takes the room the sheet has spare rather than a fixed 200.
+   *
+   * 200 is about two of these rows — they carry a 44pt minimum for the thumb —
+   * and it was 200 whether the job had two bags or fifteen. Combined with a
+   * sheet that overflowed the screen rather than bounding itself, the courier's
+   * manifest was a two-row window that would not scroll on the one job where
+   * scrolling it mattered.
+   */
+  bagList: { flexShrink: 1, minHeight: 148 },
   bagRow: {
     flexDirection: 'row',
     alignItems: 'center',

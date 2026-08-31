@@ -1068,6 +1068,22 @@ const styles = StyleSheet.create({
   offerActions: { flexDirection: 'row', gap: 12, marginTop: 10 },
 
   modalScrim: { flex: 1, backgroundColor: tints.scrim, justifyContent: 'flex-end' },
-  modalAvoider: { justifyContent: 'flex-end' },
-  modalBody: { width: '100%' },
+  /**
+   * The workflow sheets are bounded here, and they were not before.
+   *
+   * `modalBody` had no height of its own and nothing above it had one either,
+   * so a sheet taller than the screen simply laid itself out at full height
+   * against a container pinned to the bottom — and everything past the top edge
+   * went off the screen with nothing to scroll it back. The bag scanner is where
+   * that showed: a viewfinder, a checklist and two buttons is already most of a
+   * phone, and a courier with a large manifest lost the header and the mode
+   * switch off the top while the list underneath scrolled two rows at a time.
+   *
+   * `flex: 1` on the avoider gives the percentage below something to resolve
+   * against; `flexShrink` on the body is what makes the cap a constraint the
+   * sheet's own children can respond to rather than a crop. See `QRScanner`,
+   * which now gives its viewfinder up to keep the checklist usable.
+   */
+  modalAvoider: { flex: 1, justifyContent: 'flex-end' },
+  modalBody: { width: '100%', maxHeight: '92%', flexShrink: 1 },
 });

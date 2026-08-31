@@ -722,7 +722,21 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     paddingTop: 8,
-    ...shadow.lg,
+    /**
+     * Without this the sheet's `maxHeight` was a crop, not a constraint.
+     *
+     * `flexShrink` defaults to 0 in React Native, so a sheet whose contents came
+     * to more than the cap laid itself out at full height and had the bottom
+     * cut off — and because a `Sheet` is a plain `View`, there was nothing to
+     * scroll to reach what had been cut. On a small phone that took the buttons
+     * off the bag scanner: the list of bags to tick was there, the confirm was
+     * not, and the sheet would not move.
+     *
+     * Shrinkable, the cap propagates inward instead, and a child that says it
+     * can shrink — the scanner's checklist, the picker's list — gives up the
+     * room and scrolls within what is left.
+     */
+    flexShrink: 1,
   },
   sheetGrabber: {
     alignSelf: 'center',
