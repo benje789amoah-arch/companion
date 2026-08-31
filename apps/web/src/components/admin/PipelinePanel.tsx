@@ -33,6 +33,7 @@ import {
 import type { Booking, BookingStatus, JobStatus } from '../../types';
 import HandoffCode from '../HandoffCode';
 import LiveDispatchMap from '../LiveDispatchMap';
+import ProductionRecord from './ProductionRecord';
 import ProofOfService from './ProofOfService';
 import { Badge, Button, EmptyState, Panel, TableHead, formatCedis, type Tone } from './ui';
 import { OrderTrail } from './AuditPanel';
@@ -360,6 +361,9 @@ export default function PipelinePanel({
 
                       {/* What the courier captured at each handover. */}
                       <ProofOfService bookingId={b.id} proof={b.proof} />
+
+                      {/* And what the hub did to it in between. */}
+                      <ProductionRecord orderId={b.id} />
 
                       {/*
                         Who last did something to this order.

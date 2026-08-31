@@ -26,6 +26,7 @@ import { useState } from 'react';
 import { Plus, Trash2, X } from 'lucide-react';
 import type { Order } from '@freshfold/core';
 import * as store from '../../services/store';
+import ProductionRecord from './ProductionRecord';
 import { Badge, Button, Field, Input } from './ui';
 
 interface CheckInDrawerProps {
@@ -272,6 +273,19 @@ export default function CheckInDrawer({ order, onClose, onCheckedIn }: CheckInDr
               </button>
             </div>
           ))}
+        </div>
+
+        {/*
+          What is already on the record for this load.
+
+          Here because this drawer is reopened — the "Counts" button on a load
+          that has been checked in once — and somebody adding to a manifest
+          needs to see what is already on it. Without this the second visit
+          names the same shirt twice, or skips it on the assumption that the
+          first visit got it.
+        */}
+        <div className="mt-6">
+          <ProductionRecord orderId={order.id} />
         </div>
 
         {/* ------------------------------------------------------ production */}
