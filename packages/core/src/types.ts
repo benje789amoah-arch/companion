@@ -449,11 +449,17 @@ export interface Booking {
    */
   deliveryOtp?: string;
   /**
-   * The hub's drop-off code. Rendered on the dispatch desk's pipeline row, not
-   * on any customer screen — the customer is not at the hub and this is not
-   * their handover. It rides on `Booking` because that is the projection the
-   * admin dashboard reads; `Order` deliberately has no equivalent, so the
+   * The hub's drop-off code. Rendered on the desk's Hub board and its pipeline
+   * row, not on any customer screen — the customer is not at the hub and this
+   * is not their handover. It rides on `Booking` because that is the projection
+   * the admin dashboard reads; `Order` deliberately has no equivalent, so the
    * courier's phone cannot answer its own challenge.
+   *
+   * **Absent unless the reader is the desk.** Not rendering it was never the
+   * same as not sending it: it used to be on every projection, so the customer's
+   * own response body carried the code their courier is challenged for. See
+   * `BookingViewOptions.hubCode`, which is off by default so a new call site
+   * leaks nothing by forgetting to think about it.
    */
   dropoffOtp?: string;
 }

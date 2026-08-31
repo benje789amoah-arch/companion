@@ -1111,6 +1111,8 @@ authRouter.post(
           if (Date.now() - last >= SETUP_RESEND_COOLDOWN_MS) {
             // Mints a fresh token, which retires the one in any earlier mail:
             // the newest message in the inbox is the one that works.
+            // No viewer: this view exists to fill in an email, and the hub's
+            // code has no business in a customer's inbox.
             await mailBookingConfirmation(await bookingView(job));
           }
         }

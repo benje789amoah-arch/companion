@@ -25,12 +25,31 @@ export async function findRider(id?: string): Promise<RiderState | undefined> {
 }
 
 /**
+ * Whoever the view is being built for.
+ *
+ * Structural rather than imported, so both `BookingAccess` and `ListerIdentity`
+ * satisfy it without this module depending on `./booking-access` — which
+ * depends on this one.
+ */
+export type Viewer = { kind: 'supervisor' | 'customer' | 'rider' | 'tracking' } | null | undefined;
+
+/**
  * The customer's view of a job, with the rider's live position attached when
  * one is on it. This is the join that makes the website's dispatch map show a
  * real courier instead of an animation.
+ *
+ * `viewer` decides one field: the hub's drop-off code, which only the desk may
+ * be shown — see `BookingViewOptions.hubCode`. Omitting the argument omits the
+ * code, so a route that has no identity to hand over, or has simply not been
+ * told to think about it, is safe by default. The two call sites that pass
+ * nothing do it deliberately: a booking being created has no reader yet, and a
+ * view built to fill in a confirmation email has no business carrying a code
+ * into somebody's inbox.
  */
-export async function bookingView(job: Job): Promise<Booking> {
-  return jobToBooking(job, await findRider(job.dispatch.riderId));
+export async function bookingView(job: Job, viewer?: Viewer): Promise<Booking> {
+  return jobToBooking(job, await findRider(job.dispatch.riderId), {
+    hubCode: viewer?.kind === 'supervisor',
+  });
 }
 
 /**
@@ -41,17 +60,19 @@ export async function bookingView(job: Job): Promise<Booking> {
  * job's rider on its own would turn a page of twenty orders into twenty-one
  * round trips to Supabase, most of them asking about the same two couriers.
  */
-export async function bookingViews(jobs: Job[]): Promise<Booking[]> {
+export async function bookingViews(jobs: Job[], viewer?: Viewer): Promise<Booking[]> {
+  const options = { hubCode: viewer?.kind === 'supervisor' };
+
   const riderIds = new Set(
     jobs.map((job) => job.dispatch.riderId).filter((id): id is string => Boolean(id))
   );
 
-  if (riderIds.size === 0) return jobs.map((job) => jobToBooking(job, undefined));
+  if (riderIds.size === 0) return jobs.map((job) => jobToBooking(job, undefined, options));
 
   const riders = await store.riders.list();
   const byId = new Map(riders.map((rider) => [rider.id, rider]));
 
-  return jobs.map((job) => jobToBooking(job, byId.get(job.dispatch.riderId ?? '')));
+  return jobs.map((job) => jobToBooking(job, byId.get(job.dispatch.riderId ?? ''), options));
 }
 
 export function orderView(job: Job): Order {

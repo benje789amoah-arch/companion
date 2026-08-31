@@ -513,7 +513,33 @@ export function bookingToJob(
 // Job -> Booking (web)
 // ---------------------------------------------------------------------------
 
-export function jobToBooking(job: Job, rider?: RiderState): Booking {
+/** What the reader of a `Booking` is allowed to be shown. */
+export interface BookingViewOptions {
+  /**
+   * Whether to attach the hub's drop-off code.
+   *
+   * **Off unless the caller says otherwise, and the caller has to be the desk.**
+   * This field used to ride on every projection of every job, which meant the
+   * customer's own `GET /bookings/:id` — and a guest's, on a tracking token —
+   * answered with the four digits the hub desk exists to hold. Nothing rendered
+   * them, and that was the whole of the protection: a customer reading their own
+   * response body could hand the code to the courier at their door, and the
+   * courier could then check a load in from the roadside. The gate stopping the
+   * courier's phone from answering its own challenge was still shut, and the
+   * bags had simply gone round it.
+   *
+   * `Order` carries no equivalent for the same reason, and does not need a flag
+   * to say so — it has no field at all. This one does, because the desk reads
+   * `Booking` and the desk is the party the code belongs to.
+   */
+  hubCode?: boolean;
+}
+
+export function jobToBooking(
+  job: Job,
+  rider?: RiderState,
+  options: BookingViewOptions = {}
+): Booking {
   return {
     id: job.id,
     name: job.customer.name,
@@ -554,10 +580,10 @@ export function jobToBooking(job: Job, rider?: RiderState): Booking {
     // The customer holds both codes: one to hand the bags over, one to take
     // them back.
     deliveryOtp: job.dispatch.deliveryOtp,
-    // The hub's, not the customer's. It travels on this projection because the
-    // admin dashboard reads `Booking` — the customer's own screens simply do
-    // not render it.
-    dropoffOtp: job.dispatch.dropoffOtp,
+    // The hub's, not the customer's, and withheld unless the reader is the
+    // desk — see `BookingViewOptions.hubCode`. It travels on this projection
+    // at all only because the admin dashboard reads `Booking`.
+    dropoffOtp: options.hubCode ? job.dispatch.dropoffOtp : undefined,
   };
 }
 

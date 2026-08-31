@@ -242,7 +242,7 @@ bookingsRouter.get(
             phone: lister.account.phone ?? null,
           });
 
-    res.json(await bookingViews(jobs));
+    res.json(await bookingViews(jobs, lister));
   })
 );
 
@@ -257,12 +257,16 @@ bookingsRouter.get(
 
     // 404 rather than 403 for a caller with no claim on it. A 403 confirms the
     // order exists, which is half of what walking the id space was after.
-    if (!(await resolveBookingAccess(req, job))) {
+    const access = await resolveBookingAccess(req, job);
+    if (!access) {
       notFound(res, 'Booking');
       return;
     }
 
-    res.json(await bookingView(job));
+    // Held rather than discarded now: three of the four readers this route
+    // admits may not see the hub's code, and the answer to which one is asking
+    // was already in hand.
+    res.json(await bookingView(job, access));
   })
 );
 
@@ -720,6 +724,9 @@ bookingsRouter.post(
       return { job: saved, replayed: Boolean(existing) };
     });
 
+    // No viewer, so no hub code. A booking that has just been made is not on
+    // the hub leg and the caller here is whoever filled in the form — which on
+    // this one route may be a stranger.
     const view = await bookingView(job);
 
     /**
@@ -900,14 +907,17 @@ bookingsRouter.patch(
         }
       }
 
-      return { kind: 'ok', job } as const;
+      // The reader comes back out with the row. This route resolves access
+      // inside the transaction — it needs the locked job to decide it — and the
+      // response has to know who it is answering to leave the hub's code off.
+      return { kind: 'ok', job, viewer: access } as const;
     });
 
     if (outcome.kind === 'missing') {
       notFound(res, 'Booking');
       return;
     }
-    res.json(await bookingView(outcome.job));
+    res.json(await bookingView(outcome.job, outcome.viewer));
   })
 );
 
@@ -981,7 +991,7 @@ bookingsRouter.post(
       // rather than a mistake: hand back the booking as it stands instead of an
       // error the client would have to special-case.
       if (verdict.reason === 'no-change') {
-        res.json(await bookingView(job));
+        res.json(await bookingView(job, access));
         return;
       }
 
@@ -1145,7 +1155,7 @@ bookingsRouter.post(
       return;
     }
 
-    const view = await bookingView(outcome.job);
+    const view = await bookingView(outcome.job, access);
     res.json(view);
 
     // After the response, for the reason the confirmation is sent after the 201:
@@ -1349,7 +1359,7 @@ bookingsRouter.post(
     if (job.payment.status === 'Paid') {
       // Idempotent: both clients replay queued writes, and a second attempt on a
       // settled bill is the right answer arriving twice rather than an error.
-      res.json(await bookingView(job));
+      res.json(await bookingView(job, access));
       return;
     }
 
@@ -1399,7 +1409,7 @@ bookingsRouter.post(
       }
 
       const settled = await markPaid(job.id, 'Wallet', outcome.transaction?.reference);
-      res.json(settled ? await bookingView(settled) : await bookingView(job));
+      res.json(settled ? await bookingView(settled, access) : await bookingView(job, access));
       return;
     }
 
@@ -1524,7 +1534,7 @@ bookingsRouter.post(
       }
 
       const settled = await markPaid(job.id, 'Paystack', reference.trim());
-      res.json(settled ? await bookingView(settled) : await bookingView(job));
+      res.json(settled ? await bookingView(settled, access) : await bookingView(job, access));
       return;
     }
 
@@ -1585,7 +1595,7 @@ bookingsRouter.post(
         subject: job.customer.email,
       });
 
-      res.json(settled ? await bookingView(settled) : await bookingView(job));
+      res.json(settled ? await bookingView(settled, access) : await bookingView(job, access));
       return;
     }
 
@@ -1633,7 +1643,7 @@ bookingsRouter.delete(
     if (job.payment.status !== 'Paid') {
       // Idempotent, like the settle path: a replayed reversal is the right answer
       // arriving twice.
-      res.json(await bookingView(job));
+      res.json(await bookingView(job, access));
       return;
     }
 
@@ -1709,7 +1719,7 @@ bookingsRouter.delete(
       subject: job.customer.email,
     });
 
-    res.json(await bookingView(reversed));
+    res.json(await bookingView(reversed, access));
   })
 );
 
@@ -1765,7 +1775,7 @@ bookingsRouter.post(
     // Idempotent, like the settle and reversal paths: a booking already refunded
     // answers with itself rather than crediting a second time.
     if (job.payment.status === 'Refunded') {
-      res.json(await bookingView(job));
+      res.json(await bookingView(job, access));
       return;
     }
 
@@ -1849,7 +1859,7 @@ bookingsRouter.post(
       subject: job.customer.email,
     });
 
-    res.json(await bookingView(refunded));
+    res.json(await bookingView(refunded, access));
   })
 );
 

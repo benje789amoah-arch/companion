@@ -16,7 +16,7 @@
  */
 
 import { check, checkTrue, report, section } from './check';
-import { bagsForJob } from './job';
+import { bagsForJob, bookingToJob, jobToBooking, jobToOrder } from './job';
 import {
   CLAIM_KINDS,
   DEFAULT_RIDER_JOB_LIMIT,
@@ -31,7 +31,7 @@ import {
   shiftsOverlap,
   withinJobLimit,
 } from './operations';
-import type { ClaimStatus, RiderShift } from './types';
+import type { Booking, ClaimStatus, RiderShift } from './types';
 
 const shift = (startsAt: string, endsAt: string, id = 'shift-1'): RiderShift => ({
   id,
@@ -197,5 +197,53 @@ checkTrue('an unexamined one does not yet', !isRemedyOwed({ status: 'open' }));
 // Nothing may move to a state that is not on the table, however it is spelled.
 checkTrue('an invented state is not reachable',
   !canMoveClaim('open', 'escalated' as ClaimStatus));
+
+section('the hub’s drop-off code belongs to the desk');
+
+/**
+ * The middle hand-off is the one where the party holding the code is not the
+ * party being served, and that is the whole of its value: the hub asserts it
+ * received the bags, so a courier cannot check a load in from the roadside.
+ *
+ * The projection used to attach the code to every reader of a booking. Nothing
+ * rendered it for a customer, which is not the same as not sending it — the
+ * response body carried the four digits their own courier is challenged for,
+ * and handing them over is a conversation, not an attack.
+ */
+const collected = bookingToJob({
+  id: 'FFC-000009',
+  name: 'A Customer',
+  email: 'customer@example.com',
+  phone: '0201234567',
+  serviceType: 'Washing (Machine & Hand Wash)',
+  pickupDate: '2026-08-26',
+  pickupTime: '9:00 AM - 12:00 PM',
+  address: '12 Ayeduase Road',
+  suburb: 'Ayeduase',
+  status: 'Scheduled',
+  createdAt: '2026-08-24T09:00:00.000Z',
+} as Booking);
+
+checkTrue('the job is minted with one', !!collected.dispatch.dropoffOtp);
+
+// The default is the one that matters: a call site that has not thought about
+// who is reading must not be the one that decides to publish it.
+check('a view built without a reader withholds it',
+  jobToBooking(collected).dropoffOtp, undefined);
+check('...and so does one built for a reader who is not the desk',
+  jobToBooking(collected, undefined, { hubCode: false }).dropoffOtp, undefined);
+check('the desk sees it',
+  jobToBooking(collected, undefined, { hubCode: true }).dropoffOtp,
+  collected.dispatch.dropoffOtp);
+
+// The courier's own projection has no field to fill in, flag or no flag, so the
+// phone cannot answer the challenge it is being set.
+checkTrue('the courier’s projection has no such field at all',
+  !('dropoffOtp' in jobToOrder(collected)));
+
+// The collection code is the customer's and is unaffected — they are the party
+// that hand-off is against.
+checkTrue('the customer keeps their own collection code',
+  !!jobToBooking(collected).pickupOtp);
 
 report();
