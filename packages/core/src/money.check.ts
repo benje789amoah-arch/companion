@@ -61,6 +61,8 @@ const LAVENDER = 'Organic Lavender';
 const UNSCENTED = 'Fragrance-Free (Pure Hypoallergenic Soap)';
 const SHIELDING = 'Garment Shielding';
 const LINEN = 'Bed Sheets & Linens Care';
+const EXPRESS = 'Express Same-Day Laundry';
+const IRONING = 'Ironing & Folding';
 
 const plan = (id: string, pickupsUsed = 0): ActivePlan =>
   ({ ...startMembership(membershipPlan(id)!), pickupsUsed }) as ActivePlan;
@@ -453,6 +455,72 @@ checkTrue('the manifest is capped so it stays scannable',
 checkTrue('the same booking always yields the same codes',
   JSON.stringify(bagsForJob('FFC-123456', { serviceType: WASH, quantity: 3 })) ===
     JSON.stringify(bagsForJob('FFC-123456', { serviceType: WASH, quantity: 3 })));
+
+// ---------------------------------------------------------------------------
+section('what a per-order service does not add to the manifest');
+
+/**
+ * Express Same-Day is a promise about how fast the same bags come back. It was
+ * counted as a unit like any other, so it produced a bag of its own — and
+ * `bagsForJob` labels each bag with the line that produced it, so the customer
+ * was shown a third bag called "Express Same-Day Laundry" and the courier had a
+ * third tag to look for that nobody would ever tie to anything.
+ *
+ * It is still priced, still described and still on the receipt. It is simply
+ * not luggage. Same for ironing, stain removal and the courier's own ride.
+ */
+check('same-day service adds no bag of its own',
+  bagsForJob('FFC-123456', {
+    serviceType: WASH,
+    items: [
+      { serviceType: WASH, quantity: 2 },
+      { serviceType: EXPRESS, quantity: 1 },
+    ],
+  }).length, 2);
+
+check('...and no bag is labelled with it',
+  bagsForJob('FFC-123456', {
+    serviceType: WASH,
+    items: [
+      { serviceType: WASH, quantity: 2 },
+      { serviceType: EXPRESS, quantity: 1 },
+    ],
+  }).map((bag) => bag.type), [WASH, WASH]);
+
+check('...while it is still charged for', priceBreakdown({
+  serviceType: WASH,
+  items: [
+    { serviceType: WASH, quantity: 2 },
+    { serviceType: EXPRESS, quantity: 1 },
+  ],
+}).gross, 110);
+
+check('ironing beside a wash adds no bag either',
+  bagsForJob('FFC-123456', {
+    serviceType: WASH,
+    items: [
+      { serviceType: WASH, quantity: 1 },
+      { serviceType: IRONING, quantity: 1 },
+    ],
+  }).length, 1);
+
+// A bag of clothes still turns up; it is just a bag nobody has counted.
+check('an order that is only per-order work is still one bag',
+  bagsForJob('FFC-123456', { serviceType: IRONING, quantity: 1 }).length, 1);
+check('...labelled with the work it is for',
+  bagsForJob('FFC-123456', { serviceType: IRONING, quantity: 1 })[0].type, IRONING);
+
+// The counted units are untouched — this is a rule about `order`, not about
+// everything that is not a load.
+check('counted units are unaffected',
+  bagsForJob('FFC-123456', {
+    serviceType: WASH,
+    items: [
+      { serviceType: WASH, quantity: 2 },
+      { serviceType: LINEN, quantity: 1 },
+      { serviceType: CAR, quantity: 1 },
+    ],
+  }).length, 4);
 
 // ---------------------------------------------------------------------------
 section('re-deriving a price from a stored booking');

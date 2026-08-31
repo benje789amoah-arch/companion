@@ -10,7 +10,7 @@ import {
   distanceKm,
   isOutsideServiceArea,
 } from './geo';
-import { bookingItems, describeItems, totalUnits } from './services';
+import { baggedUnits, bookingItems, describeItems, isCountableUnit, serviceUnit } from './services';
 import { fromBookingStatus, toBookingStatus } from './status';
 import type {
   Booking,
@@ -262,9 +262,14 @@ export function referenceFor(id: string, priority: OrderPriority): string {
  * as well, so a courier checked off three, found ten at the door, and had
  * nothing to scan the rest against.
  *
- * Now the lines say. One bag per unit — a load is roughly a bag of laundry,
- * which is what makes the mapping honest — summed across every service on the
- * order, so "two loads and a set of linen" is three bags.
+ * Now the lines say. One bag per counted unit — a load is roughly a bag of
+ * laundry, which is what makes the mapping honest — summed across the services
+ * that are actually carried, so "two loads and a set of linen" is three bags.
+ *
+ * Services sold per *order* are not carried and do not appear here; see
+ * `baggedUnits`. Express Same-Day is the clearest case: it is a promise about
+ * how fast the same bags come back, and counting it produced a fourth bag
+ * labelled with the promise.
  *
  * Still deterministic from the job id, so the same booking always yields the
  * same codes and a replayed offline write does not invalidate a tag the courier
@@ -288,12 +293,18 @@ export function bagsForJob(
 ): LaundryBag[] {
   const digits = id.replace(/\D/g, '') || '000000';
   const items = bookingItems(booking);
-  const count = Math.min(MAX_BAGS, Math.max(1, totalUnits(items)));
+  const count = Math.min(MAX_BAGS, baggedUnits(items));
 
   // Which service each bag belongs to, so a mixed order's manifest says which
   // bag is the bed linen rather than calling everything "Premium Textiles".
+  //
+  // Per-order lines are skipped here on the same rule `baggedUnits` counts by,
+  // and skipping them is the visible half of it: they produced no bag, so there
+  // is no bag for them to name. An order of two loads plus same-day service is
+  // two bags of washing, not three bags one of which is a promise.
   const labels: string[] = [];
   for (const item of items) {
+    if (!isCountableUnit(serviceUnit(item.serviceType))) continue;
     for (let n = 0; n < item.quantity && labels.length < count; n += 1) {
       labels.push(item.serviceType);
     }

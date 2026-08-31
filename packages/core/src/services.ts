@@ -341,10 +341,42 @@ export function bookingItems(
  * How many countable things an order is for, across every line.
  *
  * A per-order line counts as one: an ironing order is one thing to collect even
- * though nobody counted it. This is what the bag manifest follows.
+ * though nobody counted it.
+ *
+ * The bag manifest does *not* follow this — it follows {@link baggedUnits},
+ * which leaves those lines out. The difference is the one between what an order
+ * is worth and what turns up at the door.
  */
 export function totalUnits(items: BookingItem[]): number {
   return items.reduce((total, item) => total + Math.max(1, item.quantity), 0);
+}
+
+/**
+ * How many bags an order's lines actually put on the courier's manifest.
+ *
+ * Deliberately not {@link totalUnits}, which counts a per-order line as one
+ * thing to collect. That is right for pricing and wrong for luggage: a per-order
+ * service is work done *to* the laundry rather than a parcel handed over beside
+ * it. Express Same-Day is a turnaround promise about bags that already exist,
+ * ironing is work performed on the clothes inside one, and Fast Pickup &
+ * Delivery is the courier's own ride.
+ *
+ * Counting them produced a phantom bag and then labelled it with the service
+ * that caused it — so a customer who added same-day service to two loads of
+ * washing was shown a three-bag manifest with a bag called "Express Same-Day
+ * Laundry" on it, and a courier at the door had a third tag to look for that was
+ * never going to exist. The charge belongs on the bill, which is where
+ * `priceBreakdown` has always put it, and where it stays.
+ *
+ * Never zero. An order whose only line is per-order — ironing on its own — is
+ * still a bag of clothes arriving; it is just a bag nobody has counted yet.
+ */
+export function baggedUnits(items: BookingItem[]): number {
+  const counted = items
+    .filter((item) => isCountableUnit(serviceUnit(item.serviceType)))
+    .reduce((total, item) => total + Math.max(1, item.quantity), 0);
+
+  return Math.max(1, counted);
 }
 
 /**
