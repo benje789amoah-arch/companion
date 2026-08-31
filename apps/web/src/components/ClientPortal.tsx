@@ -40,7 +40,7 @@ import LiveDispatchMap from './LiveDispatchMap';
 import HandoffCode from './HandoffCode';
 import RescheduleDrawer from './RescheduleDrawer';
 import AddressAutocomplete from './AddressAutocomplete';
-import { usePaystackReturn } from './PaystackReturn';
+import { openCheckoutWindow, usePaystackReturn } from './PaystackReturn';
 import PaystackMark from './ui/PaystackMark';
 import { paymentLabel, windowLabel } from './ui/slots';
 
@@ -254,6 +254,11 @@ export default function ClientPortal({
 
   const handlePortalPaystackInit = async () => {
     if (!payModalBooking) return;
+
+    // Claimed in the same tick as the click. See `openCheckoutWindow` — opened
+    // after the round trip, as this used to be, it is silently blocked.
+    const checkout = openCheckoutWindow();
+
     setPaystackLoading(true);
     setPaystackError('');
     try {
@@ -286,8 +291,16 @@ export default function ClientPortal({
       }
       setPaystackAuthUrl(data.authorization_url);
       setPaystackRef(data.reference);
-      window.open(data.authorization_url, '_blank', 'width=600,height=750');
+
+      // The transaction is created either way, so a blocked window is a
+      // redirection rather than a failure — the link below is the way through.
+      if (!checkout.send(data.authorization_url)) {
+        setPaystackError(
+          'Your browser blocked the checkout window. Open it with the link below — the payment is ready and waiting.'
+        );
+      }
     } catch (err: any) {
+      checkout.cancel();
       setPaystackError(err.message || 'Error connecting to Paystack.');
     } finally {
       setPaystackLoading(false);
@@ -334,6 +347,10 @@ export default function ClientPortal({
       setTopUpPaystackError('Please specify a valid top-up amount.');
       return;
     }
+
+    // Claimed before the await, like the two above it.
+    const checkout = openCheckoutWindow();
+
     setTopUpPaystackLoading(true);
     setTopUpPaystackError('');
     try {
@@ -366,8 +383,14 @@ export default function ClientPortal({
       }
       setTopUpPaystackAuthUrl(data.authorization_url);
       setTopUpPaystackRef(data.reference);
-      window.open(data.authorization_url, '_blank', 'width=600,height=750');
+
+      if (!checkout.send(data.authorization_url)) {
+        setTopUpPaystackError(
+          'Your browser blocked the checkout window. Open it with the link below — the top-up is ready and waiting.'
+        );
+      }
     } catch (err: any) {
+      checkout.cancel();
       setTopUpPaystackError(err.message || 'Error connecting to Paystack.');
     } finally {
       setTopUpPaystackLoading(false);

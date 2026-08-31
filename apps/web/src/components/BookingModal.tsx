@@ -48,7 +48,7 @@ import { BOOKABLE_SERVICE_ITEMS } from '../data';
 import { useIntent } from '../intent';
 import AddressAutocomplete from './AddressAutocomplete';
 import PickupPinField, { type PinOrigin } from './PickupPinField';
-import { usePaystackReturn } from './PaystackReturn';
+import { openCheckoutWindow, usePaystackReturn } from './PaystackReturn';
 import { paymentLabel, windowLabel } from './ui/slots';
 import PaystackMark from './ui/PaystackMark';
 import { useDialog } from './ui/useDialog';
@@ -363,6 +363,11 @@ export default function BookingModal({
   const [paystackNotice, setPaystackNotice] = useState('');
 
   const handlePaystackInit = async () => {
+    // Claimed in the same tick as the click, before anything is awaited. See
+    // `openCheckoutWindow`: a pop-up opened after a round trip is opened by a
+    // script as far as the browser is concerned, and is blocked without a word.
+    const checkout = openCheckoutWindow();
+
     setPaystackLoading(true);
     setPaystackError('');
     setPaystackNotice('');
@@ -413,9 +418,17 @@ export default function BookingModal({
       setPaystackRef(data.reference);
       setTransactionRef(data.reference);
 
-      // Open Paystack authorization URL
-      window.open(data.authorization_url, '_blank', 'width=600,height=750');
+      // The transaction exists either way; a browser that refuses pop-ups
+      // outright just needs the customer sent to the link below instead.
+      if (!checkout.send(data.authorization_url)) {
+        setPaystackNotice(
+          'Your browser blocked the checkout window. Open it with the link below — the payment is ready and waiting.'
+        );
+      }
     } catch (err: any) {
+      // Nothing to pay for, so the window that was held for it goes away rather
+      // than sitting there saying "Opening the Paystack checkout…" forever.
+      checkout.cancel();
       setPaystackError(err.message || 'Error connecting to Paystack payment gateway.');
     } finally {
       setPaystackLoading(false);
@@ -1611,8 +1624,11 @@ export default function BookingModal({
                             {paystackAuthUrl && (
                               <div className="mt-3 space-y-2 rounded-md border border-white/10 p-3">
                                 <p className="text-body text-brand-text-muted">
-                                  The checkout opened in another window. If it was blocked, open it
-                                  here:
+                                  {/* Was "The checkout opened in another window" — which is
+                                      exactly what has not happened in the one case this panel
+                                      exists for. */}
+                                  The checkout opens in a separate window. If you cannot see it,
+                                  open it here:
                                 </p>
                                 <a
                                   href={paystackAuthUrl}

@@ -705,7 +705,12 @@ export default function BookScreen() {
     } finally {
       setPaymentBusy(false);
     }
-  }, [email, total, name, phone, service.name, t]);
+    // `bookingId` belongs on this list. It is state, and `reset` mints a fresh
+    // one for the next booking of the session — so a callback that closed over
+    // the old one would open a checkout bound to the previous order, and the
+    // server refuses to settle a bill with a reference naming a different
+    // booking. That is the binding this id exists for.
+  }, [bookingId, email, total, name, phone, service.name, t]);
 
   const verifyPaystack = useCallback(async () => {
     if (!paystackRef) return;

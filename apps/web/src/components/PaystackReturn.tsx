@@ -31,6 +31,89 @@ import PaystackMark from './ui/PaystackMark';
  * and the opener is asked to go and check.
  */
 
+/**
+ * Reserves the checkout window while the click is still a click.
+ *
+ * All three Paystack buttons on this site used to call
+ * `window.open(authorization_url, …)` at the end of their handler — after
+ * `await fetch('/api/paystack/initialize')` and after `await res.json()`. A
+ * browser only honours `window.open` while a user gesture is still live, and a
+ * network round trip outlives that window by a wide margin, so every one of
+ * those calls was a pop-up opened by a script rather than by a person. Chrome,
+ * Safari and Firefox all block that silently: no dialog, no exception, no
+ * console line. The button spun, the request succeeded, the transaction was
+ * created at Paystack — and nothing appeared. It read as a payment step the site
+ * simply skipped.
+ *
+ * So the window is claimed first, in the same tick as the click, and pointed at
+ * the checkout once the URL comes back. `about:blank` inherits this origin, so
+ * the holding message below can be written into it and the later
+ * `location.replace` is a same-origin navigation rather than a second open.
+ *
+ * `send` returning false is the one case worth telling the customer about: a
+ * browser configured to block pop-ups outright still refuses this, and then the
+ * link each panel already renders is the way through. It is never a reason to
+ * fail the payment — the transaction exists either way, and its reference is
+ * held by the screen that asked for it.
+ */
+export interface CheckoutWindow {
+  /** Points the held window at the checkout. False if there is none to point. */
+  send(url: string): boolean;
+  /** Closes the held window — the checkout was never created. */
+  cancel(): void;
+}
+
+export function openCheckoutWindow(): CheckoutWindow {
+  let held: Window | null = null;
+
+  try {
+    held = window.open('', '_blank', 'width=600,height=750');
+  } catch {
+    // Blocked, or no `window` worth the name. The link fallback covers it.
+    held = null;
+  }
+
+  if (held) {
+    try {
+      // A blank pop-up sitting white for the length of a round trip reads as a
+      // window that failed to load. Same-origin, so this is allowed.
+      held.document.write(
+        '<!doctype html><meta charset="utf-8"><title>Opening Paystack…</title>' +
+          '<body style="margin:0;display:flex;align-items:center;justify-content:center;' +
+          'height:100vh;background:#161616;color:#a8a29e;font:14px system-ui,sans-serif">' +
+          'Opening the Paystack checkout…</body>'
+      );
+      held.document.close();
+    } catch {
+      // Cosmetic only — a window we cannot write to is still a window we can
+      // navigate.
+    }
+  }
+
+  return {
+    send(url) {
+      if (!held || held.closed) return false;
+      try {
+        // `replace` rather than assignment, so the holding page above does not
+        // become a history entry the customer can go "back" to.
+        held.location.replace(url);
+        held.focus();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    cancel() {
+      try {
+        if (held && !held.closed) held.close();
+      } catch {
+        // Already gone, which is the outcome this wanted.
+      }
+      held = null;
+    },
+  };
+}
+
 /** What the popup sends its opener. Read by `usePaystackReturn` below. */
 export const PAYSTACK_RETURN_MESSAGE = 'freshfold:paystack-return';
 
