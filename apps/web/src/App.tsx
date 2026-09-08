@@ -438,6 +438,29 @@ export default function App() {
       )}
 
       {/* Supervisor desk — behind a real login, not a URL fragment. */}
+      {/*
+        The third state, which used to render nothing at all.
+
+        `isSupervisor` is `null` while `restoreAdminSession` is on the wire, and
+        the two branches below test only `false` and `true` — so for the whole
+        length of that request the desk route mounted no overlay and the
+        marketing page showed through it. Reached by typing `/admin`, that is
+        indistinguishable from the desk not existing.
+
+        It is not a hypothetical frame. The desk token lives in `sessionStorage`,
+        so a supervisor who signed in earlier in the same tab has one, and
+        `restoreAdminSession` spends it on a request that gets the sixty-second
+        cold-start budget in a production build — see `api` in services/store.ts,
+        and the Render dyno it is there for, which sleeps after fifteen idle
+        minutes. Coming back to that tab after lunch meant up to a minute of
+        shopfront with nothing to say the desk was on its way.
+
+        `Pending` draws nothing for its first 260ms, so the ordinary case — a
+        warm server answering in under half a second — still goes straight to the
+        form with no flash of a spinner in between.
+      */}
+      {isAdminOpen && isSupervisor === null && <Pending label="Checking your desk session" />}
+
       {isAdminOpen && isSupervisor === false && (
         <Deferred context="admin-login" label="Opening the desk" onDismiss={closeOverlay}>
           <AdminLogin
