@@ -81,7 +81,21 @@ function routeFrom(name: RouteName, params: URLSearchParams): Route {
 export function currentRoute(): Route {
   const { pathname, search, hash } = window.location;
 
-  const path = pathname.replace(/\/+$/, '') || '/';
+  /*
+   * Lowercased, because a path is typed by a person.
+   *
+   * The desk is reached by someone typing `/admin` into the bar from memory,
+   * and `/Admin` matched nothing, fell through to `home` and rendered the
+   * marketing page — the same thing the site shows when the URL is right, so
+   * there was no way to tell a capital letter from a desk that had stopped
+   * working. The hash branch below has always lowercased its name; this is the
+   * two halves of one function agreeing.
+   *
+   * Safe to fold blindly: every path in `PATHS` is lowercase already, and
+   * nothing downstream reads the path again — `bookingId` and `setup` come out
+   * of the query string, which is left exactly as it was sent.
+   */
+  const path = pathname.replace(/\/+$/, '').toLowerCase() || '/';
   for (const [name, routePath] of Object.entries(PATHS)) {
     if (path === routePath) {
       return routeFrom(name as RouteName, new URLSearchParams(search));
