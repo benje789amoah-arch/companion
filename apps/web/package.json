@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "FreshFold Laundry Co. customer website \u00e2\u20ac\u201d marketing site, client portal and admin dashboard.",
+  "description": "FreshFold Laundry Co. customer website — marketing site, client portal and admin dashboard.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
