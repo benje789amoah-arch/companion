@@ -9,7 +9,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "check": "tsx src/route.check.ts && tsx src/desk.check.ts"
+    "check": "tsx src/route.check.ts && tsx src/desk.check.ts",
+    "smoke": "tsx src/smoke.ts"
   },
   "dependencies": {
     "@freshfold/core": "*",

@@ -9,6 +9,7 @@ import HowItWorks from './components/HowItWorks';
 import TargetCustomers from './components/TargetCustomers';
 import Contact from './components/Contact';
 import Footer from './components/Footer';
+import NotFound from './components/NotFound';
 import { Booking } from './types';
 import * as store from './services/store';
 import { ArrowUp } from 'lucide-react';
@@ -368,6 +369,14 @@ export default function App() {
   const handleBookingCreated = (newBooking: Booking) => {
     setActiveBookings((prev) => [newBooking, ...prev]);
   };
+
+  // Before anything else, and instead of everything else — an address that
+  // names nothing should not be dressed as the page it is not. Ahead of the
+  // Paystack branch only because it is the cheaper test; the two cannot both be
+  // true.
+  if (route.name === 'not-found') {
+    return <NotFound />;
+  }
 
   // Before anything else, and instead of everything else. The header, the
   // marketing sections and the chat bubble are all wrong in a checkout popup.

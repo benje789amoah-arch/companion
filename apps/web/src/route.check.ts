@@ -78,20 +78,28 @@ check('an empty path is home', nameAt(''), 'home');
 check('/portal', nameAt('/portal'), 'portal');
 check('/paystack-success', nameAt('/paystack-success'), 'paystack-success');
 
-section('a wrong address is not the desk');
+section('a wrong address is not the desk, and says so');
 
-// The other half of the case fix. Folding case must not fold anything else in:
-// a misspelling still has to miss, or the desk would open on addresses nobody
-// meant to be the desk.
-check('a near miss is home', nameAt('/admni'), 'home');
-check('a longer path is home', nameAt('/admin/orders'), 'home');
-check('a prefix is home', nameAt('/administrator'), 'home');
-check('an unknown hash is home', nameAt('/#admin-desk'), 'home');
+// Two properties at once. Folding case must not fold anything else in — a
+// misspelling still has to miss, or the desk would open on addresses nobody
+// meant to be the desk. And a miss must now be *legible*: these used to answer
+// `home`, which drew the marketing page, so a typo looked exactly like the desk
+// having been taken away. That is how this was reported as an outage.
+check('a near miss is not found', nameAt('/admni'), 'not-found');
+check('a longer path is not found', nameAt('/admin/orders'), 'not-found');
+check('a prefix is not found', nameAt('/administrator'), 'not-found');
+check('an unrelated path is not found', nameAt('/pricing'), 'not-found');
 
-// In-page anchors are how the footer's section links work. If one of these
-// were read as a route, clicking "Contact" would open an overlay.
-check('#contact is an anchor, not a route', nameAt('/#contact'), 'home');
-check('#services is an anchor, not a route', nameAt('/#services'), 'home');
+// The root keeps its meaning. Only a *path* nobody claimed is not found.
+check('the root is still home', nameAt('/'), 'home');
+
+// In-page anchors are how the footer's section links work. A fragment naming no
+// route is a position on the page, not a wrong address — if one of these
+// answered `not-found`, clicking "Contact" would 404 the site.
+check('#contact is an anchor, not a miss', nameAt('/#contact'), 'home');
+check('#services is an anchor, not a miss', nameAt('/#services'), 'home');
+check('an unknown hash on the root is home', nameAt('/#admin-desk'), 'home');
+check('a bare hash is home', nameAt('/#'), 'home');
 
 section('what the portal carries with it');
 
@@ -120,6 +128,7 @@ check(
   '/portal?bookingId=123456'
 );
 check('home builds as the root', href(at('/')), '/');
+check('and so does an address that names nothing', href(at('/admni')), '/');
 
 checkTrue(
   'a capital normalises to the canonical spelling',
