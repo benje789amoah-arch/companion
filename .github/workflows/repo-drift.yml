@@ -1,0 +1,124 @@
+# Reports when this repository and the snapshot copy stop matching.
+#
+# ## Why this exists
+#
+# freshfoldb.vercel.app builds from *this* repository. A second copy of the
+# project lives at Final-Students-2025-2026/FreshFold-Laundry-, and the two have
+# no common ancestor — that one is not a fork but a squashed snapshot ("Initial
+# commit: FreshFold Laundry project") with pull requests layered on top. So
+# `git merge-base` returns nothing, no change propagates between them by any
+# mechanism, and neither side says a word when they drift apart.
+#
+# That has already cost real work twice. A fix for the connection banner was
+# merged into the snapshot repository, looked shipped, and reached no deployment
+# at all — production went on serving a build from hours earlier. Separately,
+# two mobile and customer-app fixes sat in the snapshot repository for days
+# while the apps shipped without them. In both cases the merge was clean, the
+# branch was green, and nothing anywhere reported that the other copy had not
+# moved. This job is the thing that reports it.
+#
+# ## Why it lives here rather than there
+#
+# Access, not preference. This repository is private and the snapshot is public,
+# so a workflow here can read that one with no credentials at all. A workflow
+# there would need a personal access token stored as a secret in a public
+# repository just to read this one.
+#
+# Detection does not care which side moved — it compares the two trees, so a
+# change made in either repository shows up the same way.
+#
+# ## Reading a failure
+#
+# A red run means the copies differ, which is a statement about the repositories
+# rather than about the commit that triggered it. Right after a merge here, that
+# is simply the expected window before the change is carried across; the job
+# goes green once the other copy catches up. It is a standing signal, not a
+# gate — nothing is blocked by it.
+
+name: Repo drift
+
+on:
+  # This repository moved. Says so immediately.
+  push:
+    branches: [main]
+  # The other repository moving cannot trigger anything here, so the daily run
+  # is the only thing that catches drift in that direction. It is the half that
+  # actually failed before.
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: Compare against the snapshot copy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          path: deployed
+
+      - name: Clone the snapshot repository
+        # Public, so no token. Shallow: only the tree is compared, never history
+        # — the two have none in common and comparing it would be meaningless.
+        run: |
+          git clone --quiet --depth 1 \
+            https://github.com/Final-Students-2025-2026/FreshFold-Laundry-.git \
+            snapshot
+
+      - name: Compare the two trees
+        run: |
+          set -uo pipefail
+
+          # .github is excluded because this workflow exists only in this
+          # repository, so it would report itself as drift on every run.
+          # The rest are build output and installed dependencies, which are not
+          # in either repository and only appear if a step above changes.
+          diff -rq \
+            -x .git -x .github -x node_modules -x dist -x .expo \
+            deployed snapshot > raw.txt 2>&1 || true
+
+          changed=$(grep '^Files ' raw.txt | sed 's|^Files deployed/||; s| and snapshot/.* differ$||' | sort)
+          here=$(grep '^Only in deployed' raw.txt | sed 's|^Only in deployed[/]*||; s|: |/|' | sort)
+          there=$(grep '^Only in snapshot' raw.txt | sed 's|^Only in snapshot[/]*||; s|: |/|' | sort)
+
+          {
+            echo "# Repo drift"
+            echo
+            echo "\`benje789amoah-arch/companion\` (deployed) vs \`Final-Students-2025-2026/FreshFold-Laundry-\` (snapshot)"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -z "$changed" ] && [ -z "$here" ] && [ -z "$there" ]; then
+            echo "The two copies are identical." >> "$GITHUB_STEP_SUMMARY"
+            echo "No drift: the two copies are identical."
+            exit 0
+          fi
+
+          emit() {
+            [ -z "$2" ] && return 0
+            {
+              echo "### $1"
+              echo
+              echo '```'
+              echo "$2"
+              echo '```'
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          emit "Different content" "$changed"
+          emit "Only in this repository (missing from the snapshot)" "$here"
+          emit "Only in the snapshot (never carried across — this is the one that loses work)" "$there"
+
+          {
+            echo "Carry the difference across with a pull request on whichever copy is behind."
+            echo "Nothing propagates between these two on its own."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Drift detected:"
+          cat raw.txt
+          exit 1
