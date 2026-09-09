@@ -73,6 +73,20 @@ jobs:
         run: |
           set -uo pipefail
 
+          # `-e` is on: GitHub runs this as `bash -e {0}`. Everything below has
+          # to be safe under it, and the two ways of getting that wrong both
+          # turn this job red for reasons that have nothing to do with drift.
+          #
+          # The first is `grep`, which exits 1 when it matches nothing — the
+          # ordinary case here, since no drift means no matching lines. With
+          # `pipefail` that failure becomes the pipeline's, and `-e` then aborts
+          # the script, so the job failed *precisely when the copies agreed*.
+          # Hence `|| true` on each: no match is an answer, not an error.
+          #
+          # The second is `[ cond ] && action` as a whole statement, which
+          # returns 1 when the condition is false and takes `-e` with it. There
+          # is one of those below, written as an `if` for that reason.
+
           # .github is excluded because this workflow exists only in this
           # repository, so it would report itself as drift on every run.
           # The rest are build output and installed dependencies, which are not
@@ -81,9 +95,9 @@ jobs:
             -x .git -x .github -x node_modules -x dist -x .expo \
             deployed snapshot > raw.txt 2>&1 || true
 
-          changed=$(grep '^Files ' raw.txt | sed 's|^Files deployed/||; s| and snapshot/.* differ$||' | sort)
-          here=$(grep '^Only in deployed' raw.txt | sed 's|^Only in deployed[/]*||; s|: |/|' | sort)
-          there=$(grep '^Only in snapshot' raw.txt | sed 's|^Only in snapshot[/]*||; s|: |/|' | sort)
+          changed=$(grep '^Files ' raw.txt | sed 's|^Files deployed/||; s| and snapshot/.* differ$||' | sort || true)
+          here=$(grep '^Only in deployed' raw.txt | sed 's|^Only in deployed[/]*||; s|: |/|' | sort || true)
+          there=$(grep '^Only in snapshot' raw.txt | sed 's|^Only in snapshot[/]*||; s|: |/|' | sort || true)
 
           {
             echo "# Repo drift"
@@ -99,15 +113,16 @@ jobs:
           fi
 
           emit() {
-            [ -z "$2" ] && return 0
-            {
-              echo "### $1"
-              echo
-              echo '```'
-              echo "$2"
-              echo '```'
-              echo
-            } >> "$GITHUB_STEP_SUMMARY"
+            if [ -n "$2" ]; then
+              {
+                echo "### $1"
+                echo
+                echo '```'
+                echo "$2"
+                echo '```'
+                echo
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
           }
 
           emit "Different content" "$changed"
